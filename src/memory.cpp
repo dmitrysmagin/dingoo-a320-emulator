@@ -98,7 +98,6 @@ u32 Memory::read_u32(u32 vaddr) {
 void Memory::write_u8(u32 vaddr, u8 val) {
     u32 phys = vaddr_to_phys(vaddr);
     if (phys == 0xFFFFFFFF || phys >= m_mem.size()) {
-        // Hardware register write → ignore
         return;
     }
     m_mem[phys] = val;

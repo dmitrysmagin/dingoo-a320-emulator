@@ -8,6 +8,7 @@ extern u32 g_cpu_regs[32];
 extern u32 g_cpu_pc;
 extern u32 g_cpu_hi;
 extern u32 g_cpu_lo;
+extern u32 g_detected_fb_addr;
 
 Syscalls::Syscalls(Memory& mem, Display& display)
     : m_mem(mem)
@@ -1021,10 +1022,32 @@ bool Syscalls::simulate_vsync() {
         }
     }
 
-    // Game writes LCD frame buffer address directly to HW registers (ignored by us).
-    // Hardcode known good offset (FB2 found via ring scan).
-    if (m_display.get_frame_addr() == 0) {
-        m_display.set_frame_addr(0x00B90000);
+    // Detect frame buffer address from the render function's LW interception,
+    // falling back to a RAM scan for the best candidate.
+    if (g_detected_fb_addr) {
+        u32 phys = g_detected_fb_addr & 0x1FFFFFFF;
+        m_display.set_frame_addr(phys);
+    } else if (m_display.get_frame_addr() == 0) {
+        // Scan for most non-zero/white pixels at each 4KB-aligned 153600B region
+        u32 best_addr = 0x00C26000;  // default to FB6
+        u32 best_score = 0;
+        u8* raw = m_mem.get_raw_ptr();
+        u32 mem_size = m_mem.size();
+        for (u32 a = 0x00800000; a + 0x25800 < mem_size; a += 0x1000) {
+            u32 white = 0, zero = 0;
+            for (u32 i = 0; i < 0x25800; i += 2) {
+                u16 p = (u16)raw[a + i] | ((u16)raw[a + i + 1] << 8);
+                if (p == 0xFFFF) white++;
+                else if (p == 0) zero++;
+            }
+            u32 other = (0x25800 / 2) - white - zero;
+            if (other > best_score) {
+                best_score = other;
+                best_addr = a;
+            }
+        }
+        printf("[FB] Scan: best at 0x%08X (score=%u)\n", best_addr, best_score);
+        m_display.set_frame_addr(best_addr);
     }
     m_display.flip(m_mem.get_raw_ptr(), m_mem.size());
     return switched;
