@@ -6,6 +6,8 @@
 // Global register access for syscall dispatch
 u32 g_cpu_regs[32];
 u32 g_cpu_pc;
+u32 g_cpu_hi;
+u32 g_cpu_lo;
 
 // Sign extend helpers
 static inline s32 sext16(u32 v) { return (s32)(s16)v; }
@@ -26,6 +28,15 @@ void CPU::reset() {
 }
 
 u32 CPU::fetch() {
+    // OS area (0x80000000-0x809FFFFF) has no loaded code - return JR $ra to skip
+    if (pc >= 0x80000000 && pc < 0x80A00000) {
+        static bool warned = false;
+        if (!warned) {
+            printf("[CPU] PC in OS area 0x%08X - returning JR $ra\n", pc);
+            warned = true;
+        }
+        return 0x03E00008;  // JR $ra
+    }
     return mem->read_u32(pc);
 }
 
@@ -52,7 +63,7 @@ void CPU::exec_special(u32 insn) {
     case 0x06: if (rd) regs[rd] = regs[rt] >> (regs[rs] & 0x1F); break;
     case 0x07: if (rd) regs[rd] = (u32)((s32)regs[rt] >> (regs[rs] & 0x1F)); break;
     case 0x08: pc = regs[rs]; break;  // JR (pc already advanced, will be adjusted)
-    case 0x09: regs[rd] = pc; pc = regs[rs]; break;  // JALR
+    case 0x09: regs[rd] = pc + 4; pc = regs[rs]; break;  // JALR
     case 0x0C: raise_exception(EXC_SYS); break;
     case 0x0D: raise_exception(EXC_BP); break;
     case 0x0F: break;  // SYNC
@@ -164,7 +175,7 @@ void CPU::execute(u32 insn) {
             }
             break;
         case 0x09:
-            regs[rd] = pc;
+            regs[rd] = pc + 4;  // save address AFTER delay slot (A+8)
             pc = regs[rs];
             break;
         case 0x21: if (rd) regs[rd] = regs[rs] + regs[rt]; break;
@@ -209,8 +220,8 @@ void CPU::execute(u32 insn) {
         switch (rt_field) {
         case 0x00: if ((s32)regs[rs] < 0) pc = pc + (offset << 2); break;  // BLTZ
         case 0x01: if ((s32)regs[rs] >= 0) pc = pc + (offset << 2); break;  // BGEZ
-        case 0x10: regs[31] = pc; if ((s32)regs[rs] < 0) pc = pc + (offset << 2); break;  // BLTZAL
-        case 0x11: regs[31] = pc; if ((s32)regs[rs] >= 0) pc = pc + (offset << 2); break;  // BGEZAL
+        case 0x10: regs[31] = pc + 4; if ((s32)regs[rs] < 0) pc = pc + (offset << 2); break;  // BLTZAL
+        case 0x11: regs[31] = pc + 4; if ((s32)regs[rs] >= 0) pc = pc + (offset << 2); break;  // BGEZAL
         }
         break;
     }
@@ -220,7 +231,7 @@ void CPU::execute(u32 insn) {
         break;
     }
     case 0x03: {
-        regs[31] = pc;
+        regs[31] = pc + 4;  // save address AFTER delay slot (A+8)
         u32 target = (insn & 0x03FFFFFF) << 2;
         pc = (pc & 0xF0000000) | target;
         break;
@@ -328,29 +339,40 @@ void CPU::execute(u32 insn) {
         break;
     }
 
+    case 0x2F: break;  // CACHE (nop)
     case 0x30: {  // LL
         u32 addr = regs[rs] + imm;
         if (rt) regs[rt] = mem->read_u32(addr);
         llbit = 1;
         break;
     }
-    case 0x32: {  // SC
+    case 0x31: {  // LWC1
+        mem->read_u32(regs[rs] + imm);  // discard result
+        break;
+    }
+    case 0x32: {  // LWC2
+        u32 addr = regs[rs] + imm;
+        mxu.mtc2(rt, mem->read_u32(addr));
+        break;
+    }
+    case 0x33: {  // LWC3
+        mem->read_u32(regs[rs] + imm);  // discard result
+        break;
+    }
+    case 0x34: {  // SC
         u32 addr = regs[rs] + imm;
         if (llbit) { mem->write_u32(addr, regs[rt]); if (rt) regs[rt] = 1; }
         else { if (rt) regs[rt] = 0; }
         llbit = 0;
         break;
     }
-    case 0x3A: {  // LWC2
+    case 0x35: break;  // SWC1 (nop - no store)
+    case 0x36: {  // SWC2
         u32 addr = regs[rs] + imm;
-        mxu.mtc2(rd, mem->read_u32(addr));
+        mem->write_u32(addr, mxu.mfc2(rt));
         break;
     }
-    case 0x3E: {  // SWC2
-        u32 addr = regs[rs] + imm;
-        mem->write_u32(addr, mxu.mfc2(rd));
-        break;
-    }
+    case 0x37: break;  // SWC3 (nop - no store)
 
     default:
         printf("[CPU] Unknown opcode=0x%02X at PC=0x%08X insn=0x%08X\n", opcode, pc - 4, insn);
@@ -366,11 +388,14 @@ void CPU::trace_add(u32 pc_, u32 insn) {
 }
 
 void CPU::print_trace() {
-    printf("\n=== Last %d instructions ===\n", TRACE_SIZE);
+    printf("\n=== Last %d instructions (most recent last) ===\n", TRACE_SIZE);
     for (int i = 0; i < TRACE_SIZE; i++) {
-        int idx = (m_trace_idx + i) % TRACE_SIZE;
-        if (m_trace_pc[idx] == 0) continue;
-        printf("  0x%08X: 0x%08X\n", m_trace_pc[idx], m_trace_insn[idx]);
+        int idx = (m_trace_idx - TRACE_SIZE + i + TRACE_SIZE) % TRACE_SIZE;
+        if (m_trace_pc[idx] == 0) {
+            printf("  -- skip zero at idx %d (buf was not full yet)\n", idx);
+            continue;
+        }
+        printf("  [%03d] 0x%08X: 0x%08X  insn_count=%llu\n", i, m_trace_pc[idx], m_trace_insn[idx], 0ULL);
     }
 }
 
@@ -385,11 +410,24 @@ void CPU::execute_one() {
     // Sync to global for syscall access
     memcpy(g_cpu_regs, regs, sizeof(regs));
     g_cpu_pc = pc;
+    g_cpu_hi = hi;
+    g_cpu_lo = lo;
 
     execute(insn);
 
+    // Detect JR/JALR to invalid address immediately
+    if ((pc & 0x80000000) == 0 && pc >= 0x4000) {
+        printf("[KUSEG] Immediate: pc=0x%08X from insn=0x%08X at 0x%08X\n",
+               pc, insn, next_pc - 4);
+        printf("[KUSEG] regs[31]=0x%08X regs[29]=0x%08X\n", regs[31], regs[29]);
+        running = false;
+        return;
+    }
+
     // execute() modifies regs and pc directly; sync regs to global
     memcpy(g_cpu_regs, regs, sizeof(regs));
+    g_cpu_hi = hi;
+    g_cpu_lo = lo;
 
     // Handle delay slot
     if (pc != next_pc && pc != 0) {
@@ -401,8 +439,21 @@ void CPU::execute_one() {
 
         memcpy(g_cpu_regs, regs, sizeof(regs));
         g_cpu_pc = pc;
+        g_cpu_hi = hi;
+        g_cpu_lo = lo;
         execute(delay_insn);
         memcpy(g_cpu_regs, regs, sizeof(regs));
+        g_cpu_hi = hi;
+        g_cpu_lo = lo;
+
+        // Check if delay slot set KUSEG
+        if ((pc & 0x80000000) == 0 && pc >= 0x4000) {
+            printf("[KUSEG] After delay slot: pc=0x%08X\n", pc);
+            printf("[KUSEG] delay_insn=0x%08X branch_target=0x%08X\n",
+                   delay_insn, branch_target);
+            running = false;
+            return;
+        }
 
         pc = branch_target;
     }
@@ -414,15 +465,31 @@ void CPU::execute_one() {
             u32 return_addr = regs[31];
             syscalls->dispatch(idx, return_addr);
             memcpy(regs, g_cpu_regs, sizeof(regs));
+            hi = g_cpu_hi;
+            lo = g_cpu_lo;
             pc = regs[31];
+            if ((pc & 0x80000000) == 0 && pc >= 0x4000) {
+                printf("[KUSEG] GOT dispatch idx=%d pc=0x%08X (invalid)\n", idx, pc);
+                printf("[KUSEG] return_addr=0x%08X\n", return_addr);
+                running = false;
+            }
         }
     }
-
     insn_count++;
 }
 
 void CPU::run_frame(u32 max_insns) {
     for (u32 i = 0; i < max_insns && running; i++) {
         execute_one();
+    }
+    // Simulate VSYNC once per frame
+    if (syscalls) {
+        bool switched = syscalls->simulate_vsync();
+        memcpy(regs, g_cpu_regs, sizeof(regs));
+        hi = g_cpu_hi;
+        lo = g_cpu_lo;
+        if (switched) {
+            pc = regs[31];
+        }
     }
 }

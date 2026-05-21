@@ -1,13 +1,14 @@
 #include "display.h"
 #include <cstdio>
 #include <cstring>
+#include <cstdint>
 
 Display::Display()
     : m_window(nullptr)
     , m_renderer(nullptr)
     , m_texture(nullptr)
     , m_frame_addr(0)
-    , m_display_on(false)
+    , m_display_on(true)
     , m_dirty(false)
     , m_initialized(false)
 {
@@ -70,11 +71,32 @@ void Display::shutdown() {
     if (m_initialized) { SDL_Quit(); m_initialized = false; }
 }
 
-void Display::flip() {
+void Display::flip(const u8* guest_ram, u32 ram_size) {
     if (!m_initialized) return;
 
     m_display_on = true;
     m_dirty = true;
+
+    // Read frame buffer data from guest RAM if available
+    if (guest_ram && m_frame_addr + WIDTH * HEIGHT * PIXEL_SIZE <= ram_size) {
+        u32 phys = m_frame_addr & 0x1FFFFFFF;
+        if (phys + WIDTH * HEIGHT * PIXEL_SIZE <= ram_size) {
+            memcpy(m_framebuffer, &guest_ram[phys], WIDTH * HEIGHT * PIXEL_SIZE);
+            // Dump frame buffer periodically
+            static u32 dump_count = 0;
+            if (dump_count % 500 == 0) {
+                printf("[FB] frame_addr=0x%08X phys=0x%08X\n", m_frame_addr, phys);
+                int white = 0, zero = 0, other = 0;
+                for (int i = 0; i < WIDTH * HEIGHT; i++) {
+                    if (m_framebuffer[i] == 0xFFFF) white++;
+                    else if (m_framebuffer[i] == 0) zero++;
+                    else other++;
+                }
+                printf("[FB] white=%d zero=%d other=%d\n", white, zero, other);
+            }
+            dump_count++;
+        }
+    }
 
     SDL_UpdateTexture(m_texture, nullptr, m_framebuffer, WIDTH * PIXEL_SIZE);
     SDL_RenderClear(m_renderer);

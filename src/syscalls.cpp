@@ -4,28 +4,38 @@
 #include <cstdlib>
 #include <algorithm>
 
-// We need access to CPU registers for syscall dispatch
-// These are set by the CPU before calling dispatch()
 extern u32 g_cpu_regs[32];
 extern u32 g_cpu_pc;
+extern u32 g_cpu_hi;
+extern u32 g_cpu_lo;
 
 Syscalls::Syscalls(Memory& mem, Display& display)
     : m_mem(mem)
     , m_display(display)
-    , m_heap_top(0x00B45000)  // start of heap area
+    , m_heap_top(0x00B45000)
     , m_got_call_count(0)
+    , m_current_task(-1)
+    , m_task_count(0)
+    , m_audio_open(false)
+    , m_audio_write_count(0)
 {
+    for (int i = 0; i < MAX_TASKS; i++)
+        m_tasks[i].active = false;
     for (int i = 0; i < 64; i++) {
         m_files[i].in_use = false;
         m_files[i].is_host = false;
+        m_files[i].is_archive = false;
         m_files[i].host_file = nullptr;
+        m_files[i].archive = nullptr;
+        m_files[i].archive_entry = nullptr;
         m_files[i].offset = 0;
     }
+    m_archive = nullptr;
+    m_audio_open = false;
 }
 
 u32 Syscalls::arg(int n) {
-    if (n >= 0 && n <= 3) return g_cpu_regs[4 + n];  // $a0..$a3
-    // From stack: $sp + 16 + n*4
+    if (n >= 0 && n <= 3) return g_cpu_regs[4 + n];
     u32 sp = g_cpu_regs[29];
     return m_mem.read_u32(sp + 16 + (u32)n * 4);
 }
@@ -36,23 +46,78 @@ std::string Syscalls::guest_string(u32 vaddr) {
 
 const char* Syscalls::got_name(int index) const {
     static const char* names[] = {
-        "abort", "printf", "sprintf", "fprintf", "strncasecmp",
-        "malloc", "realloc", "free", "fread", "fwrite",
-        "fopen", "fclose", "fseek", "ftell", "fgets",
-        "fflush", "feof", "ferror", "fgetc", "fputc",
-        "setbuf", "setvbuf", "exit", "atexit", "getenv",
-        "strncpy", "strncmp", "strcpy", "strcmp", "strlen",
-        "memset", "memcpy", "memmove", "memcmp", "strstr",
-        "strcat", "strchr", "strrchr", "strtok", "sscanf",
-        "rand", "srand", "qsort", "bsearch", "abs",
-        "atoi", "atof", "strtol", "strtoul", "strtod",
-        "fsys_fopen", "fsys_fread", "fsys_fseek", "fsys_fclose", "fsys_ftell",
-        "fsys_fgets", "fsys_feof", "fsys_ferror", "fsys_fgetc", "fsys_fputc",
-        "lcd_flip", "_lcd_set_frame", "LcdGetDisMode", "_kbd_get_key", "_kbd_get_status",
-        "waveout_open", "waveout_write", "waveout_close", "OSTimeGet", "OSTimeDly",
-        "OSSemCreate", "OSSemPend", "OSSemPost", "OSSemDel", "OSTaskCreate",
-        "StartSwTimer", "free_irq", "__icache_invalidate_all", "__dcache_writeback_all",
-        "serial_putc", "serial_getc",
+        "abort",                 //  0: 0x80AD67E0
+        "printf",                //  1: 0x80AD67E8
+        "sprintf",               //  2: 0x80AD67F0
+        "fprintf",               //  3: 0x80AD67F8
+        "strncasecmp",           //  4: 0x80AD6800
+        "malloc",                //  5: 0x80AD6808
+        "realloc",               //  6: 0x80AD6810
+        "free",                  //  7: 0x80AD6818
+        "fread",                 //  8: 0x80AD6820
+        "fwrite",                //  9: 0x80AD6828
+        "fseek",                 // 10: 0x80AD6830
+        "LcdGetDisMode",         // 11: 0x80AD6838
+        "vxGoHome",              // 12: 0x80AD6840
+        "StartSwTimer",          // 13: 0x80AD6848
+        "free_irq",              // 14: 0x80AD6850
+        "fsys_RefreshCache",     // 15: 0x80AD6858
+        "strlen",                // 16: 0x80AD6860
+        "_lcd_set_frame",        // 17: 0x80AD6868
+        "_lcd_get_frame",        // 18: 0x80AD6870
+        "lcd_get_cframe",        // 19: 0x80AD6878
+        "ap_lcd_set_frame",      // 20: 0x80AD6880
+        "lcd_flip",              // 21: 0x80AD6888
+        "__icache_invalidate_all",//22: 0x80AD6890
+        "__dcache_writeback_all",// 23: 0x80AD6898
+        "TaskMediaFunStop",      // 24: 0x80AD68A0
+        "OSCPUSaveSR",           // 25: 0x80AD68A8
+        "OSCPURestoreSR",        // 26: 0x80AD68B0
+        "serial_getc",           // 27: 0x80AD68B8
+        "serial_putc",           // 28: 0x80AD68C0
+        "_kbd_get_status",       // 29: 0x80AD68C8
+        "get_game_vol",          // 30: 0x80AD68D0
+        "_kbd_get_key",          // 31: 0x80AD68D8
+        "fsys_fopen",            // 32: 0x80AD68E0
+        "fsys_fread",            // 33: 0x80AD68E8
+        "fsys_fclose",           // 34: 0x80AD68F0
+        "fsys_fseek",            // 35: 0x80AD68F8
+        "fsys_ftell",            // 36: 0x80AD6900
+        "fsys_remove",           // 37: 0x80AD6908
+        "fsys_rename",           // 38: 0x80AD6910
+        "fsys_ferror",           // 39: 0x80AD6918
+        "fsys_feof",             // 40: 0x80AD6920
+        "fsys_fwrite",           // 41: 0x80AD6928
+        "fsys_findfirst",        // 42: 0x80AD6930
+        "fsys_findnext",         // 43: 0x80AD6938
+        "fsys_findclose",        // 44: 0x80AD6940
+        "fsys_flush_cache",      // 45: 0x80AD6948
+        "USB_Connect",           // 46: 0x80AD6950
+        "udc_attached",          // 47: 0x80AD6958
+        "USB_No_Connect",        // 48: 0x80AD6960
+        "waveout_open",          // 49: 0x80AD6968
+        "waveout_close",         // 50: 0x80AD6970
+        "waveout_close_at_once", // 51: 0x80AD6978
+        "waveout_set_volume",    // 52: 0x80AD6980
+        "HP_Mute_sw",            // 53: 0x80AD6988
+        "waveout_can_write",     // 54: 0x80AD6990
+        "waveout_write",         // 55: 0x80AD6998
+        "pcm_can_write",         // 56: 0x80AD69A0
+        "pcm_ioctl",             // 57: 0x80AD69A8
+        "OSTimeGet",             // 58: 0x80AD69B0
+        "OSTimeDly",             // 59: 0x80AD69B8
+        "OSSemPend",             // 60: 0x80AD69C0
+        "OSSemPost",             // 61: 0x80AD69C8
+        "OSSemCreate",           // 62: 0x80AD69D0
+        "OSTaskCreate",          // 63: 0x80AD69D8
+        "OSSemDel",              // 64: 0x80AD69E0
+        "OSTaskDel",             // 65: 0x80AD69E8
+        "GetTickCount",          // 66: 0x80AD69F0
+        "_sys_judge_event",      // 67: 0x80AD69F8
+        "fsys_fopenW",           // 68: 0x80AD6A00
+        "__to_unicode_le",       // 69: 0x80AD6A08
+        "__to_locale_ansi",      // 70: 0x80AD6A10
+        "get_current_language",  // 71: 0x80AD6A18
     };
     if (index >= 0 && index < 72) return names[index];
     return "unknown";
@@ -61,123 +126,102 @@ const char* Syscalls::got_name(int index) const {
 void Syscalls::dispatch(int got_index, u32 return_addr) {
     m_got_call_count++;
     switch (got_index) {
-    case 0:  impl_abort(); break;
-    case 1:  impl_printf(); break;
-    case 2:  impl_sprintf(); break;
-    case 3:  impl_fprintf(); break;
-    case 4:  impl_strncasecmp(); break;
-    case 5:  impl_malloc(); break;
-    case 6:  impl_realloc(); break;
-    case 7:  impl_free(); break;
-    case 8:  impl_fread(); break;
-    case 9:  impl_fwrite(); break;
-    case 10: impl_fopen(); break;
-    case 11: impl_fclose(); break;
-    case 12: impl_fseek(); break;
-    case 13: impl_ftell(); break;
-    case 14: impl_fgets(); break;
-    case 15: impl_fflush(); break;
-    case 16: impl_feof(); break;
-    case 17: impl_ferror(); break;
-    case 18: impl_fgetc(); break;
-    case 19: impl_fputc(); break;
-    case 20: impl_setbuf(); break;
-    case 21: impl_setvbuf(); break;
-    case 22: impl_exit(); break;
-    case 23: impl_atexit(); break;
-    case 24: impl_getenv(); break;
-    case 25: impl_strncpy(); break;
-    case 26: impl_strncmp(); break;
-    case 27: impl_strcpy(); break;
-    case 28: impl_strcmp(); break;
-    case 29: impl_strlen(); break;
-    case 30: impl_memset(); break;
-    case 31: impl_memcpy(); break;
-    case 32: impl_memmove(); break;
-    case 33: impl_memcmp(); break;
-    case 34: impl_strstr(); break;
-    case 35: impl_strcat(); break;
-    case 36: impl_strchr(); break;
-    case 37: impl_strrchr(); break;
-    case 38: impl_strtok(); break;
-    case 39: impl_sscanf(); break;
-    case 40: impl_rand(); break;
-    case 41: impl_srand(); break;
-    case 42: impl_qsort(); break;
-    case 43: impl_bsearch(); break;
-    case 44: impl_abs(); break;
-    case 45: impl_atoi(); break;
-    case 46: impl_atof(); break;
-    case 47: impl_strtol(); break;
-    case 48: impl_strtoul(); break;
-    case 49: impl_strtod(); break;
-    case 50: impl_fsys_fopen(); break;
-    case 51: impl_fsys_fread(); break;
-    case 52: impl_fsys_fseek(); break;
-    case 53: impl_fsys_fclose(); break;
-    case 54: impl_fsys_ftell(); break;
-    case 55: impl_fsys_fgets(); break;
-    case 56: impl_fsys_feof(); break;
-    case 57: impl_fsys_ferror(); break;
-    case 58: impl_fsys_fgetc(); break;
-    case 59: impl_fsys_fputc(); break;
-    case 60: impl_lcd_flip(); break;
-    case 61: impl_lcd_set_frame(); break;
-    case 62: impl_LcdGetDisMode(); break;
-    case 63: impl_kbd_get_key(); break;
-    case 64: impl_kbd_get_status(); break;
-    case 65: impl_waveout_open(); break;
-    case 66: impl_waveout_write(); break;
-    case 67: impl_waveout_close(); break;
-    case 68: impl_OSTimeGet(); break;
-    case 69: impl_OSTimeDly(); break;
-    case 70: impl_OSSemCreate(); break;
-    case 71: impl_OSSemPend(); break;
+    case  0: impl_abort(); break;
+    case  1: impl_printf(); break;
+    case  2: impl_sprintf(); break;
+    case  3: impl_fprintf(); break;
+    case  4: impl_strncasecmp(); break;
+    case  5: impl_malloc(); break;
+    case  6: impl_realloc(); break;
+    case  7: impl_free(); break;
+    case  8: impl_fread(); break;
+    case  9: impl_fwrite(); break;
+    case 10: impl_fseek(); break;
+    case 11: impl_LcdGetDisMode(); break;
+    case 12: impl_vxGoHome(); break;
+    case 13: impl_StartSwTimer(); break;
+    case 14: impl_free_irq(); break;
+    case 15: impl_fsys_RefreshCache(); break;
+    case 16: impl_strlen(); break;
+    case 17: impl__lcd_set_frame(); break;
+    case 18: impl__lcd_get_frame(); break;
+    case 19: impl_lcd_get_cframe(); break;
+    case 20: impl_ap_lcd_set_frame(); break;
+    case 21: impl_lcd_flip(); break;
+    case 22: impl___icache_invalidate_all(); break;
+    case 23: impl___dcache_writeback_all(); break;
+    case 24: impl_TaskMediaFunStop(); break;
+    case 25: impl_OSCPUSaveSR(); break;
+    case 26: impl_OSCPURestoreSR(); break;
+    case 27: impl_serial_getc(); break;
+    case 28: impl_serial_putc(); break;
+    case 29: impl__kbd_get_status(); break;
+    case 30: impl_get_game_vol(); break;
+    case 31: impl__kbd_get_key(); break;
+    case 32: impl_fsys_fopen(); break;
+    case 33: impl_fsys_fread(); break;
+    case 34: impl_fsys_fclose(); break;
+    case 35: impl_fsys_fseek(); break;
+    case 36: impl_fsys_ftell(); break;
+    case 37: impl_fsys_remove(); break;
+    case 38: impl_fsys_rename(); break;
+    case 39: impl_fsys_ferror(); break;
+    case 40: impl_fsys_feof(); break;
+    case 41: impl_fsys_fwrite(); break;
+    case 42: impl_fsys_findfirst(); break;
+    case 43: impl_fsys_findnext(); break;
+    case 44: impl_fsys_findclose(); break;
+    case 45: impl_fsys_flush_cache(); break;
+    case 46: impl_USB_Connect(); break;
+    case 47: impl_udc_attached(); break;
+    case 48: impl_USB_No_Connect(); break;
+    case 49: impl_waveout_open(); break;
+    case 50: impl_waveout_close(); break;
+    case 51: impl_waveout_close_at_once(); break;
+    case 52: impl_waveout_set_volume(); break;
+    case 53: impl_HP_Mute_sw(); break;
+    case 54: impl_waveout_can_write(); break;
+    case 55: impl_waveout_write(); break;
+    case 56: impl_pcm_can_write(); break;
+    case 57: impl_pcm_ioctl(); break;
+    case 58: impl_OSTimeGet(); break;
+    case 59: impl_OSTimeDly(); break;
+    case 60: impl_OSSemPend(); break;
+    case 61: impl_OSSemPost(); break;
+    case 62: impl_OSSemCreate(); break;
+    case 63: impl_OSTaskCreate(); break;
+    case 64: impl_OSSemDel(); break;
+    case 65: impl_OSTaskDel(); break;
+    case 66: impl_GetTickCount(); break;
+    case 67: impl__sys_judge_event(); break;
+    case 68: impl_fsys_fopenW(); break;
+    case 69: impl___to_unicode_le(); break;
+    case 70: impl___to_locale_ansi(); break;
+    case 71: impl_get_current_language(); break;
     default:
-        // These are beyond 72, but let's handle them too
-        if (got_index == 72) { impl_OSSemPost(); break; }
-        if (got_index == 73) { impl_OSSemDel(); break; }
-        if (got_index == 74) { impl_OSTaskCreate(); break; }
-        if (got_index == 75) { impl_StartSwTimer(); break; }
-        if (got_index == 76) { impl_free_irq(); break; }
-        if (got_index == 77) { impl_icache_invalidate_all(); break; }
-        if (got_index == 78) { impl_dcache_writeback_all(); break; }
-        if (got_index == 79) { impl_serial_putc(); break; }
-        if (got_index == 80) { impl_serial_getc(); break; }
         printf("[SYSCALL] Unknown GOT index %d\n", got_index);
         break;
     }
-
-    // Set $ra = return_addr, $v0 = result (already set by impl)
-    g_cpu_regs[31] = return_addr;
+    // NOTE: regs[31] is set by dispatch caller from g_cpu_regs after dispatch returns.
+    // Do NOT set g_cpu_regs[31] here - it would override task context switches.
 }
 
-// === Heap management ===
+// === Heap ===
 
 u32 Syscalls::heap_alloc(u32 size) {
     if (size == 0) size = 1;
-    // Align to 8 bytes
     size = (size + 7) & ~7;
-
-    // Find a free block
     for (auto& block : m_heap) {
         if (block.free && block.size >= size) {
             block.free = false;
-            printf("[HEAP] alloc(%u) -> 0x%08X\n", size, block.addr);
             return block.addr;
         }
     }
-
-    // Allocate new block
     u32 addr = m_heap_top;
     m_heap_top += size;
-    if (m_heap_top > 0x01000000) {
-        printf("[HEAP] WARNING: heap exceeded 16MB boundary\n");
-        return 0;
-    }
+    if (m_heap_top > 0x03F00000) return 0;
     m_heap.push_back({addr, size, false});
-    printf("[HEAP] alloc(%u) -> 0x%08X (new)\n", size, addr);
-    return addr;
+    return addr | 0x80000000;  // KSEG0 for TLB bypass
 }
 
 void Syscalls::heap_free(u32 addr) {
@@ -185,21 +229,17 @@ void Syscalls::heap_free(u32 addr) {
     for (auto& block : m_heap) {
         if (block.addr == addr && !block.free) {
             block.free = true;
-            printf("[HEAP] free(0x%08X)\n", addr);
             return;
         }
     }
-    printf("[HEAP] free(0x%08X) - not found\n", addr);
 }
 
 u32 Syscalls::heap_realloc(u32 addr, u32 new_size) {
     if (addr == 0) return heap_alloc(new_size);
     if (new_size == 0) { heap_free(addr); return 0; }
-
     for (auto& block : m_heap) {
         if (block.addr == addr && !block.free) {
-            if (new_size <= block.size) return addr;  // fits
-            // Need to reallocate
+            if (new_size <= block.size) return addr;
             u32 new_addr = heap_alloc(new_size);
             if (new_addr) {
                 u8* src = &m_mem.get_raw_ptr()[m_mem.vaddr_to_phys(addr)];
@@ -213,7 +253,7 @@ u32 Syscalls::heap_realloc(u32 addr, u32 new_size) {
     return 0;
 }
 
-// === File handle management ===
+// === File handles ===
 
 int Syscalls::alloc_file_handle() {
     for (int i = 0; i < 64; i++) {
@@ -232,25 +272,119 @@ void Syscalls::close_file_handle(int idx) {
         fclose(m_files[idx].host_file);
     }
     m_files[idx].in_use = false;
+    m_files[idx].is_host = false;
+    m_files[idx].is_archive = false;
+    m_files[idx].host_file = nullptr;
+    m_files[idx].archive = nullptr;
+    m_files[idx].archive_entry = nullptr;
     m_files[idx].embedded_data.clear();
+    m_files[idx].offset = 0;
 }
 
-// === libc / memory implementations ===
+// === Internal I/O helpers (used by both stdlib-style and fsys_* calls) ===
+
+u32 Syscalls::do_fread(u32 ptr, u32 size, u32 nmemb, u32 file_handle) {
+    int idx = file_handle;
+    if (idx < 0 || idx >= 64 || !m_files[idx].in_use) return 0;
+    u32 total = size * nmemb;
+    if (m_files[idx].is_host && m_files[idx].host_file) {
+        std::vector<u8> buf(total);
+        size_t read = fread(buf.data(), 1, total, m_files[idx].host_file);
+        m_mem.write_block(ptr, buf.data(), (u32)read);
+        m_files[idx].offset += (u32)read;
+        return (u32)(read / size);
+    } else if (m_files[idx].is_archive && m_files[idx].archive_entry) {
+        u32 available = m_files[idx].archive_entry->size - m_files[idx].offset;
+        u32 to_read = std::min(total, available);
+        if (to_read > 0) {
+            std::vector<u8> buf(to_read);
+            m_files[idx].archive->read(*m_files[idx].archive_entry, buf.data(), m_files[idx].offset, to_read);
+            m_mem.write_block(ptr, buf.data(), to_read);
+            m_files[idx].offset += to_read;
+        }
+        return to_read / size;
+    } else {
+        u32 available = (u32)m_files[idx].embedded_data.size() - m_files[idx].offset;
+        u32 to_read = std::min(total, available);
+        if (to_read > 0) {
+            m_mem.write_block(ptr, &m_files[idx].embedded_data[m_files[idx].offset], to_read);
+            m_files[idx].offset += to_read;
+        }
+        return to_read / size;
+    }
+}
+
+u32 Syscalls::do_fwrite(u32 ptr, u32 size, u32 nmemb, u32 file_handle) {
+    int idx = file_handle;
+    if (idx < 0 || idx >= 64 || !m_files[idx].in_use) return 0;
+    u32 total = size * nmemb;
+    if (m_files[idx].is_host && m_files[idx].host_file) {
+        std::vector<u8> buf(total);
+        m_mem.read_block(ptr, buf.data(), total);
+        size_t written = fwrite(buf.data(), 1, total, m_files[idx].host_file);
+        m_files[idx].offset += (u32)written;
+        return (u32)(written / size);
+    }
+    return 0;
+}
+
+u32 Syscalls::do_fseek(u32 file_handle, s32 offset, u32 whence) {
+    int idx = file_handle;
+    if (idx < 0 || idx >= 64 || !m_files[idx].in_use) return (u32)-1;
+    if (m_files[idx].is_host && m_files[idx].host_file) {
+        u32 ret = (u32)fseek(m_files[idx].host_file, offset, (int)whence);
+        if (ret == 0) m_files[idx].offset = (u32)ftell(m_files[idx].host_file);
+        return ret;
+    } else if (m_files[idx].is_archive && m_files[idx].archive_entry) {
+        u32 file_size = m_files[idx].archive_entry->size;
+        if (whence == 0) m_files[idx].offset = (u32)offset;
+        else if (whence == 1) m_files[idx].offset += (u32)offset;
+        else if (whence == 2) m_files[idx].offset = file_size + (u32)offset;
+        if (m_files[idx].offset > file_size) m_files[idx].offset = file_size;
+        return 0;
+    } else {
+        if (whence == 0) m_files[idx].offset = (u32)offset;
+        else if (whence == 1) m_files[idx].offset += (u32)offset;
+        else if (whence == 2) m_files[idx].offset = (u32)m_files[idx].embedded_data.size() + (u32)offset;
+        return 0;
+    }
+}
+
+u32 Syscalls::do_ftell(u32 file_handle) {
+    int idx = file_handle;
+    if (idx < 0 || idx >= 64 || !m_files[idx].in_use) return (u32)-1;
+    if (m_files[idx].is_host && m_files[idx].host_file)
+        return (u32)ftell(m_files[idx].host_file);
+    return m_files[idx].offset;
+}
+
+u32 Syscalls::do_feof(u32 file_handle) {
+    int idx = file_handle;
+    if (idx < 0 || idx >= 64 || !m_files[idx].in_use) return 1;
+    if (m_files[idx].is_host && m_files[idx].host_file)
+        return (u32)feof(m_files[idx].host_file);
+    if (m_files[idx].is_archive && m_files[idx].archive_entry)
+        return m_files[idx].offset >= m_files[idx].archive_entry->size ? 1 : 0;
+    return m_files[idx].offset >= m_files[idx].embedded_data.size() ? 1 : 0;
+}
+
+u32 Syscalls::do_ferror(u32 file_handle) {
+    int idx = file_handle;
+    if (idx < 0 || idx >= 64 || !m_files[idx].in_use) return 0;
+    if (m_files[idx].is_host && m_files[idx].host_file)
+        return (u32)ferror(m_files[idx].host_file);
+    return 0;
+}
+
+// === GOT 0-10: libc ===
 
 void Syscalls::impl_abort() {
-    printf("[SYSCALL] abort()\n");
-    g_cpu_regs[2] = 0;  // $v0
+    g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_printf() {
     u32 fmt_addr = arg(0);
     std::string fmt = guest_string(fmt_addr);
-
-    // Simple printf: just log the format string and args
-    // For Phase 1, we don't fully parse format strings
-    printf("[PRINTF] ");
-
-    // Try to print the first few args based on format specifiers
     int arg_idx = 1;
     for (size_t i = 0; i < fmt.size(); i++) {
         if (fmt[i] == '%' && i + 1 < fmt.size()) {
@@ -267,8 +401,6 @@ void Syscalls::impl_printf() {
             } else if (spec == 'p') {
                 printf("%08X", arg(arg_idx++));
             } else if (spec == 'f' || spec == 'g') {
-                // Float args are passed differently on MIPS (FPU regs)
-                // For now, skip
                 printf("<float>");
                 arg_idx++;
             } else if (spec == 'c') {
@@ -279,30 +411,23 @@ void Syscalls::impl_printf() {
                 putchar('%');
                 putchar(spec);
             }
-            i++;  // skip specifier
+            i++;
         } else {
             putchar(fmt[i]);
         }
     }
-    putchar('\n');
     fflush(stdout);
-
-    g_cpu_regs[2] = 0;  // return value (chars printed, approximate)
+    g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_sprintf() {
     u32 buf_addr = arg(0);
     u32 fmt_addr = arg(1);
     std::string fmt = guest_string(fmt_addr);
-
-    // Simplified: just write the format string to buffer
-    // Real sprintf would parse format specifiers
-    std::string result = fmt;  // Phase 1: just copy format string
-    for (u32 i = 0; i < result.size() && i < 255; i++) {
+    std::string result = fmt;
+    for (u32 i = 0; i < result.size() && i < 255; i++)
         m_mem.write_u8(buf_addr + i, (u8)result[i]);
-    }
     m_mem.write_u8(buf_addr + result.size(), 0);
-
     g_cpu_regs[2] = (u32)result.size();
 }
 
@@ -318,10 +443,8 @@ void Syscalls::impl_strncasecmp() {
     u32 a_addr = arg(0);
     u32 b_addr = arg(1);
     u32 n = arg(2);
-
     std::string a = guest_string(a_addr);
     std::string b = guest_string(b_addr);
-
     size_t len = std::min((size_t)n, std::min(a.size(), b.size()));
     int result = 0;
     for (size_t i = 0; i < len; i++) {
@@ -329,28 +452,21 @@ void Syscalls::impl_strncasecmp() {
         int cb = tolower((unsigned char)b[i]);
         if (ca != cb) { result = ca - cb; break; }
     }
-    if (result == 0 && a.size() != b.size()) {
+    if (result == 0 && a.size() != b.size())
         result = (a.size() < b.size()) ? -1 : 1;
-    }
-
     g_cpu_regs[2] = (u32)result;
 }
 
 void Syscalls::impl_malloc() {
-    u32 size = arg(0);
-    u32 addr = heap_alloc(size);
-    g_cpu_regs[2] = addr;
+    g_cpu_regs[2] = heap_alloc(arg(0));
 }
 
 void Syscalls::impl_realloc() {
-    u32 addr = arg(0);
-    u32 size = arg(1);
-    g_cpu_regs[2] = heap_realloc(addr, size);
+    g_cpu_regs[2] = heap_realloc(arg(0), arg(1));
 }
 
 void Syscalls::impl_free() {
-    u32 addr = arg(0);
-    heap_free(addr);
+    heap_free(arg(0));
     g_cpu_regs[2] = 0;
 }
 
@@ -359,29 +475,7 @@ void Syscalls::impl_fread() {
     u32 size = arg(1);
     u32 nmemb = arg(2);
     u32 file_handle = arg(3);
-
-    int idx = file_handle;
-    if (idx < 0 || idx >= 64 || !m_files[idx].in_use) {
-        g_cpu_regs[2] = 0;
-        return;
-    }
-
-    u32 total = size * nmemb;
-    if (m_files[idx].is_host && m_files[idx].host_file) {
-        std::vector<u8> buf(total);
-        size_t read = fread(buf.data(), 1, total, m_files[idx].host_file);
-        m_mem.write_block(ptr, buf.data(), (u32)read);
-        m_files[idx].offset += (u32)read;
-        g_cpu_regs[2] = (u32)(read / size);
-    } else {
-        u32 available = (u32)m_files[idx].embedded_data.size() - m_files[idx].offset;
-        u32 to_read = std::min(total, available);
-        if (to_read > 0) {
-            m_mem.write_block(ptr, &m_files[idx].embedded_data[m_files[idx].offset], to_read);
-            m_files[idx].offset += to_read;
-        }
-        g_cpu_regs[2] = to_read / size;
-    }
+    g_cpu_regs[2] = do_fread(ptr, size, nmemb, file_handle);
 }
 
 void Syscalls::impl_fwrite() {
@@ -389,460 +483,127 @@ void Syscalls::impl_fwrite() {
     u32 size = arg(1);
     u32 nmemb = arg(2);
     u32 file_handle = arg(3);
-
-    int idx = file_handle;
-    if (idx < 0 || idx >= 64 || !m_files[idx].in_use) {
-        g_cpu_regs[2] = 0;
-        return;
-    }
-
-    u32 total = size * nmemb;
-    if (m_files[idx].is_host && m_files[idx].host_file) {
-        std::vector<u8> buf(total);
-        m_mem.read_block(ptr, buf.data(), total);
-        size_t written = fwrite(buf.data(), 1, total, m_files[idx].host_file);
-        m_files[idx].offset += (u32)written;
-        g_cpu_regs[2] = (u32)(written / size);
-    } else {
-        // Read-only embedded file
-        g_cpu_regs[2] = 0;
-    }
-}
-
-void Syscalls::impl_fopen() {
-    u32 path_addr = arg(0);
-    u32 mode_addr = arg(1);
-    std::string path = guest_string(path_addr);
-    std::string mode = guest_string(mode_addr);
-
-    printf("[FOPEN] path=\"%s\" mode=\"%s\"\n", path.c_str(), mode.c_str());
-
-    int idx = alloc_file_handle();
-    if (idx < 0) { g_cpu_regs[2] = 0; return; }
-
-    // For Phase 1, all fopen calls return NULL (not implemented)
-    // In Phase 3, we'll implement the resource archive loader
-    m_files[idx].in_use = false;
-    g_cpu_regs[2] = 0;
-}
-
-void Syscalls::impl_fclose() {
-    u32 file_handle = arg(0);
-    close_file_handle(file_handle);
-    g_cpu_regs[2] = 0;
+    g_cpu_regs[2] = do_fwrite(ptr, size, nmemb, file_handle);
 }
 
 void Syscalls::impl_fseek() {
     u32 file_handle = arg(0);
     s32 offset = (s32)arg(1);
     u32 whence = arg(2);
-
-    int idx = file_handle;
-    if (idx < 0 || idx >= 64 || !m_files[idx].in_use) {
-        g_cpu_regs[2] = -1;
-        return;
-    }
-
-    if (m_files[idx].is_host && m_files[idx].host_file) {
-        g_cpu_regs[2] = (u32)fseek(m_files[idx].host_file, offset, (int)whence);
-        if (g_cpu_regs[2] == 0) {
-            m_files[idx].offset = (u32)ftell(m_files[idx].host_file);
-        }
-    } else {
-        if (whence == 0) {  // SEEK_SET
-            m_files[idx].offset = (u32)offset;
-        } else if (whence == 1) {  // SEEK_CUR
-            m_files[idx].offset += (u32)offset;
-        } else if (whence == 2) {  // SEEK_END
-            m_files[idx].offset = (u32)m_files[idx].embedded_data.size() + (u32)offset;
-        }
-        g_cpu_regs[2] = 0;
-    }
+    g_cpu_regs[2] = do_fseek(file_handle, offset, whence);
 }
 
-void Syscalls::impl_ftell() {
-    u32 file_handle = arg(0);
-    int idx = file_handle;
-    if (idx < 0 || idx >= 64 || !m_files[idx].in_use) {
-        g_cpu_regs[2] = 0;
-        return;
-    }
-    g_cpu_regs[2] = m_files[idx].offset;
+// === GOT 11-23: display / cache ===
+
+void Syscalls::impl_LcdGetDisMode() {
+    g_cpu_regs[2] = m_display.is_display_on() ? 1 : 0;
 }
 
-void Syscalls::impl_fgets() {
-    u32 buf = arg(0);
-    u32 size = arg(1);
-    u32 file_handle = arg(2);
-
-    int idx = file_handle;
-    if (idx < 0 || idx >= 64 || !m_files[idx].in_use) {
-        g_cpu_regs[2] = 0;
-        return;
-    }
-
-    u32 i = 0;
-    while (i < size - 1) {
-        u8 c;
-        if (m_files[idx].is_host && m_files[idx].host_file) {
-            int ch = fgetc(m_files[idx].host_file);
-            if (ch == EOF) break;
-            c = (u8)ch;
-        } else {
-            if (m_files[idx].offset >= m_files[idx].embedded_data.size()) break;
-            c = m_files[idx].embedded_data[m_files[idx].offset++];
-        }
-        m_mem.write_u8(buf + i, c);
-        i++;
-        if (c == '\n') break;
-    }
-    m_mem.write_u8(buf + i, 0);
-    g_cpu_regs[2] = i > 0 ? buf : 0;
-}
-
-void Syscalls::impl_fflush() {
-    u32 file_handle = arg(0);
-    int idx = file_handle;
-    if (idx >= 0 && idx < 64 && m_files[idx].in_use && m_files[idx].is_host && m_files[idx].host_file) {
-        fflush(m_files[idx].host_file);
-    }
+void Syscalls::impl_vxGoHome() {
     g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_feof() {
-    u32 file_handle = arg(0);
-    int idx = file_handle;
-    if (idx < 0 || idx >= 64 || !m_files[idx].in_use) {
-        g_cpu_regs[2] = 0;
-        return;
-    }
-    if (m_files[idx].is_host && m_files[idx].host_file) {
-        g_cpu_regs[2] = (u32)feof(m_files[idx].host_file);
-    } else {
-        g_cpu_regs[2] = m_files[idx].offset >= m_files[idx].embedded_data.size() ? 1 : 0;
-    }
+void Syscalls::impl_StartSwTimer() {
+    printf("[TIMER] StartSwTimer(%u, 0x%08X)\n", arg(0), arg(1));
+    g_cpu_regs[2] = 1;
 }
 
-void Syscalls::impl_ferror() {
-    u32 file_handle = arg(0);
-    int idx = file_handle;
-    if (idx < 0 || idx >= 64 || !m_files[idx].in_use) {
-        g_cpu_regs[2] = 0;
-        return;
-    }
-    if (m_files[idx].is_host && m_files[idx].host_file) {
-        g_cpu_regs[2] = (u32)ferror(m_files[idx].host_file);
-    } else {
-        g_cpu_regs[2] = 0;
-    }
-}
-
-void Syscalls::impl_fgetc() {
-    u32 file_handle = arg(0);
-    int idx = file_handle;
-    if (idx < 0 || idx >= 64 || !m_files[idx].in_use) {
-        g_cpu_regs[2] = 0xFFFFFFFF;  // EOF
-        return;
-    }
-    if (m_files[idx].is_host && m_files[idx].host_file) {
-        g_cpu_regs[2] = (u32)fgetc(m_files[idx].host_file);
-    } else {
-        if (m_files[idx].offset >= m_files[idx].embedded_data.size()) {
-            g_cpu_regs[2] = 0xFFFFFFFF;
-        } else {
-            g_cpu_regs[2] = m_files[idx].embedded_data[m_files[idx].offset++];
-        }
-    }
-}
-
-void Syscalls::impl_fputc() {
-    u32 c = arg(0);
-    u32 file_handle = arg(1);
-    int idx = file_handle;
-    if (idx < 0 || idx >= 64 || !m_files[idx].in_use) {
-        g_cpu_regs[2] = 0xFFFFFFFF;
-        return;
-    }
-    if (m_files[idx].is_host && m_files[idx].host_file) {
-        g_cpu_regs[2] = (u32)fputc((int)c, m_files[idx].host_file);
-    } else {
-        g_cpu_regs[2] = 0xFFFFFFFF;  // read-only
-    }
-}
-
-void Syscalls::impl_setbuf() { g_cpu_regs[2] = 0; }
-void Syscalls::impl_setvbuf() { g_cpu_regs[2] = 0; }
-
-void Syscalls::impl_exit() {
-    u32 code = arg(0);
-    printf("[SYSCALL] exit(%d)\n", code);
-    // This will be caught by the emulator main loop
+void Syscalls::impl_free_irq() {
     g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_atexit() { g_cpu_regs[2] = 0; }
-
-void Syscalls::impl_getenv() {
-    u32 name_addr = arg(0);
-    std::string name = guest_string(name_addr);
-    printf("[GETENV] %s\n", name.c_str());
-    g_cpu_regs[2] = 0;  // no environment
-}
-
-void Syscalls::impl_strncpy() {
-    u32 dest = arg(0);
-    u32 src = arg(1);
-    u32 n = arg(2);
-
-    std::string s = guest_string(src);
-    u32 len = (u32)std::min((size_t)n, s.size());
-    for (u32 i = 0; i < len; i++) {
-        m_mem.write_u8(dest + i, (u8)s[i]);
-    }
-    for (u32 i = len; i < n; i++) {
-        m_mem.write_u8(dest + i, 0);
-    }
-    g_cpu_regs[2] = dest;
-}
-
-void Syscalls::impl_strncmp() {
-    u32 a_addr = arg(0);
-    u32 b_addr = arg(1);
-    u32 n = arg(2);
-
-    std::string a = guest_string(a_addr);
-    std::string b = guest_string(b_addr);
-
-    size_t len = std::min((size_t)n, std::min(a.size(), b.size()));
-    int result = 0;
-    for (size_t i = 0; i < len; i++) {
-        if (a[i] != b[i]) { result = (unsigned char)a[i] - (unsigned char)b[i]; break; }
-    }
-    if (result == 0 && a.size() != b.size()) {
-        result = (a.size() < b.size()) ? -1 : 1;
-    }
-    g_cpu_regs[2] = (u32)result;
-}
-
-void Syscalls::impl_strcpy() {
-    u32 dest = arg(0);
-    u32 src = arg(1);
-
-    std::string s = guest_string(src);
-    for (u32 i = 0; i <= s.size(); i++) {
-        m_mem.write_u8(dest + i, (u8)s[i]);
-    }
-    g_cpu_regs[2] = dest;
-}
-
-void Syscalls::impl_strcmp() {
-    u32 a_addr = arg(0);
-    u32 b_addr = arg(1);
-
-    std::string a = guest_string(a_addr);
-    std::string b = guest_string(b_addr);
-
-    int result = strcmp(a.c_str(), b.c_str());
-    g_cpu_regs[2] = (u32)result;
+void Syscalls::impl_fsys_RefreshCache() {
+    g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_strlen() {
-    u32 s_addr = arg(0);
-    std::string s = guest_string(s_addr);
-    g_cpu_regs[2] = (u32)s.size();
+    g_cpu_regs[2] = (u32)guest_string(arg(0)).size();
 }
 
-void Syscalls::impl_memset() {
-    u32 dest = arg(0);
-    u32 c = arg(1);
-    u32 n = arg(2);
-
-    for (u32 i = 0; i < n; i++) {
-        m_mem.write_u8(dest + i, (u8)c);
+void Syscalls::impl__lcd_set_frame() {
+    u32 addr = arg(0);
+    // Game passes KSEG0/KSEG1 addresses for frame buffers (e.g., 0x80B45XXX).
+    // Convert to physical for storage and bounds checking.
+    u32 phys = addr & 0x1FFFFFFF;
+    // Only wrap physical addresses within the buffer ring (safety check).
+    // The game's own frame counter handles the 67-buffer ring correctly.
+    u32 ring_base = 0x00B45000;
+    u32 ring_size = 0x9D0800;
+    if (phys >= ring_base && phys < ring_base + ring_size) {
+        // Within ring - use as-is
+    } else if (ring_base + ring_size > 0 && phys >= ring_base + ring_size) {
+        phys = ring_base;
     }
-    g_cpu_regs[2] = dest;
-}
-
-void Syscalls::impl_memcpy() {
-    u32 dest = arg(0);
-    u32 src = arg(1);
-    u32 n = arg(2);
-
-    std::vector<u8> buf(n);
-    m_mem.read_block(src, buf.data(), n);
-    m_mem.write_block(dest, buf.data(), n);
-    g_cpu_regs[2] = dest;
-}
-
-void Syscalls::impl_memmove() {
-    // Same as memcpy but handles overlap
-    u32 dest = arg(0);
-    u32 src = arg(1);
-    u32 n = arg(2);
-
-    std::vector<u8> buf(n);
-    m_mem.read_block(src, buf.data(), n);
-    m_mem.write_block(dest, buf.data(), n);
-    g_cpu_regs[2] = dest;
-}
-
-void Syscalls::impl_memcmp() {
-    u32 a_addr = arg(0);
-    u32 b_addr = arg(1);
-    u32 n = arg(2);
-
-    std::vector<u8> a(n), b(n);
-    m_mem.read_block(a_addr, a.data(), n);
-    m_mem.read_block(b_addr, b.data(), n);
-
-    int result = memcmp(a.data(), b.data(), n);
-    g_cpu_regs[2] = (u32)result;
-}
-
-void Syscalls::impl_strstr() {
-    u32 haystack_addr = arg(0);
-    u32 needle_addr = arg(1);
-
-    std::string haystack = guest_string(haystack_addr);
-    std::string needle = guest_string(needle_addr);
-
-    size_t pos = haystack.find(needle);
-    if (pos == std::string::npos) {
-        g_cpu_regs[2] = 0;
-    } else {
-        g_cpu_regs[2] = haystack_addr + (u32)pos;
-    }
-}
-
-void Syscalls::impl_strcat() {
-    u32 dest = arg(0);
-    u32 src = arg(1);
-
-    std::string s = guest_string(src);
-    u32 i = 0;
-    while (m_mem.read_u8(dest + i) != 0) i++;
-    for (char c : s) {
-        m_mem.write_u8(dest + i++, (u8)c);
-    }
-    m_mem.write_u8(dest + i, 0);
-    g_cpu_regs[2] = dest;
-}
-
-void Syscalls::impl_strchr() {
-    u32 s_addr = arg(0);
-    u32 c = arg(1);
-
-    std::string s = guest_string(s_addr);
-    size_t pos = s.find((char)c);
-    if (pos == std::string::npos) {
-        g_cpu_regs[2] = 0;
-    } else {
-        g_cpu_regs[2] = s_addr + (u32)pos;
-    }
-}
-
-void Syscalls::impl_strrchr() {
-    u32 s_addr = arg(0);
-    u32 c = arg(1);
-
-    std::string s = guest_string(s_addr);
-    size_t pos = s.rfind((char)c);
-    if (pos == std::string::npos) {
-        g_cpu_regs[2] = 0;
-    } else {
-        g_cpu_regs[2] = s_addr + (u32)pos;
-    }
-}
-
-void Syscalls::impl_strtok() {
-    // Simplified strtok
-    u32 delim_addr = arg(1);
-    std::string delim = guest_string(delim_addr);
-
-    // Phase 1: return NULL (not fully implemented)
+    // Flip first (using current/last frame buffer), then set new address for next frame
+    m_display.flip(m_mem.get_raw_ptr(), m_mem.size());
+    m_display.set_frame_addr(phys);
     g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_sscanf() {
-    // Simplified sscanf
-    printf("[SSCANF] stub\n");
+void Syscalls::impl__lcd_get_frame() {
+    u32 addr = m_display.get_frame_addr();
+    g_cpu_regs[2] = addr;
+}
+
+void Syscalls::impl_lcd_get_cframe() {
+    g_cpu_regs[2] = m_display.get_frame_addr();
+}
+
+void Syscalls::impl_ap_lcd_set_frame() {
+    m_display.set_frame_addr(arg(0) & 0x1FFFFFFF);
     g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_rand() {
-    g_cpu_regs[2] = (u32)rand();
-}
-
-void Syscalls::impl_srand() {
-    u32 seed = arg(0);
-    srand(seed);
+void Syscalls::impl_lcd_flip() {
+    m_display.flip(m_mem.get_raw_ptr(), m_mem.size());
     g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_qsort() {
-    printf("[QSORT] stub\n");
+void Syscalls::impl___icache_invalidate_all() {
     g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_bsearch() {
-    printf("[BSEARCH] stub\n");
+void Syscalls::impl___dcache_writeback_all() {
     g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_abs() {
-    s32 val = (s32)arg(0);
-    g_cpu_regs[2] = (u32)(val < 0 ? -val : val);
-}
+// === GOT 24-31: media / OS / serial / input ===
 
-void Syscalls::impl_atoi() {
-    u32 s_addr = arg(0);
-    std::string s = guest_string(s_addr);
-    g_cpu_regs[2] = (u32)atoi(s.c_str());
-}
-
-void Syscalls::impl_atof() {
-    printf("[ATOF] stub\n");
+void Syscalls::impl_TaskMediaFunStop() {
     g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_strtol() {
-    u32 s_addr = arg(0);
-    u32 endptr_addr = arg(1);
-    u32 base = arg(2);
-
-    std::string s = guest_string(s_addr);
-    char* endptr;
-    long val = strtol(s.c_str(), &endptr, (int)base);
-
-    if (endptr_addr) {
-        u32 end_offset = (u32)(endptr - s.c_str());
-        m_mem.write_u32(endptr_addr, s_addr + end_offset);
-    }
-    g_cpu_regs[2] = (u32)val;
-}
-
-void Syscalls::impl_strtoul() {
-    u32 s_addr = arg(0);
-    u32 endptr_addr = arg(1);
-    u32 base = arg(2);
-
-    std::string s = guest_string(s_addr);
-    char* endptr;
-    unsigned long val = strtoul(s.c_str(), &endptr, (int)base);
-
-    if (endptr_addr) {
-        u32 end_offset = (u32)(endptr - s.c_str());
-        m_mem.write_u32(endptr_addr, s_addr + end_offset);
-    }
-    g_cpu_regs[2] = (u32)val;
-}
-
-void Syscalls::impl_strtod() {
-    printf("[STRTO] stub\n");
+void Syscalls::impl_OSCPUSaveSR() {
     g_cpu_regs[2] = 0;
 }
 
-// === Dingoo OS implementations ===
+void Syscalls::impl_OSCPURestoreSR() {
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_serial_getc() {
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_serial_putc() {
+    putchar((char)arg(0));
+    fflush(stdout);
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl__kbd_get_status() {
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_get_game_vol() {
+    g_cpu_regs[2] = 80;
+}
+
+void Syscalls::impl__kbd_get_key() {
+    g_cpu_regs[2] = 0;
+}
+
+// === GOT 32-45: filesystem ===
 
 void Syscalls::impl_fsys_fopen() {
     u32 path_addr = arg(0);
@@ -850,135 +611,421 @@ void Syscalls::impl_fsys_fopen() {
     std::string path = guest_string(path_addr);
     std::string mode = guest_string(mode_addr);
 
-    printf("[FSYS_FOPEN] path=\"%s\" mode=\"%s\"\n", path.c_str(), mode.c_str());
+    // Look up in archive first
+    if (m_archive) {
+        const ArchiveEntry* entry = m_archive->find(path);
+        if (entry) {
+            int idx = alloc_file_handle();
+            if (idx < 0) { g_cpu_regs[2] = 0; return; }
+            m_files[idx].is_archive = true;
+            m_files[idx].archive = m_archive;
+            m_files[idx].archive_entry = entry;
+            m_files[idx].offset = 0;
+            printf("[FSYS_FOPEN] \"%s\" -> handle %d (size=%u)\n", entry->name.c_str(), idx, entry->size);
+            g_cpu_regs[2] = (u32)idx;
+            return;
+        }
+    }
 
+    // Try host file for write mode
     int idx = alloc_file_handle();
     if (idx < 0) { g_cpu_regs[2] = 0; return; }
+    if (mode.find('w') != std::string::npos || mode.find('+') != std::string::npos) {
+        std::string host_path = "save/" + path;
+        FILE* f = fopen(host_path.c_str(), mode.c_str());
+        if (f) {
+            m_files[idx].is_host = true;
+            m_files[idx].host_file = f;
+            printf("[FSYS_FOPEN] host: \"%s\" -> handle %d\n", host_path.c_str(), idx);
+            g_cpu_regs[2] = (u32)idx;
+            return;
+        }
+    }
 
-    // Phase 1: return NULL, Phase 3: implement archive loading
+    printf("[FSYS_FOPEN] NOT FOUND: \"%s\" mode=\"%s\"\n", path.c_str(), mode.c_str());
     m_files[idx].in_use = false;
     g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_fsys_fread() { impl_fread(); }
-void Syscalls::impl_fsys_fseek() { impl_fseek(); }
-void Syscalls::impl_fsys_fclose() { impl_fclose(); }
-void Syscalls::impl_fsys_ftell() { impl_ftell(); }
-void Syscalls::impl_fsys_fgets() { impl_fgets(); }
-void Syscalls::impl_fsys_feof() { impl_feof(); }
-void Syscalls::impl_fsys_ferror() { impl_ferror(); }
-void Syscalls::impl_fsys_fgetc() { impl_fgetc(); }
-void Syscalls::impl_fsys_fputc() { impl_fputc(); }
+void Syscalls::impl_fsys_fread() {
+    u32 handle = arg(0);
+    u32 buf = arg(1);
+    u32 size = arg(2);
+    g_cpu_regs[2] = do_fread(buf, 1, size, handle);
+}
 
-void Syscalls::impl_lcd_flip() {
-    m_display.flip();
+void Syscalls::impl_fsys_fclose() {
+    close_file_handle(arg(0));
     g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_lcd_set_frame() {
-    u32 addr = arg(0);
-    m_display.set_frame_addr(addr);
+void Syscalls::impl_fsys_fseek() {
+    g_cpu_regs[2] = do_fseek(arg(0), (s32)arg(1), arg(2));
+}
+
+void Syscalls::impl_fsys_ftell() {
+    g_cpu_regs[2] = do_ftell(arg(0));
+}
+
+void Syscalls::impl_fsys_remove() {
+    printf("[FSYS] remove() - stub\n");
+    g_cpu_regs[2] = (u32)-1;
+}
+
+void Syscalls::impl_fsys_rename() {
+    printf("[FSYS] rename() - stub\n");
+    g_cpu_regs[2] = (u32)-1;
+}
+
+void Syscalls::impl_fsys_ferror() {
+    g_cpu_regs[2] = do_ferror(arg(0));
+}
+
+void Syscalls::impl_fsys_feof() {
+    g_cpu_regs[2] = do_feof(arg(0));
+}
+
+void Syscalls::impl_fsys_fwrite() {
+    u32 handle = arg(0);
+    u32 buf = arg(1);
+    u32 size = arg(2);
+    g_cpu_regs[2] = do_fwrite(buf, 1, size, handle);
+}
+
+void Syscalls::impl_fsys_findfirst() {
+    printf("[FSYS] findfirst() - stub\n");
+    g_cpu_regs[2] = (u32)-1;
+}
+
+void Syscalls::impl_fsys_findnext() {
+    printf("[FSYS] findnext() - stub\n");
+    g_cpu_regs[2] = (u32)-1;
+}
+
+void Syscalls::impl_fsys_findclose() {
     g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_LcdGetDisMode() {
-    g_cpu_regs[2] = m_display.is_display_on() ? 1 : 0;
+void Syscalls::impl_fsys_flush_cache() {
+    g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_kbd_get_key() {
-    g_cpu_regs[2] = 0;  // no input in Phase 1
+// === GOT 46-48: USB ===
+
+void Syscalls::impl_USB_Connect() {
+    g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_kbd_get_status() {
-    g_cpu_regs[2] = 0;  // no keys pressed
+void Syscalls::impl_udc_attached() {
+    g_cpu_regs[2] = 0;
 }
+
+void Syscalls::impl_USB_No_Connect() {
+    g_cpu_regs[2] = 0;
+}
+
+// === GOT 49-57: audio ===
 
 void Syscalls::impl_waveout_open() {
-    printf("[AUDIO] waveout_open() - stub\n");
+    m_audio_open = true;
     g_cpu_regs[2] = 0;
-}
-
-void Syscalls::impl_waveout_write() {
-    g_cpu_regs[2] = arg(1);  // return size written
 }
 
 void Syscalls::impl_waveout_close() {
-    printf("[AUDIO] waveout_close() - stub\n");
+    if (m_audio_open) {
+        m_audio_open = false;
+        g_cpu_regs[2] = 0;
+    } else {
+        g_cpu_regs[2] = 0xFFFFFFFF;
+    }
+}
+
+void Syscalls::impl_waveout_close_at_once() {
     g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_OSTimeGet() {
-    g_cpu_regs[2] = 0;  // stub, return 0
+void Syscalls::impl_waveout_set_volume() {
+    g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_OSTimeDly() {
-    u32 ticks = arg(0);
-    printf("[RTOS] OSTimeDly(%u) - stub\n", ticks);
+void Syscalls::impl_HP_Mute_sw() {
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_waveout_can_write() {
+    g_cpu_regs[2] = 4096;
+}
+
+void Syscalls::impl_waveout_write() {
+    g_cpu_regs[2] = arg(2);
+    m_audio_write_count++;
+    // Simulate audio completion after enough buffers written
+    if (m_audio_write_count >= 30) {
+        // Set the task's "done" flag at task_arg + 0x18C to 0
+        // This causes the audio loop to exit and task to self-delete
+        static bool done = false;
+        if (!done) {
+            u32 task_arg = 0x80BB71E0;
+            u32 flag_addr = task_arg + 0x18C;  // 0x80BB736C
+            m_mem.write_u8(flag_addr, 0);
+            printf("[RTOS] waveout_write: simulated audio completion (flag=%u)\n", m_audio_write_count);
+            done = true;
+        }
+    }
+}
+
+void Syscalls::impl_pcm_can_write() {
+    g_cpu_regs[2] = 4096;
+}
+
+void Syscalls::impl_pcm_ioctl() {
+    g_cpu_regs[2] = 0;
+}
+
+// === GOT 58-67: RTOS ===
+
+void Syscalls::impl_OSTimeGet() {
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_OSSemCreate() {
-    u32 initial = arg(0);
-    printf("[RTOS] OSSemCreate(%u)\n", initial);
-    g_cpu_regs[2] = 1;  // dummy semaphore ID
-}
-
-void Syscalls::impl_OSSemPend() {
-    u32 sem_id = arg(0);
-    u32 timeout = arg(1);
-    printf("[RTOS] OSSemPend(%u, %u)\n", sem_id, timeout);
-    g_cpu_regs[2] = 0;  // success
-}
-
-void Syscalls::impl_OSSemPost() {
-    u32 sem_id = arg(0);
-    printf("[RTOS] OSSemPost(%u)\n", sem_id);
-    g_cpu_regs[2] = 0;
-}
-
-void Syscalls::impl_OSSemDel() {
-    u32 sem_id = arg(0);
-    printf("[RTOS] OSSemDel(%u)\n", sem_id);
-    g_cpu_regs[2] = 0;
+    u32 cnt = arg(0);
+    u32 ecb = heap_alloc(16);
+    m_mem.write_u32(ecb + 4, cnt);
+    m_mem.write_u8(ecb + 8, 1);
+    g_cpu_regs[2] = ecb;
+    m_semaphores.push_back(ecb);
+    printf("[RTOS] OSSemCreate(%u) -> 0x%08X\n", cnt, ecb);
 }
 
 void Syscalls::impl_OSTaskCreate() {
     u32 entry = arg(0);
-    u32 arg_val = arg(1);
-    printf("[RTOS] OSTaskCreate(entry=0x%08X, arg=0x%08X) - stub\n", entry, arg_val);
+    u32 task_arg = arg(1);
+    // µC/OS-II OSTaskCreate(void(*task)(void*), void* p_arg, OS_STK* ptos, INT8U prio)
+    // In O32: $a0=entry, $a1=p_arg, $a2=ptos(stack_top), $a3=prio
+    u32 stack_top = arg(2);  // pre-allocated stack top pointer
+
+    if (m_task_count < MAX_TASKS) {
+        Task& t = m_tasks[m_task_count];
+        t.active = true;
+        t.blocked = false;
+        memset(t.regs, 0, sizeof(t.regs));
+        t.regs[4] = task_arg;
+        u32 sp = stack_top & ~0xF;
+        sp &= ~0xF; // align to 16 bytes
+        t.regs[29] = sp;
+        t.regs[30] = sp;
+        t.regs[31] = entry;
+
+        printf("[RTOS] OSTaskCreate task %d: sp=0x%08X\n",
+               m_task_count, sp);
+        m_task_count++;
+    }
+
+    g_cpu_regs[2] = 0;
+
+    // Start scheduler immediately after first task is ready
+    if (m_task_count >= 1 && m_current_task < 0) {
+        for (int i = 0; i < 32; i++)
+            m_idle_regs[i] = g_cpu_regs[i];
+        m_current_task = 0;
+        for (int i = 0; i < 32; i++)
+            g_cpu_regs[i] = m_tasks[0].regs[i];
+    }
+}
+
+void Syscalls::impl_OSSemPend() {
+    u32 sem_ptr = arg(0);
+    u32 err_ptr = arg(2);  // $a2 = error code pointer
+    g_cpu_regs[2] = 0;
+
+    u32 cnt = m_mem.read_u32(sem_ptr + 4);
+
+    if (cnt > 0) {
+        m_mem.write_u32(sem_ptr + 4, cnt - 1);
+        if (err_ptr) m_mem.write_u8(err_ptr, 0);  // OS_ERR_NONE
+    } else if (m_task_count > 0 && m_current_task >= 0) {
+        if (err_ptr) m_mem.write_u8(err_ptr, 2);  // OS_ERR_TIMEOUT (would be set by HW)
+        memcpy(m_tasks[m_current_task].regs, g_cpu_regs, sizeof(g_cpu_regs));
+        m_tasks[m_current_task].blocked = true;
+        memcpy(g_cpu_regs, m_idle_regs, sizeof(g_cpu_regs));
+        m_current_task = -1;
+    }
+}
+
+void Syscalls::impl_OSSemPost() {
+    u32 sem_ptr = arg(0);
+    u32 cnt = m_mem.read_u32(sem_ptr + 4);
+    m_mem.write_u32(sem_ptr + 4, cnt + 1);
+    g_cpu_regs[2] = 0;
+
+    // Unblock first blocked task
+    for (int i = 0; i < m_task_count; i++) {
+        if (m_tasks[i].blocked) {
+            m_tasks[i].blocked = false;
+            // If no task is active, switch to the unblocked one
+            if (m_current_task < 0) {
+                m_current_task = i;
+                memcpy(g_cpu_regs, m_tasks[i].regs, sizeof(g_cpu_regs));
+            }
+            break;
+        }
+    }
+}
+
+void Syscalls::impl_OSTimeDly() {
+    if (m_current_task >= 0)
+        printf("[RTOS] OSTimeDly task=%d\n", m_current_task);
+    g_cpu_regs[2] = 0;
+
+    if (m_task_count == 0) return;
+
+    if (m_current_task >= 0 && m_current_task < m_task_count) {
+        memcpy(m_tasks[m_current_task].regs, g_cpu_regs, sizeof(g_cpu_regs));
+    }
+    int next = (m_current_task + 1) % m_task_count;
+    m_current_task = next;
+    memcpy(g_cpu_regs, m_tasks[next].regs, sizeof(g_cpu_regs));
+}
+
+void Syscalls::impl_OSSemDel() {
     g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_StartSwTimer() {
-    u32 interval = arg(0);
-    u32 callback = arg(1);
-    printf("[TIMER] StartSwTimer(interval=%u, callback=0x%08X)\n", interval, callback);
-    g_cpu_regs[2] = 1;  // dummy timer ID
+void Syscalls::impl_OSTaskDel() {
+    u32 prio = arg(0);
+    printf("[RTOS] OSTaskDel switching to idle\n");
+    if (m_current_task >= 0) {
+        m_tasks[m_current_task].active = false;
+        m_tasks[m_current_task].blocked = false;
+    }
+    m_current_task = -1;
+    // Restore idle state (switches back to dl_main from which OSTaskCreate was called)
+    memcpy(g_cpu_regs, m_idle_regs, sizeof(g_cpu_regs));
 }
 
-void Syscalls::impl_free_irq() {
-    u32 irq = arg(0);
-    printf("[IRQ] free_irq(%u)\n", irq);
+void Syscalls::impl_GetTickCount() {
     g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_icache_invalidate_all() {
-    // No-op
+void Syscalls::impl__sys_judge_event() {
     g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_dcache_writeback_all() {
-    // No-op
+// === GOT 68-71: unicode / locale ===
+
+void Syscalls::impl_fsys_fopenW() {
+    u32 path_addr = arg(0);
+    u32 mode_addr = arg(1);
+
+    if (path_addr == 0 || mode_addr == 0) { g_cpu_regs[2] = 0; return; }
+
+    // Read UTF-16LE path
+    std::string path;
+    for (u32 i = 0; i < 512; i++) {
+        u16 c = m_mem.read_u16(path_addr + i * 2);
+        if (c == 0) break;
+        if (c < 128) path += (char)c;
+        else path += '?';
+    }
+
+    if (path.empty() || path.find_first_not_of(' ') == std::string::npos) {
+        g_cpu_regs[2] = 0;
+        return;
+    }
+
+    // Read mode (UTF-16LE too)
+    std::string mode;
+    for (u32 i = 0; i < 16; i++) {
+        u16 c = m_mem.read_u16(mode_addr + i * 2);
+        if (c == 0) break;
+        if (c < 128) mode += (char)c;
+        else mode += '?';
+    }
+
+    // Look up in archive first
+    if (m_archive) {
+        const ArchiveEntry* entry = m_archive->find(path);
+        if (entry) {
+            int idx = alloc_file_handle();
+            if (idx < 0) { g_cpu_regs[2] = 0; return; }
+            m_files[idx].is_archive = true;
+            m_files[idx].archive = m_archive;
+            m_files[idx].archive_entry = entry;
+            m_files[idx].offset = 0;
+            printf("[FSYS_FOPENW] \"%s\" -> handle %d (size=%u)\n", entry->name.c_str(), idx, entry->size);
+            g_cpu_regs[2] = (u32)idx;
+            return;
+        }
+    }
+
+    // Try host filesystem for save files
+    int idx = alloc_file_handle();
+    if (idx < 0) { g_cpu_regs[2] = 0; return; }
+
+    if (mode.find('w') != std::string::npos || mode.find('+') != std::string::npos) {
+        std::string host_path = "save/" + path;
+        FILE* f = fopen(host_path.c_str(), mode.c_str());
+        if (f) {
+            m_files[idx].is_host = true;
+            m_files[idx].host_file = f;
+            printf("[FSYS_FOPENW] host: \"%s\" -> handle %d\n", host_path.c_str(), idx);
+            g_cpu_regs[2] = (u32)idx;
+            return;
+        }
+    }
+
+    // Try reading from host save/ too
+    if (mode.find('r') != std::string::npos) {
+        std::string host_path = "save/" + path;
+        FILE* f = fopen(host_path.c_str(), "rb");
+        if (f) {
+            m_files[idx].is_host = true;
+            m_files[idx].host_file = f;
+            printf("[FSYS_FOPENW] host: \"%s\" -> handle %d\n", host_path.c_str(), idx);
+            g_cpu_regs[2] = (u32)idx;
+            return;
+        }
+    }
+
+    printf("[FSYS_FOPENW] NOT FOUND: \"%s\" mode=\"%s\"\n", path.c_str(), mode.c_str());
+    m_files[idx].in_use = false;
     g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_serial_putc() {
-    u32 c = arg(0);
-    putchar((char)c);
-    fflush(stdout);
+void Syscalls::impl___to_unicode_le() {
+    g_cpu_regs[2] = (u32)-1;
+}
+
+void Syscalls::impl___to_locale_ansi() {
+    g_cpu_regs[2] = (u32)-1;
+}
+
+void Syscalls::impl_get_current_language() {
     g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_serial_getc() {
-    g_cpu_regs[2] = 0;
+// === VSYNC simulation ===
+
+bool Syscalls::simulate_vsync() {
+    bool switched = false;
+    // Unblock blocked tasks (simulating interrupt wakeup)
+    for (int i = 0; i < m_task_count; i++) {
+        if (m_tasks[i].blocked) {
+            printf("[VSYNC] Unblocking task %d\n", i);
+            m_tasks[i].blocked = false;
+            m_current_task = i;
+            memcpy(g_cpu_regs, m_tasks[i].regs, sizeof(g_cpu_regs));
+            switched = true;
+            break;
+        }
+    }
+
+    // Game writes LCD frame buffer address directly to HW registers (ignored by us).
+    // Hardcode known good offset (FB2 found via ring scan).
+    if (m_display.get_frame_addr() == 0) {
+        m_display.set_frame_addr(0x00B90000);
+    }
+    m_display.flip(m_mem.get_raw_ptr(), m_mem.size());
+    return switched;
 }

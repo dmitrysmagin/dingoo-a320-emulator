@@ -22,7 +22,7 @@ public:
     u32  get_frame_addr() const { return m_frame_addr; }
 
     // Called by lcd_flip syscall
-    void flip();
+    void flip(const u8* guest_ram = nullptr, u32 ram_size = 0);
 
     // Called by _lcd_set_frame
     void set_frame_addr(u32 addr) { m_frame_addr = addr; }

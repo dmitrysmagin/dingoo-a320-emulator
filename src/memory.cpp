@@ -19,6 +19,28 @@ bool Memory::load_raw(const std::vector<u8>& data, u32 phys_addr) {
     return true;
 }
 
+bool Memory::load_from_file(const std::string& path, u32 file_offset, u32 phys_addr, u32 size) {
+    if (phys_addr + size > m_mem.size()) {
+        fprintf(stderr, "[MEM] load_from_file out of bounds: phys=0x%08X size=0x%X mem_size=0x%X\n",
+                phys_addr, size, (u32)m_mem.size());
+        return false;
+    }
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) {
+        fprintf(stderr, "[MEM] Cannot open %s\n", path.c_str());
+        return false;
+    }
+    fseek(f, file_offset, SEEK_SET);
+    size_t read_bytes = fread(&m_mem[phys_addr], 1, size, f);
+    fclose(f);
+    if (read_bytes != size) {
+        fprintf(stderr, "[MEM] load_from_file short read: %zu/%u bytes\n", read_bytes, size);
+        return false;
+    }
+    printf("[MEM] Loaded %u bytes from file+0x%X at phys 0x%08X\n", size, file_offset, phys_addr);
+    return true;
+}
+
 void Memory::zero_region(u32 phys_addr, u32 size) {
     if (phys_addr + size > m_mem.size()) {
         fprintf(stderr, "[MEM] zero_region out of bounds: 0x%08X + 0x%X\n", phys_addr, size);
@@ -87,6 +109,10 @@ void Memory::write_u16(u32 vaddr, u16 val) {
     if (phys == 0xFFFFFFFF || phys + 1 >= m_mem.size()) {
         return;
     }
+    // Protect code section from stray frame buffer writes
+    if (is_code_section(phys)) {
+        return;
+    }
     m_mem[phys]     = (u8)(val & 0xFF);
     m_mem[phys + 1] = (u8)((val >> 8) & 0xFF);
 }
@@ -94,6 +120,9 @@ void Memory::write_u16(u32 vaddr, u16 val) {
 void Memory::write_u32(u32 vaddr, u32 val) {
     u32 phys = vaddr_to_phys(vaddr);
     if (phys == 0xFFFFFFFF || phys + 3 >= m_mem.size()) {
+        return;
+    }
+    if (is_code_section(phys)) {
         return;
     }
     m_mem[phys]     = (u8)(val & 0xFF);
