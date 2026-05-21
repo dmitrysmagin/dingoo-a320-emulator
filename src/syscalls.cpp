@@ -9,8 +9,9 @@
 extern u32 g_cpu_regs[32];
 extern u32 g_cpu_pc;
 
-Syscalls::Syscalls(Memory& mem)
+Syscalls::Syscalls(Memory& mem, Display& display)
     : m_mem(mem)
+    , m_display(display)
     , m_heap_top(0x00B45000)  // start of heap area
     , m_got_call_count(0)
 {
@@ -870,19 +871,18 @@ void Syscalls::impl_fsys_fgetc() { impl_fgetc(); }
 void Syscalls::impl_fsys_fputc() { impl_fputc(); }
 
 void Syscalls::impl_lcd_flip() {
-    printf("[LCD] lcd_flip() - stub (no SDL2 in Phase 1)\n");
+    m_display.flip();
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_lcd_set_frame() {
     u32 addr = arg(0);
-    printf("[LCD] _lcd_set_frame(0x%08X)\n", addr);
+    m_display.set_frame_addr(addr);
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_LcdGetDisMode() {
-    printf("[LCD] LcdGetDisMode()\n");
-    g_cpu_regs[2] = 1;  // display on
+    g_cpu_regs[2] = m_display.is_display_on() ? 1 : 0;
 }
 
 void Syscalls::impl_kbd_get_key() {

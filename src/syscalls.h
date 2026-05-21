@@ -3,12 +3,13 @@
 
 #include "types.h"
 #include "memory.h"
+#include "display.h"
 #include <string>
 #include <vector>
 
 class Syscalls {
 public:
-    Syscalls(Memory& mem);
+    Syscalls(Memory& mem, Display& display);
 
     // Called when a JAL targets a GOT trampoline
     void dispatch(int got_index, u32 return_addr);
@@ -18,6 +19,7 @@ public:
 
 private:
     Memory& m_mem;
+    Display& m_display;
 
     // Read argument from stack or register
     u32 arg(int n);  // $a0..$a3 or stack

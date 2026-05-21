@@ -20,6 +20,9 @@ void CPU::reset() {
     mxu.reset();
     running = true;
     insn_count = 0;
+    m_trace_idx = 0;
+    memset(m_trace_pc, 0, sizeof(m_trace_pc));
+    memset(m_trace_insn, 0, sizeof(m_trace_insn));
 }
 
 u32 CPU::fetch() {
@@ -81,7 +84,7 @@ void CPU::exec_special(u32 insn) {
 void CPU::exec_special2(u32 insn) {
     int func = insn & 0x3F;
     switch (func) {
-    case 0x02: {
+    case 0x00: case 0x02: {
         int rs = (insn >> 21) & 0x1F;
         int rt = (insn >> 16) & 0x1F;
         int rd = (insn >> 11) & 0x1F;
@@ -146,7 +149,60 @@ void CPU::execute(u32 insn) {
     u32 uimm = insn & 0xFFFF;
 
     switch (opcode) {
-    case 0x00: exec_special(insn); break;
+    case 0x00: {
+        int rs = (insn >> 21) & 0x1F;
+        int rt = (insn >> 16) & 0x1F;
+        int rd = (insn >> 11) & 0x1F;
+        int sa = (insn >> 6) & 0x1F;
+        int func = insn & 0x3F;
+        switch (func) {
+        case 0x08:
+            pc = regs[rs];
+            // If JR $ra and $ra is 0 (dl_main returning to nothing), jump to AppMain
+            if (rs == 31 && regs[31] == 0) {
+                pc = APP_MAIN_ADDR;
+            }
+            break;
+        case 0x09:
+            regs[rd] = pc;
+            pc = regs[rs];
+            break;
+        case 0x21: if (rd) regs[rd] = regs[rs] + regs[rt]; break;
+        case 0x00: if (rd) regs[rd] = regs[rt] << sa; break;
+        case 0x20: if (rd) { s64 r = (s64)(s32)regs[rs] + (s64)(s32)regs[rt]; if (r > INT32_MAX || r < INT32_MIN) { raise_exception(EXC_OV); return; } regs[rd] = (u32)r; } break;
+        case 0x22: if (rd) { s64 r = (s64)(s32)regs[rs] - (s64)(s32)regs[rt]; if (r > INT32_MAX || r < INT32_MIN) { raise_exception(EXC_OV); return; } regs[rd] = (u32)r; } break;
+        case 0x23: if (rd) regs[rd] = regs[rs] - regs[rt]; break;
+        case 0x02: if (rd) regs[rd] = regs[rt] >> sa; break;
+        case 0x03: if (rd) regs[rd] = (u32)((s32)regs[rt] >> sa); break;
+        case 0x04: if (rd) regs[rd] = regs[rt] << (regs[rs] & 0x1F); break;
+        case 0x06: if (rd) regs[rd] = regs[rt] >> (regs[rs] & 0x1F); break;
+        case 0x07: if (rd) regs[rd] = (u32)((s32)regs[rt] >> (regs[rs] & 0x1F)); break;
+        case 0x2A: if (rd) regs[rd] = (s32)regs[rs] < (s32)regs[rt] ? 1 : 0; break;
+        case 0x2B: if (rd) regs[rd] = regs[rs] < regs[rt] ? 1 : 0; break;
+        case 0x24: if (rd) regs[rd] = regs[rs] & regs[rt]; break;
+        case 0x25: if (rd) regs[rd] = regs[rs] | regs[rt]; break;
+        case 0x26: if (rd) regs[rd] = regs[rs] ^ regs[rt]; break;
+        case 0x27: if (rd) regs[rd] = ~(regs[rs] | regs[rt]); break;
+        case 0x18: { s64 r = (s64)(s32)regs[rs] * (s64)(s32)regs[rt]; lo = (u32)r; hi = (u32)(r >> 32); } break;
+        case 0x19: { u64 r = (u64)regs[rs] * (u64)regs[rt]; lo = (u32)r; hi = (u32)(r >> 32); } break;
+        case 0x1A: if (regs[rt]) { lo = (u32)((s32)regs[rs] / (s32)regs[rt]); hi = (u32)((s32)regs[rs] % (s32)regs[rt]); } break;
+        case 0x1B: if (regs[rt]) { lo = regs[rs] / regs[rt]; hi = regs[rs] % regs[rt]; } break;
+        case 0x10: if (rd) regs[rd] = hi; break;
+        case 0x11: hi = regs[rs]; break;
+        case 0x12: if (rd) regs[rd] = lo; break;
+        case 0x13: lo = regs[rs]; break;
+        case 0x0A: if (rd && regs[rt] == 0) regs[rd] = regs[rs]; break;  // MOVZ
+        case 0x0B: if (rd && regs[rt] != 0) regs[rd] = regs[rs]; break;  // MOVN
+        case 0x0C: raise_exception(EXC_SYS); break;
+        case 0x0D: raise_exception(EXC_BP); break;
+        case 0x0F: break;
+        default:
+            printf("[CPU] SPECIAL unknown func=0x%02X at PC=0x%08X insn=0x%08X\n", func, pc - 4, insn);
+            raise_exception(EXC_RI);
+            break;
+        }
+        break;
+    }
     case 0x01: {
         int rt_field = (insn >> 16) & 0x1F;
         s32 offset = sext16(insn & 0xFFFF);
@@ -303,10 +359,26 @@ void CPU::execute(u32 insn) {
     }
 }
 
+void CPU::trace_add(u32 pc_, u32 insn) {
+    m_trace_pc[m_trace_idx] = pc_;
+    m_trace_insn[m_trace_idx] = insn;
+    m_trace_idx = (m_trace_idx + 1) % TRACE_SIZE;
+}
+
+void CPU::print_trace() {
+    printf("\n=== Last %d instructions ===\n", TRACE_SIZE);
+    for (int i = 0; i < TRACE_SIZE; i++) {
+        int idx = (m_trace_idx + i) % TRACE_SIZE;
+        if (m_trace_pc[idx] == 0) continue;
+        printf("  0x%08X: 0x%08X\n", m_trace_pc[idx], m_trace_insn[idx]);
+    }
+}
+
 void CPU::execute_one() {
     if (!running) return;
 
     u32 insn = fetch();
+    trace_add(pc, insn);
     u32 next_pc = pc + 4;
     pc = next_pc;
 
@@ -318,7 +390,6 @@ void CPU::execute_one() {
 
     // execute() modifies regs and pc directly; sync regs to global
     memcpy(g_cpu_regs, regs, sizeof(regs));
-    // DON'T overwrite pc - execute() may have changed it for branches
 
     // Handle delay slot
     if (pc != next_pc && pc != 0) {
@@ -342,18 +413,6 @@ void CPU::execute_one() {
         if (idx >= 0 && (u32)idx < GOT_COUNT) {
             u32 return_addr = regs[31];
             syscalls->dispatch(idx, return_addr);
-            memcpy(regs, g_cpu_regs, sizeof(regs));
-            pc = regs[31];
-        }
-    }
-
-    // GOT trampoline check
-    if (mem->is_got_address(pc)) {
-        int idx = mem->got_index(pc);
-        if (idx >= 0 && (u32)idx < GOT_COUNT) {
-            u32 return_addr = regs[31];
-            syscalls->dispatch(idx, return_addr);
-            // syscall modifies g_cpu_regs, sync back
             memcpy(regs, g_cpu_regs, sizeof(regs));
             pc = regs[31];
         }

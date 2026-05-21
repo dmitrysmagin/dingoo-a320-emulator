@@ -25,8 +25,14 @@ struct CPU {
     void reset();
     void execute_one();
     void run_frame(u32 max_insns);
+    void print_trace();
 
 private:
+    static const int TRACE_SIZE = 256;
+    u32 m_trace_pc[TRACE_SIZE];
+    u32 m_trace_insn[TRACE_SIZE];
+    int m_trace_idx;
+    void trace_add(u32 pc, u32 insn);
     u32 fetch();
     void execute(u32 insn);
 

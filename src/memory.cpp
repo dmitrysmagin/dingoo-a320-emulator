@@ -40,6 +40,10 @@ u32 Memory::vaddr_to_phys(u32 vaddr) {
     if ((vaddr & KSEG_MASK) == KSEG0_BASE || (vaddr & KSEG_MASK) == KSEG1_BASE) {
         return vaddr & KSEG0_KSEG1_MASK;
     }
+    // Direct physical address within our RAM
+    if (vaddr < m_mem.size()) {
+        return vaddr;
+    }
     return 0xFFFFFFFF;  // unmapped
 }
 
