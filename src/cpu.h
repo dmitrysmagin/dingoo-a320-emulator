@@ -1,0 +1,53 @@
+#ifndef CPU_H
+#define CPU_H
+
+#include "types.h"
+#include "memory.h"
+#include "cop0.h"
+#include "mxu.h"
+#include "syscalls.h"
+
+struct CPU {
+    u32 regs[32];   // GPRs
+    u32 pc;         // Program counter
+    u32 hi, lo;     // HI/LO for multiply/divide
+    u32 llbit;      // Load-linked bit
+
+    COP0 cop0;
+    MXU  mxu;
+
+    Memory* mem;
+    Syscalls* syscalls;
+
+    bool running;
+    u64  insn_count;
+
+    void reset();
+    void execute_one();
+    void run_frame(u32 max_insns);
+
+private:
+    u32 fetch();
+    void execute(u32 insn);
+
+    // SPECIAL (opcode 0x00)
+    void exec_special(u32 insn);
+    // REGIMM (opcode 0x01)
+    void exec_regimm(u32 insn);
+    // SPECIAL2 (opcode 0x1C)
+    void exec_special2(u32 insn);
+    // SPECIAL3 (opcode 0x1F)
+    void exec_special3(u32 insn);
+
+    // Branch helpers
+    bool branch_taken(u32 insn, u32& target, bool& has_delay);
+
+    // Load/store helpers
+    void load(u32 insn, int size, bool sign_ext, bool left, bool right);
+    void store(u32 insn, int size, bool left, bool right);
+
+    // Exception
+    void raise_exception(u32 code);
+};
+
+#endif // CPU_H

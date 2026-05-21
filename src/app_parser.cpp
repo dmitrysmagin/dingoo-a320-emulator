@@ -1,0 +1,197 @@
+#include "app_parser.h"
+#include <cstdio>
+#include <cstring>
+
+// Fixed-size header structs (matching SDK)
+#pragma pack(push, 1)
+
+struct CCDLHeader {
+    char ident[4];        // "CCDL"
+    uint8_t unknown[20];
+    uint8_t padding[8];
+};
+
+struct IMPTHeader {
+    char ident[4];        // "IMPT"
+    uint32_t unknown;
+    uint32_t offset;      // file offset of import table
+    uint32_t size;        // size of import table
+    uint8_t padding[16];
+};
+
+struct EXPTHeader {
+    char ident[4];        // "EXPT"
+    uint32_t unknown;
+    uint32_t offset;      // file offset of export table
+    uint32_t size;        // size of export table
+    uint8_t padding[16];
+};
+
+struct RAWDHeader {
+    char ident[4];        // "RAWD"
+    uint32_t unknown0;
+    uint32_t offset;      // file offset of binary data
+    uint32_t size;        // size of binary data
+    uint32_t unknown1;
+    uint32_t entry;       // entry point (dl_main)
+    uint32_t origin;      // load address (0x80A00000)
+    uint32_t prog_size;   // total program size (including BSS)
+};
+
+// Import/export table entry
+struct TableEntry {
+    uint32_t str_offset;  // cumulative string offset
+    uint32_t unknown[2];
+    uint32_t offset;      // address in binary
+};
+
+struct TableHeader {
+    uint32_t count;
+    uint32_t unknown[2];
+    uint32_t str_base;
+};
+
+#pragma pack(pop)
+
+bool parse_app(const std::string& path, AppBinary& out) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) {
+        fprintf(stderr, "[APP] Cannot open: %s\n", path.c_str());
+        return false;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    // Read fixed headers (4 × 32 bytes = 128 bytes)
+    CCDLHeader ccdl;
+    IMPTHeader impt;
+    EXPTHeader expt;
+    RAWDHeader rawd;
+
+    if (fread(&ccdl, sizeof(ccdl), 1, f) != 1 ||
+        fread(&impt, sizeof(impt), 1, f) != 1 ||
+        fread(&expt, sizeof(expt), 1, f) != 1 ||
+        fread(&rawd, sizeof(rawd), 1, f) != 1) {
+        fprintf(stderr, "[APP] Failed to read headers\n");
+        fclose(f);
+        return false;
+    }
+
+    // Verify headers
+    if (memcmp(ccdl.ident, "CCDL", 4) != 0) {
+        fprintf(stderr, "[APP] Invalid CCDL header\n");
+        fclose(f);
+        return false;
+    }
+    if (memcmp(impt.ident, "IMPT", 4) != 0) {
+        fprintf(stderr, "[APP] Invalid IMPT header\n");
+        fclose(f);
+        return false;
+    }
+    if (memcmp(expt.ident, "EXPT", 4) != 0) {
+        fprintf(stderr, "[APP] Invalid EXPT header\n");
+        fclose(f);
+        return false;
+    }
+    if (memcmp(rawd.ident, "RAWD", 4) != 0) {
+        fprintf(stderr, "[APP] Invalid RAWD header\n");
+        fclose(f);
+        return false;
+    }
+
+    printf("[APP] File size: %ld bytes (0x%lX)\n", file_size, file_size);
+    printf("[APP] IMPT: offset=0x%X size=0x%X\n", impt.offset, impt.size);
+    printf("[APP] EXPT: offset=0x%X size=0x%X\n", expt.offset, expt.size);
+    printf("[APP] RAWD: offset=0x%X size=0x%X entry=0x%08X origin=0x%08X prog_size=0x%X\n",
+           rawd.offset, rawd.size, rawd.entry, rawd.origin, rawd.prog_size);
+
+    // Read import table
+    fseek(f, impt.offset, SEEK_SET);
+    TableHeader impt_hdr;
+    fread(&impt_hdr, sizeof(impt_hdr), 1, f);
+
+    printf("[APP] Imports: %u entries\n", impt_hdr.count);
+
+    std::vector<TableEntry> impt_entries(impt_hdr.count);
+    fread(impt_entries.data(), sizeof(TableEntry), impt_hdr.count, f);
+
+    // Read import strings (immediately after entries)
+    u32 str_table_offset = impt.offset + sizeof(TableHeader) + impt_hdr.count * sizeof(TableEntry);
+    u32 str_data_size = impt.size - (str_table_offset - impt.offset);
+    std::vector<char> impt_strings(str_data_size + 1, 0);
+    fseek(f, str_table_offset, SEEK_SET);
+    fread(impt_strings.data(), 1, str_data_size, f);
+
+    // Build import entries using str_offset from each entry
+    for (u32 i = 0; i < impt_hdr.count; i++) {
+        ImportEntry entry;
+        entry.address = impt_entries[i].offset;
+        u32 str_pos = impt_entries[i].str_offset;
+        if (str_pos < impt_strings.size()) {
+            size_t len = 0;
+            while (str_pos + len < impt_strings.size() && impt_strings[str_pos + len] != '\0') len++;
+            entry.name = std::string(&impt_strings[str_pos], len);
+        }
+        out.imports.push_back(entry);
+    }
+
+    // Read export table
+    fseek(f, expt.offset, SEEK_SET);
+    TableHeader expt_hdr;
+    fread(&expt_hdr, sizeof(expt_hdr), 1, f);
+
+    printf("[APP] Exports: %u entries\n", expt_hdr.count);
+
+    std::vector<TableEntry> expt_entries(expt_hdr.count);
+    fread(expt_entries.data(), sizeof(TableEntry), expt_hdr.count, f);
+
+    // Read export strings
+    u32 expt_str_table_offset = expt.offset + sizeof(TableHeader) + expt_hdr.count * sizeof(TableEntry);
+    u32 expt_str_data_size = expt.size - (expt_str_table_offset - expt.offset);
+    std::vector<char> expt_strings(expt_str_data_size + 1, 0);
+    fseek(f, expt_str_table_offset, SEEK_SET);
+    fread(expt_strings.data(), 1, expt_str_data_size, f);
+
+    // Build export entries using str_offset from each entry
+    for (u32 i = 0; i < expt_hdr.count; i++) {
+        ExportEntry entry;
+        entry.address = expt_entries[i].offset;
+        u32 str_pos = expt_entries[i].str_offset;
+        if (str_pos < expt_strings.size()) {
+            size_t len = 0;
+            while (str_pos + len < expt_strings.size() && expt_strings[str_pos + len] != '\0') len++;
+            entry.name = std::string(&expt_strings[str_pos], len);
+        }
+        out.exports.push_back(entry);
+    }
+
+    // Read RAWD binary data
+    out.raw_offset = rawd.offset;
+    out.raw_size = rawd.size;
+    out.load_addr = rawd.origin;
+    out.prog_size = rawd.prog_size;
+    out.entry_point = rawd.entry;
+
+    out.raw_data.resize(rawd.size);
+    fseek(f, rawd.offset, SEEK_SET);
+    if (fread(out.raw_data.data(), 1, rawd.size, f) != rawd.size) {
+        fprintf(stderr, "[APP] Failed to read RAWD data\n");
+        fclose(f);
+        return false;
+    }
+
+    printf("[APP] RAWD loaded: %u bytes\n", rawd.size);
+
+    // Resource section
+    out.resource_offset = RESOURCE_OFFSET;
+    out.resource_size = (u64)file_size - RESOURCE_OFFSET;
+    if (out.resource_size > 0) {
+        printf("[APP] Resource section: offset=0x%llX size=0x%llX\n",
+               out.resource_offset, out.resource_size);
+    }
+
+    fclose(f);
+    return true;
+}
