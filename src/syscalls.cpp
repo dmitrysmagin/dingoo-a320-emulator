@@ -20,6 +20,7 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     , m_audio_open(false)
     , m_audio_write_count(0)
 {
+    memset(m_got_call_counts, 0, sizeof(m_got_call_counts));
     for (int i = 0; i < MAX_TASKS; i++)
         m_tasks[i].active = false;
     for (int i = 0; i < 64; i++) {
@@ -126,6 +127,7 @@ const char* Syscalls::got_name(int index) const {
 
 void Syscalls::dispatch(int got_index, u32 return_addr) {
     m_got_call_count++;
+    if (got_index >= 0 && got_index < 72) m_got_call_counts[got_index]++;
     switch (got_index) {
     case  0: impl_abort(); break;
     case  1: impl_printf(); break;
@@ -380,6 +382,7 @@ u32 Syscalls::do_ferror(u32 file_handle) {
 // === GOT 0-10: libc ===
 
 void Syscalls::impl_abort() {
+    // Game calls abort on fatal error - this is a soft recovery
     g_cpu_regs[2] = 0;
 }
 
@@ -593,7 +596,7 @@ void Syscalls::impl_serial_putc() {
 }
 
 void Syscalls::impl__kbd_get_status() {
-    g_cpu_regs[2] = 0;
+    g_cpu_regs[2] = m_display.get_dingoo_keys();
 }
 
 void Syscalls::impl_get_game_vol() {
@@ -601,6 +604,19 @@ void Syscalls::impl_get_game_vol() {
 }
 
 void Syscalls::impl__kbd_get_key() {
+    u32 keys = m_display.get_dingoo_keys();
+    if (keys & DKEY_UP)       { g_cpu_regs[2] = DKEY_UP; return; }
+    if (keys & DKEY_DOWN)     { g_cpu_regs[2] = DKEY_DOWN; return; }
+    if (keys & DKEY_LEFT)     { g_cpu_regs[2] = DKEY_LEFT; return; }
+    if (keys & DKEY_RIGHT)    { g_cpu_regs[2] = DKEY_RIGHT; return; }
+    if (keys & DKEY_A)        { g_cpu_regs[2] = DKEY_A; return; }
+    if (keys & DKEY_B)        { g_cpu_regs[2] = DKEY_B; return; }
+    if (keys & DKEY_X)        { g_cpu_regs[2] = DKEY_X; return; }
+    if (keys & DKEY_Y)        { g_cpu_regs[2] = DKEY_Y; return; }
+    if (keys & DKEY_L)        { g_cpu_regs[2] = DKEY_L; return; }
+    if (keys & DKEY_R)        { g_cpu_regs[2] = DKEY_R; return; }
+    if (keys & DKEY_START)    { g_cpu_regs[2] = DKEY_START; return; }
+    if (keys & DKEY_SELECT)   { g_cpu_regs[2] = DKEY_SELECT; return; }
     g_cpu_regs[2] = 0;
 }
 
@@ -622,7 +638,6 @@ void Syscalls::impl_fsys_fopen() {
             m_files[idx].archive = m_archive;
             m_files[idx].archive_entry = entry;
             m_files[idx].offset = 0;
-            printf("[FSYS_FOPEN] \"%s\" -> handle %d (size=%u)\n", entry->name.c_str(), idx, entry->size);
             g_cpu_regs[2] = (u32)idx;
             return;
         }
@@ -637,13 +652,11 @@ void Syscalls::impl_fsys_fopen() {
         if (f) {
             m_files[idx].is_host = true;
             m_files[idx].host_file = f;
-            printf("[FSYS_FOPEN] host: \"%s\" -> handle %d\n", host_path.c_str(), idx);
             g_cpu_regs[2] = (u32)idx;
             return;
         }
     }
 
-    printf("[FSYS_FOPEN] NOT FOUND: \"%s\" mode=\"%s\"\n", path.c_str(), mode.c_str());
     m_files[idx].in_use = false;
     g_cpu_regs[2] = 0;
 }
@@ -769,7 +782,7 @@ void Syscalls::impl_waveout_write() {
             u32 task_arg = 0x80BB71E0;
             u32 flag_addr = task_arg + 0x18C;  // 0x80BB736C
             m_mem.write_u8(flag_addr, 0);
-            printf("[RTOS] waveout_write: simulated audio completion (flag=%u)\n", m_audio_write_count);
+
             done = true;
         }
     }
@@ -786,7 +799,9 @@ void Syscalls::impl_pcm_ioctl() {
 // === GOT 58-67: RTOS ===
 
 void Syscalls::impl_OSTimeGet() {
-    g_cpu_regs[2] = 0;
+    static u32 tick = 0;
+    tick += 1000; // ~1ms per call
+    g_cpu_regs[2] = tick;
 }
 
 void Syscalls::impl_OSSemCreate() {
@@ -796,7 +811,6 @@ void Syscalls::impl_OSSemCreate() {
     m_mem.write_u8(ecb + 8, 1);
     g_cpu_regs[2] = ecb;
     m_semaphores.push_back(ecb);
-    printf("[RTOS] OSSemCreate(%u) -> 0x%08X\n", cnt, ecb);
 }
 
 void Syscalls::impl_OSTaskCreate() {
@@ -818,8 +832,6 @@ void Syscalls::impl_OSTaskCreate() {
         t.regs[30] = sp;
         t.regs[31] = entry;
 
-        printf("[RTOS] OSTaskCreate task %d: sp=0x%08X\n",
-               m_task_count, sp);
         m_task_count++;
     }
 
@@ -875,8 +887,6 @@ void Syscalls::impl_OSSemPost() {
 }
 
 void Syscalls::impl_OSTimeDly() {
-    if (m_current_task >= 0)
-        printf("[RTOS] OSTimeDly task=%d\n", m_current_task);
     g_cpu_regs[2] = 0;
 
     if (m_task_count == 0) return;
@@ -895,7 +905,6 @@ void Syscalls::impl_OSSemDel() {
 
 void Syscalls::impl_OSTaskDel() {
     u32 prio = arg(0);
-    printf("[RTOS] OSTaskDel switching to idle\n");
     if (m_current_task >= 0) {
         m_tasks[m_current_task].active = false;
         m_tasks[m_current_task].blocked = false;
@@ -906,11 +915,19 @@ void Syscalls::impl_OSTaskDel() {
 }
 
 void Syscalls::impl_GetTickCount() {
-    g_cpu_regs[2] = 0;
+    g_cpu_regs[2] = (u32)(SDL_GetTicks());
 }
 
 void Syscalls::impl__sys_judge_event() {
-    g_cpu_regs[2] = 0;
+    // Read event queue at 0x80BFECD8 (pressed keys injected by simulate_vsync)
+    u32 event_queue = 0x80BFECD8;
+    u32 event_val = m_mem.read_u32(event_queue);
+    if (event_val) {
+        m_mem.write_u32(event_queue, 0);  // consume event
+        g_cpu_regs[2] = event_val;
+    } else {
+        g_cpu_regs[2] = 0;
+    }
 }
 
 // === GOT 68-71: unicode / locale ===
@@ -918,6 +935,8 @@ void Syscalls::impl__sys_judge_event() {
 void Syscalls::impl_fsys_fopenW() {
     u32 path_addr = arg(0);
     u32 mode_addr = arg(1);
+
+    printf("[fopenW] path_addr=0x%08X mode_addr=0x%08X\n", path_addr, mode_addr);
 
     if (path_addr == 0 || mode_addr == 0) { g_cpu_regs[2] = 0; return; }
 
@@ -931,6 +950,10 @@ void Syscalls::impl_fsys_fopenW() {
     }
 
     if (path.empty() || path.find_first_not_of(' ') == std::string::npos) {
+        printf("[fopenW] empty/invalid path at 0x%08X\n", path_addr);
+        for (int i = 0; i < 32; i++) {
+            printf("[fopenW]   [%2d] %08X: %04X\n", i, path_addr + i*2, m_mem.read_u16(path_addr + i * 2));
+        }
         g_cpu_regs[2] = 0;
         return;
     }
@@ -944,6 +967,8 @@ void Syscalls::impl_fsys_fopenW() {
         else mode += '?';
     }
 
+    printf("[fopenW] path='%s' mode='%s'\n", path.c_str(), mode.c_str());
+
     // Look up in archive first
     if (m_archive) {
         const ArchiveEntry* entry = m_archive->find(path);
@@ -954,7 +979,6 @@ void Syscalls::impl_fsys_fopenW() {
             m_files[idx].archive = m_archive;
             m_files[idx].archive_entry = entry;
             m_files[idx].offset = 0;
-            printf("[FSYS_FOPENW] \"%s\" -> handle %d (size=%u)\n", entry->name.c_str(), idx, entry->size);
             g_cpu_regs[2] = (u32)idx;
             return;
         }
@@ -970,7 +994,6 @@ void Syscalls::impl_fsys_fopenW() {
         if (f) {
             m_files[idx].is_host = true;
             m_files[idx].host_file = f;
-            printf("[FSYS_FOPENW] host: \"%s\" -> handle %d\n", host_path.c_str(), idx);
             g_cpu_regs[2] = (u32)idx;
             return;
         }
@@ -983,13 +1006,11 @@ void Syscalls::impl_fsys_fopenW() {
         if (f) {
             m_files[idx].is_host = true;
             m_files[idx].host_file = f;
-            printf("[FSYS_FOPENW] host: \"%s\" -> handle %d\n", host_path.c_str(), idx);
             g_cpu_regs[2] = (u32)idx;
             return;
         }
     }
 
-    printf("[FSYS_FOPENW] NOT FOUND: \"%s\" mode=\"%s\"\n", path.c_str(), mode.c_str());
     m_files[idx].in_use = false;
     g_cpu_regs[2] = 0;
 }
@@ -1003,17 +1024,28 @@ void Syscalls::impl___to_locale_ansi() {
 }
 
 void Syscalls::impl_get_current_language() {
-    g_cpu_regs[2] = 0;
+    g_cpu_regs[2] = 1; // Chinese (0=English)
 }
 
 // === VSYNC simulation ===
 
 bool Syscalls::simulate_vsync() {
     bool switched = false;
+
+    // Inject keyboard events into the game's event queue
+    u32 keys = m_display.get_dingoo_keys();
+    static u32 prev_keys = 0;
+    u32 pressed = keys & ~prev_keys;
+    prev_keys = keys;
+    if (pressed) {
+        u32 event_queue = 0x80BFECD8;
+        u32 event_val = pressed;  // just pass pressed keyset as the event value
+        m_mem.write_u32(event_queue, event_val);
+    }
+
     // Unblock blocked tasks (simulating interrupt wakeup)
     for (int i = 0; i < m_task_count; i++) {
         if (m_tasks[i].blocked) {
-            printf("[VSYNC] Unblocking task %d\n", i);
             m_tasks[i].blocked = false;
             m_current_task = i;
             memcpy(g_cpu_regs, m_tasks[i].regs, sizeof(g_cpu_regs));
@@ -1046,7 +1078,6 @@ bool Syscalls::simulate_vsync() {
                 best_addr = a;
             }
         }
-        printf("[FB] Scan: best at 0x%08X (score=%u)\n", best_addr, best_score);
         m_display.set_frame_addr(best_addr);
     }
     m_display.flip(m_mem.get_raw_ptr(), m_mem.size());

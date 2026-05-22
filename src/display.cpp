@@ -11,6 +11,7 @@ Display::Display()
     , m_display_on(true)
     , m_dirty(false)
     , m_initialized(false)
+    , m_dingoo_keys(0)
 {
     memset(m_framebuffer, 0, sizeof(m_framebuffer));
 }
@@ -84,7 +85,7 @@ void Display::flip(const u8* guest_ram, u32 ram_size) {
             memcpy(m_framebuffer, &guest_ram[phys], WIDTH * HEIGHT * PIXEL_SIZE);
             // Dump frame buffer periodically
             static u32 dump_count = 0;
-            if (dump_count % 500 == 0) {
+            if (dump_count % 50000 == 0 && dump_count > 0) {
                 printf("[FB] frame_addr=0x%08X phys=0x%08X\n", m_frame_addr, phys);
                 int white = 0, zero = 0, other = 0;
                 for (int i = 0; i < WIDTH * HEIGHT; i++) {
@@ -104,11 +105,35 @@ void Display::flip(const u8* guest_ram, u32 ram_size) {
     SDL_RenderPresent(m_renderer);
 }
 
+static u32 sdl_to_dingoo(SDL_Keycode sym) {
+    switch (sym) {
+    case SDLK_UP:       return DKEY_UP;
+    case SDLK_DOWN:     return DKEY_DOWN;
+    case SDLK_LEFT:     return DKEY_LEFT;
+    case SDLK_RIGHT:    return DKEY_RIGHT;
+    case SDLK_z:        return DKEY_A;
+    case SDLK_x:        return DKEY_B;
+    case SDLK_a:        return DKEY_X;
+    case SDLK_s:        return DKEY_Y;
+    case SDLK_q:        return DKEY_L;
+    case SDLK_w:        return DKEY_R;
+    case SDLK_RETURN:   return DKEY_START;
+    case SDLK_TAB:      return DKEY_SELECT;
+    default:            return 0;
+    }
+}
+
 bool Display::pump_events() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_QUIT) return true;
-        if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE) return true;
+        if (event.type == SDL_KEYDOWN) {
+            if (event.key.keysym.sym == SDLK_ESCAPE) return true;
+            m_dingoo_keys |= sdl_to_dingoo(event.key.keysym.sym);
+        }
+        if (event.type == SDL_KEYUP) {
+            m_dingoo_keys &= ~sdl_to_dingoo(event.key.keysym.sym);
+        }
     }
     return false;
 }

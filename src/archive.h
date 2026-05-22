@@ -32,6 +32,7 @@ public:
 
     // Total entries
     size_t count() const { return m_entries.size(); }
+    const ArchiveEntry& entry(size_t i) const { return m_entries[i]; }
 
 private:
     std::vector<ArchiveEntry> m_entries;

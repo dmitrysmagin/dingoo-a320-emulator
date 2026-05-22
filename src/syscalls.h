@@ -145,6 +145,7 @@ private:
     bool m_audio_open;
     u32 m_audio_write_count;
     u32 m_got_call_count;
+    u32 m_got_call_counts[72];
     std::vector<u32> m_semaphores;
 
     // µC/OS-II cooperative task scheduler
@@ -165,6 +166,7 @@ private:
 
 public:
     u32 got_call_count() const { return m_got_call_count; }
+    u32 got_call_counts(int i) const { return m_got_call_counts[i]; }
     bool simulate_vsync();  // returns true if task was switched
 };
 

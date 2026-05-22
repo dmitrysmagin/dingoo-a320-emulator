@@ -256,7 +256,11 @@ void CPU::execute(u32 insn) {
         break;
     }
     case 0x23: {
-        u32 load_val = mem->read_u32(regs[rs] + imm);
+        u32 load_addr = regs[rs] + imm;
+        u32 load_val = mem->read_u32(load_addr);
+        if (rt == 31 && load_addr >= 0x80BFFFF0 && load_addr <= 0x80C00010) {
+            printf("[LW-ra] 0x%08X -> 0x%08X at pc=0x%08X\n", load_addr, load_val, g_cpu_pc - 4);
+        }
         if (rt) regs[rt] = load_val;
         if ((pc - 4) == 0x80A21E78) {
             u32 loaded = load_val & 0x1FFFFFFF;
@@ -293,7 +297,14 @@ void CPU::execute(u32 insn) {
         mem->write_u32(aligned, (existing & ~(0xFFFFFFFF >> shift)) | (regs[rt] >> shift));
         break;
     }
-    case 0x2B: mem->write_u32(regs[rs] + imm, regs[rt]); break;
+    case 0x2B: {
+        u32 store_addr = regs[rs] + imm;
+        if (store_addr >= 0x80BFFFF0 && store_addr <= 0x80C00010) {
+            printf("[SW-stack] 0x%08X = 0x%08X (r%d) at pc=0x%08X\n", store_addr, regs[rt], rt, g_cpu_pc - 4);
+        }
+        mem->write_u32(store_addr, regs[rt]);
+        break;
+    }
     case 0x2E: {  // SWR
         u32 addr = regs[rs] + imm;
         u32 aligned = addr & ~3;
@@ -367,6 +378,7 @@ void CPU::execute_one() {
     if (!running) return;
 
     u32 insn = fetch();
+    u32 fetch_pc = pc;
     trace_add(pc, insn);
     u32 next_pc = pc + 4;
     pc = next_pc;

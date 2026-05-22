@@ -40,6 +40,27 @@ int main(int argc, char* argv[]) {
     printf("[INIT] Zeroing BSS: 0x%08X-0x%08X (%u bytes)\n", rawd_end_vaddr, prog_end_vaddr, bss_size);
     mem.zero_region(bss_start_phys, bss_size);
 
+    // Patch: fix SLTI bug at 0x80ADE0DC - compares $zero instead of $s0,
+    // causing the event loop to never exit. Change 0x2A0200B0 to 0x2A1000B0.
+    u32 patch_vaddr = 0x80ADE0DC;
+    u32 current = mem.read_u32(patch_vaddr);
+    if (current == 0x2A0200B0) {
+        mem.write_u32(patch_vaddr, 0x2A1000B0);
+        printf("[PATCH] Fixed SLTI at 0x%08X: 0x%08X -> 0x2A1000B0\n", patch_vaddr, current);
+    } else {
+        printf("[PATCH] SLTI at 0x%08X = 0x%08X (unexpected, not patching)\n", patch_vaddr, current);
+    }
+
+    // Write a trampoline that dl_main returns to via JR $ra.
+    // dl_main(0,0) does SDK init, then JR $ra to this trampoline.
+    // The trampoline sets a0=0 (argc) and jumps to AppMain (0x80AD6B1C),
+    // which correctly initializes the game.
+    // Location: 0x80B44FF0 (after BSS end, before heap start)
+    u32 trampoline_addr = 0x80B44FF0;
+    mem.write_u32(trampoline_addr,     0x20040000);  // ADDIU a0, zero, 0
+    mem.write_u32(trampoline_addr + 4, 0x082B5AC7);  // J 0x80AD6B1C (AppMain)
+    printf("[PATCH] Return trampoline at 0x%08X\n", trampoline_addr);
+
     // Game has a built-in callback at 0x80A0001C that already calls _lcd_set_frame (GOT 17).
     // No additional patching needed. The callback is in the binary itself.
 
@@ -59,6 +80,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     printf("[INIT] Resource archive loaded: %u bytes at 0x%08X\n", RESOURCE_SIZE, resource_phys);
+
+    // Zero the stack area (was overwritten by resource archive)
+    // Stack starts at 0x80C00000, use 64KB window
+    u32 stack_phys = 0x80C00000 & 0x1FFFFFFF;
+    mem.zero_region(stack_phys - 0x1000, 0x11000);
+    printf("[INIT] Zeroed stack area: phys 0x%08X-0x%08X\n", stack_phys - 0x1000, stack_phys + 0x10000);
 
     // Initialize display (SDL2)
     Display display;
@@ -89,13 +116,15 @@ int main(int argc, char* argv[]) {
     cpu.pc = app.entry_point;
     cpu.regs[29] = 0x80C00000;
     cpu.regs[30] = 0x80C00000;
-    cpu.regs[4] = 0;
-    cpu.regs[5] = 0;
+    cpu.regs[31] = trampoline_addr;  // return to trampoline after init
+    cpu.regs[4] = 0;   // a0 = argc = 0
+    cpu.regs[5] = 0;   // a1 = argv = 0 (0 = first-time init)
 
     printf("[INIT] Entry point: 0x%08X (dl_main)\n", cpu.pc);
     printf("[INIT] Stack: 0x%08X\n", cpu.regs[29]);
     printf("[INIT] RAM size: %u MB\n", mem.size() / (1024 * 1024));
     printf("[INIT] Display: %dx%d (scale %d)\n", Display::WIDTH, Display::HEIGHT, Display::SCALE);
+
 
     printf("\n=== Starting emulation ===\n\n");
 
@@ -104,7 +133,7 @@ int main(int argc, char* argv[]) {
     clock_t start = clock();
     u32 frame = 0;
     u32 max_insns_per_frame = 100000;
-    u32 max_frames = 100000;
+    u32 max_frames = 1600;
     u32 frame_count = 0;
 
     while (cpu.running && frame < max_frames) {
@@ -130,7 +159,7 @@ int main(int argc, char* argv[]) {
             frame_count++;
         }
 
-        if (frame % 1000 == 0) {
+        if (frame > 0 && frame % 1000 == 0) {
             clock_t elapsed = clock() - start;
             double seconds = (double)elapsed / CLOCKS_PER_SEC;
             double insns_per_sec = cpu.insn_count / (seconds > 0 ? seconds : 0.001);
@@ -155,6 +184,12 @@ int main(int argc, char* argv[]) {
         printf("Instructions/second: %.0f\n", cpu.insn_count / ((double)total / CLOCKS_PER_SEC));
     }
     printf("Final PC: 0x%08X\n", cpu.pc);
+
+    printf("\nGOT call counts:\n");
+    for (int i = 0; i < 72; i++) {
+        if (syscalls.got_call_counts(i) > 0)
+            printf("  [%2d] %-30s %u\n", i, syscalls.got_name(i), syscalls.got_call_counts(i));
+    }
 
     cpu.print_trace();
 
