@@ -48,6 +48,10 @@ public:
     void clear_dirty() { m_dirty = false; }
 
     u32 get_dingoo_keys() const { return m_dingoo_keys; }
+    void set_key(u32 key, bool down) {
+        if (down) m_dingoo_keys |= key;
+        else      m_dingoo_keys &= ~key;
+    }
 
 private:
     SDL_Window*   m_window;

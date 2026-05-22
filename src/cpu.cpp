@@ -451,6 +451,7 @@ void CPU::execute_one() {
             }
         }
     }
+    cop0.tick();  // increment Count register once per instruction
     insn_count++;
 }
 

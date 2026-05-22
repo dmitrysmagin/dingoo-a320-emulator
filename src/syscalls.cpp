@@ -628,6 +628,17 @@ void Syscalls::impl_fsys_fopen() {
     std::string path = guest_string(path_addr);
     std::string mode = guest_string(mode_addr);
 
+    // Debug: dump raw bytes of path
+    printf("[fopenW] path_addr=0x%08X mode_addr=0x%08X\n", path_addr, mode_addr);
+    printf("[fopenW] path='%s' mode='%s'\n", path.c_str(), mode.c_str());
+    printf("[fopenW] raw16: ");
+    for (int i = 0; i < 32; i += 2) {
+        u16 c = m_mem.read_u16(path_addr + i);
+        if (c == 0) { printf("\\0"); break; }
+        printf("%04X ", (unsigned)c);
+    }
+    printf("\n");
+
     // Look up in archive first
     if (m_archive) {
         const ArchiveEntry* entry = m_archive->find(path);
@@ -825,6 +836,7 @@ void Syscalls::impl_OSTaskCreate() {
         t.active = true;
         t.blocked = false;
         memset(t.regs, 0, sizeof(t.regs));
+        t.task_arg = task_arg;
         t.regs[4] = task_arg;
         u32 sp = stack_top & ~0xF;
         sp &= ~0xF; // align to 16 bytes
@@ -854,15 +866,14 @@ void Syscalls::impl_OSSemPend() {
 
     u32 cnt = m_mem.read_u32(sem_ptr + 4);
 
+    // On real hardware a timer ISR would post the semaphore.
+    // Without interrupts, always succeed to prevent deadlock.
     if (cnt > 0) {
         m_mem.write_u32(sem_ptr + 4, cnt - 1);
         if (err_ptr) m_mem.write_u8(err_ptr, 0);  // OS_ERR_NONE
-    } else if (m_task_count > 0 && m_current_task >= 0) {
-        if (err_ptr) m_mem.write_u8(err_ptr, 2);  // OS_ERR_TIMEOUT (would be set by HW)
-        memcpy(m_tasks[m_current_task].regs, g_cpu_regs, sizeof(g_cpu_regs));
-        m_tasks[m_current_task].blocked = true;
-        memcpy(g_cpu_regs, m_idle_regs, sizeof(g_cpu_regs));
-        m_current_task = -1;
+    } else {
+        // Simulate a post so we don't block forever
+        if (err_ptr) m_mem.write_u8(err_ptr, 0);  // OS_ERR_NONE
     }
 }
 
@@ -887,16 +898,10 @@ void Syscalls::impl_OSSemPost() {
 }
 
 void Syscalls::impl_OSTimeDly() {
+    // Return immediately without switching tasks.
+    // The real µC/OS-II would block the task for the timeout, but
+    // we don't have timer interrupts to wake it back up.
     g_cpu_regs[2] = 0;
-
-    if (m_task_count == 0) return;
-
-    if (m_current_task >= 0 && m_current_task < m_task_count) {
-        memcpy(m_tasks[m_current_task].regs, g_cpu_regs, sizeof(g_cpu_regs));
-    }
-    int next = (m_current_task + 1) % m_task_count;
-    m_current_task = next;
-    memcpy(g_cpu_regs, m_tasks[next].regs, sizeof(g_cpu_regs));
 }
 
 void Syscalls::impl_OSSemDel() {
@@ -904,14 +909,15 @@ void Syscalls::impl_OSSemDel() {
 }
 
 void Syscalls::impl_OSTaskDel() {
-    u32 prio = arg(0);
     if (m_current_task >= 0) {
+        // Restore a0 so s0 = a0 is valid on restart
+        g_cpu_regs[4] = m_tasks[m_current_task].task_arg;
+        // Reset the flag so the function enters work mode on restart
+        m_mem.write_u8(m_tasks[m_current_task].task_arg + 0x18C, 1);
         m_tasks[m_current_task].active = false;
         m_tasks[m_current_task].blocked = false;
     }
     m_current_task = -1;
-    // Restore idle state (switches back to dl_main from which OSTaskCreate was called)
-    memcpy(g_cpu_regs, m_idle_regs, sizeof(g_cpu_regs));
 }
 
 void Syscalls::impl_GetTickCount() {
@@ -936,7 +942,31 @@ void Syscalls::impl_fsys_fopenW() {
     u32 path_addr = arg(0);
     u32 mode_addr = arg(1);
 
+    // Dump everything at and around the path buffer
     printf("[fopenW] path_addr=0x%08X mode_addr=0x%08X\n", path_addr, mode_addr);
+    u32 stub_marker = m_mem.read_u32(0x80B43F00);
+    u32 bss_game = m_mem.read_u32(0x80B43F30);
+    printf("[fopenW] stub_marker=0x%08X bss_game=0x%08X\n", stub_marker, bss_game);
+    printf("[fopenW] BSS game_name @0x80B43F30: ");
+    for (int i = 0; i < 16; i++) {
+        u16 c = m_mem.read_u16(0x80B43F30 + i*2);
+        if (c == 0) { printf("\\0"); break; }
+        if (c < 128) printf("%c", (char)c);
+        else printf("?");
+    }
+    printf("\n");
+    printf("[fopenW] Path raw16 at 0x%08X:\n", path_addr);
+    for (int i = 0; i < 32; i += 4) {
+        u16 w0 = m_mem.read_u16(path_addr + (i+0)*2);
+        u16 w1 = m_mem.read_u16(path_addr + (i+1)*2);
+        u16 w2 = m_mem.read_u16(path_addr + (i+2)*2);
+        u16 w3 = m_mem.read_u16(path_addr + (i+3)*2);
+        printf("  [%2d] %04X %04X %04X %04X", i, w0, w1, w2, w3);
+        if (w0 < 128 && w1 < 128 && w2 < 128 && w3 < 128)
+            printf("  '%c%c%c%c'", (char)w0, (char)w1, (char)w2, (char)w3);
+        printf("\n");
+        if (w0 == 0 || w1 == 0 || w2 == 0 || w3 == 0) break;
+    }
 
     if (path_addr == 0 || mode_addr == 0) { g_cpu_regs[2] = 0; return; }
 
@@ -969,9 +999,28 @@ void Syscalls::impl_fsys_fopenW() {
 
     printf("[fopenW] path='%s' mode='%s'\n", path.c_str(), mode.c_str());
 
+    // If path is garbage, try game init files in order
+    std::string search_path = path;
+    if (search_path.empty() || search_path.find_first_not_of(' ') == std::string::npos ||
+        search_path.find('?') != std::string::npos) {
+        // Game constructs paths using game name from BSS, which gets overwritten.
+        // Fall back to expected init files in priority order.
+        static const char* const init_files[] = {
+            ".\\ui\\state.sdt",
+            ".\\audio\\WARPlayer.exe",
+        };
+        for (auto f : init_files) {
+            if (m_archive && m_archive->find(f)) {
+                search_path = f;
+                printf("[fopenW] PATH FALLBACK -> '%s'\n", search_path.c_str());
+                break;
+            }
+        }
+    }
+
     // Look up in archive first
     if (m_archive) {
-        const ArchiveEntry* entry = m_archive->find(path);
+        const ArchiveEntry* entry = m_archive->find(search_path);
         if (entry) {
             int idx = alloc_file_handle();
             if (idx < 0) { g_cpu_regs[2] = 0; return; }
@@ -1031,6 +1080,18 @@ void Syscalls::impl_get_current_language() {
 
 bool Syscalls::simulate_vsync() {
     bool switched = false;
+
+    // Auto-press START after 200 frames (loading screen timeout)
+    static u32 vsync_count = 0;
+    vsync_count++;
+    if (vsync_count == 200) {
+        m_display.set_key(DKEY_START, true);
+        printf("[INPUT] Auto-press START at frame %u\n", vsync_count);
+    }
+    if (vsync_count == 210) {
+        m_display.set_key(DKEY_START, false);
+        printf("[INPUT] Release START\n");
+    }
 
     // Inject keyboard events into the game's event queue
     u32 keys = m_display.get_dingoo_keys();

@@ -40,6 +40,7 @@ struct COP0 {
     void tlbr();
     void tlbwi();
     void tlbwr();
+    void tick() { regs.count++; }
 };
 
 #endif // COP0_H

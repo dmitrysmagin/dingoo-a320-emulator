@@ -155,6 +155,7 @@ private:
         bool blocked;
         u32 regs[32];
         u32 hi, lo;
+        u32 task_arg; // original a0 (p_arg) for the task
     };
 
     // External PC tracking - the GOT dispatch caller (execute_one) saves/restores

@@ -51,15 +51,12 @@ int main(int argc, char* argv[]) {
         printf("[PATCH] SLTI at 0x%08X = 0x%08X (unexpected, not patching)\n", patch_vaddr, current);
     }
 
-    // Write a trampoline that dl_main returns to via JR $ra.
-    // dl_main(0,0) does SDK init, then JR $ra to this trampoline.
-    // The trampoline sets a0=0 (argc) and jumps to AppMain (0x80AD6B1C),
-    // which correctly initializes the game.
-    // Location: 0x80B44FF0 (after BSS end, before heap start)
-    u32 trampoline_addr = 0x80B44FF0;
-    mem.write_u32(trampoline_addr,     0x20040000);  // ADDIU a0, zero, 0
-    mem.write_u32(trampoline_addr + 4, 0x082B5AC7);  // J 0x80AD6B1C (AppMain)
-    printf("[PATCH] Return trampoline at 0x%08X\n", trampoline_addr);
+    // Write game name as wide string at 0x80B44FE0 (for AppMain/game_main argument)
+    // "7days\0" in UTF-16LE: 0x0037, 0x0064, 0x0061, 0x0079, 0x0073, 0x0000
+    u32 name_addr = 0x80B44FE0;
+    mem.write_u32(name_addr + 0,  0x00640037);  // 7 d
+    mem.write_u32(name_addr + 4,  0x00790061);  // a y
+    mem.write_u32(name_addr + 8,  0x00000073);  // s \0
 
     // Game has a built-in callback at 0x80A0001C that already calls _lcd_set_frame (GOT 17).
     // No additional patching needed. The callback is in the binary itself.
@@ -86,6 +83,40 @@ int main(int argc, char* argv[]) {
     u32 stack_phys = 0x80C00000 & 0x1FFFFFFF;
     mem.zero_region(stack_phys - 0x1000, 0x11000);
     printf("[INIT] Zeroed stack area: phys 0x%08X-0x%08X\n", stack_phys - 0x1000, stack_phys + 0x10000);
+
+    // Write game name to BSS stub at 0x80BFF000 (in stack area, AFTER stack zero)
+    u32 stub_addr = 0x80BFF000;
+    // Write marker 0xCAFE at 0x80B43F00 to verify stub execution
+    mem.write_u32(stub_addr + 0x00, 0x3C0880B4);  // LUI t0, 0x80B4
+    mem.write_u32(stub_addr + 0x04, 0x3C09CAFE);  // LUI t1, 0xCAFE
+    mem.write_u32(stub_addr + 0x08, 0x3529BABE);  // ORI t1, t1, 0xBABE
+    mem.write_u32(stub_addr + 0x0C, 0xAD093F00);  // SW  t1, 0x3F00(t0) = *(0x80B43F00) = 0xCAFEBABE
+    // Write game name "7days" to BSS
+    mem.write_u32(stub_addr + 0x10, 0x3C090064);  // LUI t1, 0x0064
+    mem.write_u32(stub_addr + 0x14, 0x35290037);  // ORI t1, t1, 0x0037  ; t1 = "7d"
+    mem.write_u32(stub_addr + 0x18, 0xAD093F30);  // SW  t1, 0x3F30(t0) = *(0x80B43F30) = "7d"
+    mem.write_u32(stub_addr + 0x1C, 0x3C090079);  // LUI t1, 0x0079
+    mem.write_u32(stub_addr + 0x20, 0x35290061);  // ORI t1, t1, 0x0061  ; t1 = "ay"
+    mem.write_u32(stub_addr + 0x24, 0xAD093F34);  // SW  t1, 0x3F34(t0) = *(0x80B43F34) = "ay"
+    mem.write_u32(stub_addr + 0x28, 0x24090073);  // ADDIU t1, r0, 0x73  ; t1 = "s\0"
+    mem.write_u32(stub_addr + 0x2C, 0xAD093F38);  // SW  t1, 0x3F38(t0) = *(0x80B43F38) = "s\0"
+    // Set a0 and jump to AppMain
+    mem.write_u32(stub_addr + 0x30, 0x3C0480B4);  // LUI a0, 0x80B4
+    mem.write_u32(stub_addr + 0x34, 0x082B5AC7);  // J   0x80AD6B1C (AppMain)
+    mem.write_u32(stub_addr + 0x38, 0x34844FE0);  // ORI a0, a0, 0x4FE0 (delay: a0=0x80B44FE0)
+    printf("[PATCH] BSS name stub at 0x%08X\n", stub_addr);
+
+    // Verify stub was written correctly
+    printf("[VERIFY] Stub code:");
+    for (int i = 0; i < 12; i++) {
+        printf(" %08X", mem.read_u32(stub_addr + i*4));
+    }
+    printf("\n");
+    printf("[VERIFY] BSS before CPU start =");
+    for (int i = 0; i < 6; i++) {
+        printf(" %04X", mem.read_u16(0x80B43F30 + i*2));
+    }
+    printf("\n");
 
     // Initialize display (SDL2)
     Display display;
@@ -116,7 +147,7 @@ int main(int argc, char* argv[]) {
     cpu.pc = app.entry_point;
     cpu.regs[29] = 0x80C00000;
     cpu.regs[30] = 0x80C00000;
-    cpu.regs[31] = trampoline_addr;  // return to trampoline after init
+    cpu.regs[31] = stub_addr;  // return to stub after init
     cpu.regs[4] = 0;   // a0 = argc = 0
     cpu.regs[5] = 0;   // a1 = argv = 0 (0 = first-time init)
 
