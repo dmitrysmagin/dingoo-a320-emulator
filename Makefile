@@ -1,5 +1,6 @@
+TMPDIR := /c/Users/user/AppData/Local/Temp
 CXX = g++
-CXXFLAGS = -std=c++17 -Wall -Wextra -O2 -g
+CXXFLAGS = -pipe -std=c++17 -Wall -Wextra -O2 -g
 SDL_CFLAGS = -IC:/Users/user/msys64/ucrt64/include/SDL2 -Dmain=SDL_main
 SDL_LIBS = -LC:/Users/user/msys64/ucrt64/lib -lmingw32 -lSDL2main -lSDL2
 
@@ -19,7 +20,7 @@ TARGET = emulator.exe
 all: $(TARGET)
 
 $(TARGET): $(SOURCES)
-	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -o $@ $^ $(SDL_LIBS)
+	TMPDIR=/c/Users/user/AppData/Local/Temp TMP=/c/Users/user/AppData/Local/Temp TEMP=/c/Users/user/AppData/Local/Temp $(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -o $@ $^ $(SDL_LIBS)
 
 run: $(TARGET)
 	./$(TARGET) ../7days.app
