@@ -147,6 +147,7 @@ int main(int argc, char* argv[]) {
     // Initialize syscalls
     Syscalls syscalls(mem, display);
     syscalls.set_archive(&archive);
+    syscalls.set_app_path(app_path);
 
     // Initialize CPU
     CPU cpu;

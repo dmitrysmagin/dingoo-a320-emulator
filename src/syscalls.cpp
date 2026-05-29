@@ -701,10 +701,17 @@ void Syscalls::impl_fsys_fopen() {
 }
 
 void Syscalls::impl_fsys_fread() {
-    u32 handle = arg(0);
-    u32 buf = arg(1);
-    u32 size = arg(2);
-    g_cpu_regs[2] = do_fread(buf, 1, size, handle);
+    u32 buf    = arg(0);
+    u32 size   = arg(1);
+    u32 nmemb  = arg(2);
+    u32 handle = arg(3);
+    bool is_host = (handle < 64 && m_files[handle].in_use && m_files[handle].is_host);
+    u32 cur = is_host ? do_ftell(handle) : 0;
+    u32 n = do_fread(buf, size, nmemb, handle);
+    if (is_host)
+        printf("[FSYS] fread handle=%u buf=0x%08X size=%u nmemb=%u at_offset=0x%08X -> read %u\n",
+               handle, buf, size, nmemb, cur, n);
+    g_cpu_regs[2] = n;
 }
 
 void Syscalls::impl_fsys_fclose() {
@@ -713,7 +720,15 @@ void Syscalls::impl_fsys_fclose() {
 }
 
 void Syscalls::impl_fsys_fseek() {
-    g_cpu_regs[2] = do_fseek(arg(0), (s32)arg(1), arg(2));
+    u32 handle = arg(0);
+    s32 offset = (s32)arg(1);
+    u32 whence = arg(2);
+    bool is_host = (handle < 64 && m_files[handle].in_use && m_files[handle].is_host);
+    u32 ret = do_fseek(handle, offset, whence);
+    if (is_host)
+        printf("[FSYS] fseek handle=%u offset=%d whence=%u -> pos=0x%08X\n",
+               handle, offset, whence, do_ftell(handle));
+    g_cpu_regs[2] = ret;
 }
 
 void Syscalls::impl_fsys_ftell() {
@@ -739,10 +754,11 @@ void Syscalls::impl_fsys_feof() {
 }
 
 void Syscalls::impl_fsys_fwrite() {
-    u32 handle = arg(0);
-    u32 buf = arg(1);
-    u32 size = arg(2);
-    g_cpu_regs[2] = do_fwrite(buf, 1, size, handle);
+    u32 buf    = arg(0);
+    u32 size   = arg(1);
+    u32 nmemb  = arg(2);
+    u32 handle = arg(3);
+    g_cpu_regs[2] = do_fwrite(buf, size, nmemb, handle);
 }
 
 void Syscalls::impl_fsys_findfirst() {
@@ -1061,6 +1077,23 @@ void Syscalls::impl_fsys_fopenW() {
         if (c == 0) break;
         if (c < 128) mode += (char)c;
         else mode += '?';
+    }
+
+    // If path is "7days" (no extension), the game is opening its own binary to read
+    // embedded data (resource offsets, etc.).  Redirect to the actual .app file.
+    if (!m_app_path.empty() && (path == "7days" || path == "7days.app")) {
+        int idx = alloc_file_handle();
+        if (idx < 0) { g_cpu_regs[2] = 0; return; }
+        FILE* f = fopen(m_app_path.c_str(), "rb");
+        if (f) {
+            m_files[idx].is_host = true;
+            m_files[idx].host_file = f;
+            printf("[fopenW] '%s' mode='%s' -> handle %d (app binary)\n",
+                   path.c_str(), mode.c_str(), idx);
+            g_cpu_regs[2] = (u32)idx;
+            return;
+        }
+        m_files[idx].in_use = false;
     }
 
     // If path is garbage, try game init files in order

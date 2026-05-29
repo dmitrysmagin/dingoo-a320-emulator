@@ -16,6 +16,7 @@ public:
     void dispatch(int got_index, u32 return_addr);
     const char* got_name(int index) const;
     void set_archive(Archive* archive) { m_archive = archive; }
+    void set_app_path(const char* path) { m_app_path = path ? path : ""; }
 
 private:
     Memory& m_mem;
@@ -144,6 +145,7 @@ private:
     u32 do_ferror(u32 file_handle);
 
     Archive* m_archive;
+    std::string m_app_path;
     bool m_audio_open;
     u32 m_audio_write_count;
     u32 m_got_call_count;
