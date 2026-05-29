@@ -1228,10 +1228,16 @@ bool Syscalls::simulate_vsync() {
     u32 pressed = keys & ~prev_keys;
     prev_keys = keys;
 
-    // Auto-press START after 200 frames (loading screen timeout)
+    // Auto-press: simulate a held key for one vsync window (sets both event queue and
+    // kbd_get_status state, then releases it next frame so pressed edge fires cleanly).
+    static u32 auto_held = 0;
     if (vsync_count == 200) {
-        pressed |= DKEY_START;
+        m_display.set_key(DKEY_START, true);
+        auto_held = DKEY_START;
         printf("[INPUT] Auto-press START at frame %u\n", vsync_count);
+    } else if (auto_held && vsync_count == 201) {
+        m_display.set_key(auto_held, false);
+        auto_held = 0;
     }
 
     // Write pressed keys to the event queue for game code to read via _sys_judge_event
