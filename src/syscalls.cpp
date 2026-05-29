@@ -14,11 +14,11 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     : m_mem(mem)
     , m_display(display)
     , m_heap_top(0x00200000)  // phys: low memory, below game binary at 0x00A00000 (~8MB free)
+    , m_audio_open(false)
+    , m_audio_write_count(0)
     , m_got_call_count(0)
     , m_current_task(-1)
     , m_task_count(0)
-    , m_audio_open(false)
-    , m_audio_write_count(0)
     , m_os_ticks(0)
     , m_scheduler_started(false)
     , m_task_switched(false)
@@ -132,7 +132,7 @@ const char* Syscalls::got_name(int index) const {
     return "unknown";
 }
 
-void Syscalls::dispatch(int got_index, u32 return_addr) {
+void Syscalls::dispatch(int got_index, u32 /*return_addr*/) {
     m_got_call_count++;
     if (got_index >= 0 && got_index < 72) m_got_call_counts[got_index]++;
     switch (got_index) {
@@ -224,7 +224,7 @@ u32 Syscalls::heap_alloc(u32 size) {
     for (auto& block : m_heap) {
         if (block.free && block.size >= size) {
             block.free = false;
-            return block.addr;
+            return block.addr | 0x80000000u;  // return KSEG0 virt, same as fresh alloc
         }
     }
     u32 addr = m_heap_top;
@@ -579,19 +579,13 @@ void Syscalls::impl__lcd_set_frame() {
     u32 ring_size = 0x9D0800;
     if (phys < ring_base || phys >= ring_base + ring_size)
         phys = ring_base;
-    static u32 last_phys = 0;
-    if (phys != last_phys) {
-        printf("[LCD] _lcd_set_frame -> phys=0x%08X\n", phys);
-        last_phys = phys;
-    }
     m_display.flip(m_mem.get_raw_ptr(), m_mem.size());
     m_display.set_frame_addr(phys);
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl__lcd_get_frame() {
-    u32 addr = m_display.get_frame_addr();
-    g_cpu_regs[2] = addr;
+    g_cpu_regs[2] = m_display.get_frame_addr();
 }
 
 void Syscalls::impl_lcd_get_cframe() {
@@ -604,7 +598,6 @@ void Syscalls::impl_ap_lcd_set_frame() {
 }
 
 void Syscalls::impl_lcd_flip() {
-    printf("[LCD] lcd_flip() frame_addr=0x%08X\n", m_display.get_frame_addr());
     m_display.flip(m_mem.get_raw_ptr(), m_mem.size());
     g_cpu_regs[2] = 0;
 }
@@ -925,7 +918,7 @@ void Syscalls::impl_OSTaskCreate() {
 
 void Syscalls::impl_OSSemPend() {
     u32 sem_ptr = arg(0);
-    u32 timeout = arg(1);  // $a1 = timeout (0 = wait forever)
+    (void)arg(1);          // timeout (0 = wait forever) — not used; we block until signal
     u32 err_ptr = arg(2);  // $a2 = error code pointer
 
     u32 cnt = m_mem.read_u32(sem_ptr + 4);
@@ -1030,8 +1023,8 @@ void Syscalls::impl_GetTickCount() {
 void Syscalls::impl__sys_judge_event() {
     u32 event_queue = 0x80BFECD8;
     u32 event_val = m_mem.read_u32(event_queue);
-    printf("[EVENT] _sys_judge_event() queue=0x%08X task=%d\n", event_val, m_current_task);
     if (event_val) {
+        printf("[EVENT] _sys_judge_event() -> 0x%08X task=%d\n", event_val, m_current_task);
         m_mem.write_u32(event_queue, 0);
         g_cpu_regs[2] = event_val;
     } else {
@@ -1099,6 +1092,8 @@ void Syscalls::impl_fsys_fopenW() {
             m_files[idx].archive = m_archive;
             m_files[idx].archive_entry = entry;
             m_files[idx].offset = 0;
+            printf("[fopenW] '%s' mode='%s' -> handle %d (archive, %u bytes)\n",
+                   search_path.c_str(), mode.c_str(), idx, (u32)entry->size);
             g_cpu_regs[2] = (u32)idx;
             return;
         }
@@ -1114,6 +1109,8 @@ void Syscalls::impl_fsys_fopenW() {
         if (f) {
             m_files[idx].is_host = true;
             m_files[idx].host_file = f;
+            printf("[fopenW] '%s' mode='%s' -> handle %d (host write)\n",
+                   path.c_str(), mode.c_str(), idx);
             g_cpu_regs[2] = (u32)idx;
             return;
         }
@@ -1126,11 +1123,14 @@ void Syscalls::impl_fsys_fopenW() {
         if (f) {
             m_files[idx].is_host = true;
             m_files[idx].host_file = f;
+            printf("[fopenW] '%s' mode='%s' -> handle %d (host read)\n",
+                   path.c_str(), mode.c_str(), idx);
             g_cpu_regs[2] = (u32)idx;
             return;
         }
     }
 
+    printf("[fopenW] '%s' mode='%s' -> NOT FOUND\n", search_path.c_str(), mode.c_str());
     m_files[idx].in_use = false;
     g_cpu_regs[2] = 0;
 }
@@ -1190,7 +1190,6 @@ bool Syscalls::simulate_vsync() {
     u32 keys = m_display.get_dingoo_keys();
     static u32 prev_keys = 0;
     u32 pressed = keys & ~prev_keys;
-    u32 released = prev_keys & ~keys;
     prev_keys = keys;
 
     // Auto-press START after 200 frames (loading screen timeout)
@@ -1236,31 +1235,14 @@ bool Syscalls::simulate_vsync() {
         }
     }
 
-    // Detect frame buffer address from the render function's LW interception,
-    // falling back to a RAM scan for the best candidate.
+    // Update frame buffer address from the render function's LW interception.
+    // The game's render function loads the active framebuffer pointer via a LW at
+    // 0x80A21E78; g_detected_fb_addr captures that value so simulate_vsync can track
+    // which physical buffer should be presented each frame.
     if (g_detected_fb_addr) {
-        u32 phys = g_detected_fb_addr & 0x1FFFFFFF;
-        m_display.set_frame_addr(phys);
-    } else if (m_display.get_frame_addr() == 0) {
-        u32 best_addr = 0x00C26000;
-        u32 best_score = 0;
-        u8* raw = m_mem.get_raw_ptr();
-        u32 mem_size = m_mem.size();
-        for (u32 a = 0x00800000; a + 0x25800 < mem_size; a += 0x1000) {
-            u32 white = 0, zero = 0;
-            for (u32 i = 0; i < 0x25800; i += 2) {
-                u16 p = (u16)raw[a + i] | ((u16)raw[a + i + 1] << 8);
-                if (p == 0xFFFF) white++;
-                else if (p == 0) zero++;
-            }
-            u32 other = (0x25800 / 2) - white - zero;
-            if (other > best_score) {
-                best_score = other;
-                best_addr = a;
-            }
-        }
-        m_display.set_frame_addr(best_addr);
+        m_display.set_frame_addr(g_detected_fb_addr & 0x1FFFFFFF);
     }
+
     // Periodic GOT call dump every 1000 frames
     if (vsync_count % 1000 == 0) {
         for (int i = 0; i < 72; i++) {

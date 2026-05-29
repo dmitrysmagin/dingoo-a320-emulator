@@ -85,6 +85,16 @@ int main(int argc, char* argv[]) {
     mem.zero_region(stack_phys - 0x1000, 0x11000);
     printf("[INIT] Zeroed stack area: phys 0x%08X-0x%08X\n", stack_phys - 0x1000, stack_phys + 0x10000);
 
+    // Pre-populate the event queue exactly as the real Dingoo A320 OS does before launching
+    // an app.  Phys 0x00BFECD8 falls inside the resource archive (loaded at 0x00B50000+), so
+    // without an explicit write it would contain raw archive data.  Bit 31 of the value signals
+    // audio-subsystem ready, causing the game to create its audio task on the first
+    // _sys_judge_event call.  The lower bits encode hardware state (earphone jack, etc.) and
+    // are used by the game as audio-buffer parameters — 0x8BFC4D89 is the empirically-observed
+    // value from real hardware and must be used verbatim.
+    mem.write_u32(0x80BFECD8, 0x8BFC4D89u);
+    printf("[INIT] Pre-populated event queue 0x80BFECD8 = 0x8BFC4D89 (hardware-ready)\n");
+
     // Write game name to BSS stub at 0x80BFF000 (in stack area, AFTER stack zero)
     u32 stub_addr = 0x80BFF000;
     // Write marker 0xCAFE at 0x80B43F00 to verify stub execution

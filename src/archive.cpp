@@ -111,27 +111,29 @@ bool Archive::load(const std::string& app_path) {
 const ArchiveEntry* Archive::find(const std::string& path) const {
     if (!m_loaded) return nullptr;
 
-    auto it = m_name_to_index.find(path);
-    if (it != m_name_to_index.end()) {
-        return &m_entries[it->second];
-    }
+    // Build lowercase version of the query
+    std::string lower = path;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    std::replace(lower.begin(), lower.end(), '/', '\\');
+
+    auto try_key = [&](const std::string& key) -> const ArchiveEntry* {
+        auto it = m_name_to_index.find(key);
+        if (it != m_name_to_index.end())
+            return &m_entries[it->second];
+        std::string lkey = key;
+        std::transform(lkey.begin(), lkey.end(), lkey.begin(), ::tolower);
+        it = m_name_to_index.find(lkey);
+        if (it != m_name_to_index.end())
+            return &m_entries[it->second];
+        return nullptr;
+    };
+
+    if (auto* e = try_key(path)) return e;
 
     // Try with .\ prefix if not already present
-    std::string with_prefix;
     if (path.size() < 2 || path[0] != '.') {
-        with_prefix = ".\\" + path;
-        auto it2 = m_name_to_index.find(with_prefix);
-        if (it2 != m_name_to_index.end())
-            return &m_entries[it2->second];
-    }
-
-    // Try ./ prefix
-    std::string with_slash_prefix;
-    if (path.size() < 2 || path[0] != '.') {
-        with_slash_prefix = "./" + path;
-        auto it3 = m_name_to_index.find(with_slash_prefix);
-        if (it3 != m_name_to_index.end())
-            return &m_entries[it3->second];
+        if (auto* e = try_key(".\\" + path)) return e;
+        if (auto* e = try_key("./" + path)) return e;
     }
 
     return nullptr;

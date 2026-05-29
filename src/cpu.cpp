@@ -5,10 +5,13 @@
 
 // Global register access for syscall dispatch
 u32 g_cpu_regs[32];
-u32 g_detected_fb_addr = 0;
 u32 g_cpu_pc;
 u32 g_cpu_hi;
 u32 g_cpu_lo;
+
+// Frame buffer address detected by intercepting the LW at 0x80A21E78 (game render function).
+// Needed so simulate_vsync can set the correct display buffer each frame.
+u32 g_detected_fb_addr = 0;
 
 // Sign extend helpers
 static inline s32 sext16(u32 v) { return (s32)(s16)v; }
@@ -157,7 +160,6 @@ void CPU::execute(u32 insn) {
     int opcode = (insn >> 26) & 0x3F;
     int rs = (insn >> 21) & 0x1F;
     int rt = (insn >> 16) & 0x1F;
-    int rd = (insn >> 11) & 0x1F;
     s32 imm = (s32)sext16(insn & 0xFFFF);
     u32 uimm = insn & 0xFFFF;
 
