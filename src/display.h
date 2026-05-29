@@ -44,6 +44,8 @@ public:
     void set_display_on(bool on) { m_display_on = on; }
 
     bool pump_events();
+    void present_blank();  // SDL_RenderPresent without touching dirty flag or framebuffer
+    void save_screenshot(const char* path);
     bool is_dirty() const { return m_dirty; }
     void clear_dirty() { m_dirty = false; }
 

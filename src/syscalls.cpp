@@ -13,7 +13,7 @@ extern u32 g_detected_fb_addr;
 Syscalls::Syscalls(Memory& mem, Display& display)
     : m_mem(mem)
     , m_display(display)
-    , m_heap_top(0x00200000)  // phys: low memory, below game binary at 0x00A00000 (~8MB free)
+    , m_heap_top(0x00020000)  // phys: zone1 above exception vectors, zone2 at 0x04000000 (above archive)
     , m_audio_open(false)
     , m_audio_write_count(0)
     , m_got_call_count(0)
@@ -227,9 +227,12 @@ u32 Syscalls::heap_alloc(u32 size) {
             return block.addr | 0x80000000u;  // return KSEG0 virt, same as fresh alloc
         }
     }
+    // Jump over game binary + resource archive to zone 2 if allocation won't fit in zone 1
+    if (m_heap_top + size > 0x009FFFFC && m_heap_top < 0x04000000)
+        m_heap_top = 0x04000000;
     u32 addr = m_heap_top;
     m_heap_top += size;
-    if (m_heap_top > 0x009F0000) {
+    if (m_heap_top > 0x07FFFFFC) {
         printf("[HEAP] OOM: top=0x%08X size=%u\n", m_heap_top, size);
         return 0;
     }
@@ -575,12 +578,12 @@ void Syscalls::impl_strlen() {
 void Syscalls::impl__lcd_set_frame() {
     u32 addr = arg(0);
     u32 phys = addr & 0x1FFFFFFF;
-    u32 ring_base = 0x00B45000;
-    u32 ring_size = 0x9D0800;
-    if (phys < ring_base || phys >= ring_base + ring_size)
-        phys = ring_base;
+    constexpr u32 fb_bytes = Display::WIDTH * Display::HEIGHT * Display::PIXEL_SIZE;
+    if (phys + fb_bytes > m_mem.size())
+        phys = 0;  // invalid addr — keep current
     m_display.flip(m_mem.get_raw_ptr(), m_mem.size());
-    m_display.set_frame_addr(phys);
+    if (phys)
+        m_display.set_frame_addr(phys);
     g_cpu_regs[2] = 0;
 }
 
@@ -1269,12 +1272,13 @@ bool Syscalls::simulate_vsync() {
     }
 
     // Update frame buffer address from the render function's LW interception.
-    // The game's render function loads the active framebuffer pointer via a LW at
-    // 0x80A21E78; g_detected_fb_addr captures that value so simulate_vsync can track
-    // which physical buffer should be presented each frame.
+    // Required so _lcd_get_frame returns a valid address before the first _lcd_set_frame call.
     if (g_detected_fb_addr) {
         m_display.set_frame_addr(g_detected_fb_addr & 0x1FFFFFFF);
     }
+
+    // Keep SDL window alive without triggering frame-count dirty flag.
+    m_display.present_blank();
 
     // Periodic GOT call dump every 1000 frames
     if (vsync_count % 1000 == 0) {
@@ -1284,6 +1288,5 @@ bool Syscalls::simulate_vsync() {
             }
         }
     }
-    m_display.flip(m_mem.get_raw_ptr(), m_mem.size());
     return switched;
 }

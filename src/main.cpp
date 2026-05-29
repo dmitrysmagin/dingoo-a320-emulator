@@ -201,10 +201,15 @@ int main(int argc, char* argv[]) {
             cpu.running = false;
         }
 
-        // Present frame if display is dirty
+        // Present frame if display is dirty; auto-save screenshots at milestones
         if (display.is_dirty()) {
             display.clear_dirty();
             frame_count++;
+            if (frame_count == 1 || frame_count == 10 || frame_count == 50 || frame_count == 100) {
+                char path[64];
+                snprintf(path, sizeof(path), "screenshot_%04d.bmp", frame_count);
+                display.save_screenshot(path);
+            }
         }
 
         if (frame % 1000 == 0) {

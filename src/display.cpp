@@ -85,16 +85,6 @@ void Display::flip(const u8* guest_ram, u32 ram_size) {
             memcpy(m_framebuffer, &guest_ram[phys], WIDTH * HEIGHT * PIXEL_SIZE);
             // Dump frame buffer periodically
             static u32 dump_count = 0;
-            if (dump_count % 50000 == 0 && dump_count > 0) {
-                printf("[FB] frame_addr=0x%08X phys=0x%08X\n", m_frame_addr, phys);
-                int white = 0, zero = 0, other = 0;
-                for (int i = 0; i < WIDTH * HEIGHT; i++) {
-                    if (m_framebuffer[i] == 0xFFFF) white++;
-                    else if (m_framebuffer[i] == 0) zero++;
-                    else other++;
-                }
-                printf("[FB] white=%d zero=%d other=%d\n", white, zero, other);
-            }
             dump_count++;
         }
     }
@@ -123,12 +113,41 @@ static u32 sdl_to_dingoo(SDL_Keycode sym) {
     }
 }
 
+void Display::present_blank() {
+    if (m_initialized)
+        SDL_RenderPresent(m_renderer);
+}
+
+void Display::save_screenshot(const char* path) {
+    if (!m_initialized) return;
+    // Convert RGB565 framebuffer to RGBA8888 for SDL_SaveBMP
+    SDL_Surface* surf = SDL_CreateRGBSurfaceWithFormat(0, WIDTH, HEIGHT, 32, SDL_PIXELFORMAT_RGBA8888);
+    if (!surf) return;
+    u32* px = (u32*)surf->pixels;
+    for (int i = 0; i < WIDTH * HEIGHT; i++) {
+        u16 c = m_framebuffer[i];
+        u8 r = ((c >> 11) & 0x1F) << 3;
+        u8 g = ((c >>  5) & 0x3F) << 2;
+        u8 b = ((c >>  0) & 0x1F) << 3;
+        px[i] = SDL_MapRGBA(surf->format, r, g, b, 255);
+    }
+    SDL_SaveBMP(surf, path);
+    SDL_FreeSurface(surf);
+    printf("[DISPLAY] Screenshot saved: %s\n", path);
+}
+
 bool Display::pump_events() {
+    static int screenshot_idx = 0;
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_QUIT) return true;
         if (event.type == SDL_KEYDOWN) {
             if (event.key.keysym.sym == SDLK_ESCAPE) return true;
+            if (event.key.keysym.sym == SDLK_F12) {
+                char path[64];
+                snprintf(path, sizeof(path), "screenshot_%03d.bmp", screenshot_idx++);
+                save_screenshot(path);
+            }
             m_dingoo_keys |= sdl_to_dingoo(event.key.keysym.sym);
         }
         if (event.type == SDL_KEYUP) {
