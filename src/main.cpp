@@ -157,10 +157,11 @@ int main(int argc, char* argv[]) {
     printf("[INIT] RAM size: %u MB\n", mem.size() / (1024 * 1024));
     printf("[INIT] Display: %dx%d (scale %d)\n", Display::WIDTH, Display::HEIGHT, Display::SCALE);
 
-    // Save initial CPU state as idle regs for OSTaskDel restore
+    // Save initial CPU state as idle context for OSTaskDel fallback
     extern u32 g_cpu_regs[32];
     memcpy(g_cpu_regs, cpu.regs, sizeof(g_cpu_regs));
     syscalls.set_idle_regs(g_cpu_regs);
+    syscalls.set_idle_pc(cpu.pc);
 
     printf("\n=== Starting emulation ===\n\n");
 
@@ -169,12 +170,10 @@ int main(int argc, char* argv[]) {
     clock_t start = clock();
     u32 frame = 0;
     u32 max_insns_per_frame = 2000000;
-    u32 max_frames = 5000;
+    u32 max_frames = 0;  // 0 = unlimited (runs until quit or CPU halts)
     u32 frame_count = 0;
-    u32 last_pc = 0;
-    u32 stuck_count = 0;
 
-    while (cpu.running && frame < max_frames) {
+    while (cpu.running && (max_frames == 0 || frame < max_frames)) {
         // Process SDL events (quit, keyboard)
         if (display.pump_events()) {
             printf("[DISPLAY] Quit requested\n");
@@ -197,27 +196,13 @@ int main(int argc, char* argv[]) {
             frame_count++;
         }
 
-        // Progress tracking: detect when PC changes (signals a transition)
-        if (cpu.pc != last_pc) {
-            if (last_pc != 0) {
-                clock_t elapsed = clock() - start;
-                double seconds = (double)elapsed / CLOCKS_PER_SEC;
-                printf("[PC CHANGED] 0x%08X -> 0x%08X at frame=%u insns=%llu (%.1fs)\n",
-                       last_pc, cpu.pc, frame, cpu.insn_count, seconds);
-            }
-            last_pc = cpu.pc;
-            stuck_count = 0;
-        } else {
-            stuck_count++;
-        }
-
         if (frame % 1000 == 0) {
             clock_t elapsed = clock() - start;
             double seconds = (double)elapsed / CLOCKS_PER_SEC;
             double insns_per_sec = cpu.insn_count / (seconds > 0 ? seconds : 0.001);
-            printf("[FRAME %u] PC=0x%08X insns=%llu (%.0f/s) rendered=%u got=%u stuck=%u\n",
+            printf("[FRAME %u] PC=0x%08X insns=%llu (%.0f/s) rendered=%u got=%u\n",
                    frame, cpu.pc, cpu.insn_count, insns_per_sec, frame_count,
-                   syscalls.got_call_count(), stuck_count);
+                   syscalls.got_call_count());
             int key_gots[] = {55, 60, 61, 63, 65, 66, 67, 49};
             for (int gi = 0; gi < 8; gi++) {
                 int g = key_gots[gi];

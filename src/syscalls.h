@@ -106,6 +106,8 @@ private:
     void impl___to_locale_ansi();
     void impl_get_current_language();
 
+    std::string format_string(const std::string& fmt, int first_arg);
+
     // Internal helpers
     struct HeapBlock {
         u32 addr;
@@ -155,7 +157,8 @@ private:
         bool blocked;
         u32 regs[32];
         u32 hi, lo;
-        u32 task_arg; // original a0 (p_arg) for the task
+        u32 pc;        // resume PC (separate from $ra to avoid corruption on preemption)
+        u32 task_arg;  // original a0 (p_arg) for the task
         u8  task_prio; // µC/OS-II task priority
         u32 wake_tick; // >0 = OSTimeDly blocks until this tick count
         u32 block_sem; // semaphore ECB addr task is blocked on (0 = not sem-blocked)
@@ -167,8 +170,10 @@ private:
     u32 m_idle_regs[32];
     int m_current_task;
     int m_task_count;
-    u32 m_os_ticks; // µC/OS-II global tick counter
-    bool m_scheduler_started; // set after first task switch
+    u32 m_os_ticks;
+    bool m_scheduler_started;
+    bool m_task_switched;
+    u32 m_idle_pc;
 
     void save_current_task();
     void switch_to_task(int task_idx);
@@ -177,8 +182,11 @@ private:
 public:
     u32 got_call_count() const { return m_got_call_count; }
     u32 got_call_counts(int i) const { return m_got_call_counts[i]; }
-    bool simulate_vsync();  // returns true if task was switched
-    void set_idle_regs(const u32 regs[32]); // save initial CPU state for idle restore
+    bool simulate_vsync();
+    void set_idle_regs(const u32 regs[32]);
+    void set_idle_pc(u32 pc) { m_idle_pc = pc; }
+    bool task_switched() const { return m_task_switched; }
+    void clear_task_switched() { m_task_switched = false; }
 };
 
 #endif // SYSCALLS_H

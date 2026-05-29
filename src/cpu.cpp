@@ -247,20 +247,21 @@ void CPU::execute(u32 insn) {
     // Loads
     case 0x20: if (rt) regs[rt] = (u32)(s8)mem->read_u8(regs[rs] + imm); break;
     case 0x21: if (rt) regs[rt] = (u32)(s16)mem->read_u16(regs[rs] + imm); break;
-    case 0x22: {  // LWL
+    case 0x22: {  // LWL (little-endian MIPS: loads high bytes of aligned word into rt)
         u32 addr = regs[rs] + imm;
         u32 aligned = addr & ~3;
-        u32 shift = (addr & 3) * 8;
+        u32 byte_off = addr & 3;
         u32 val = mem->read_u32(aligned);
-        if (rt) regs[rt] = (regs[rt] & ~(0xFFFFFFFF >> shift)) | (val >> shift);
+        if (rt) {
+            u32 shift = (3 - byte_off) * 8;
+            u32 mask = shift ? (1u << shift) - 1u : 0u;
+            regs[rt] = (regs[rt] & mask) | (val << shift);
+        }
         break;
     }
     case 0x23: {
         u32 load_addr = regs[rs] + imm;
         u32 load_val = mem->read_u32(load_addr);
-        if (rt == 31 && load_addr >= 0x80BFFFF0 && load_addr <= 0x80C00010) {
-            printf("[LW-ra] 0x%08X -> 0x%08X at pc=0x%08X\n", load_addr, load_val, g_cpu_pc - 4);
-        }
         if (rt) regs[rt] = load_val;
         if ((pc - 4) == 0x80A21E78) {
             u32 loaded = load_val & 0x1FFFFFFF;
@@ -272,12 +273,20 @@ void CPU::execute(u32 insn) {
     }
     case 0x24: if (rt) regs[rt] = mem->read_u8(regs[rs] + imm); break;
     case 0x25: if (rt) regs[rt] = mem->read_u16(regs[rs] + imm); break;
-    case 0x26: {  // LWR
+    case 0x26: {  // LWR (little-endian MIPS: loads low bytes from aligned word into rt)
         u32 addr = regs[rs] + imm;
         u32 aligned = addr & ~3;
-        u32 shift = (addr & 3) * 8;
+        u32 byte_off = addr & 3;
         u32 val = mem->read_u32(aligned);
-        if (rt) regs[rt] = (regs[rt] & (0xFFFFFFFF >> (32 - shift))) | (val << (32 - shift));
+        if (rt) {
+            u32 loaded_bits = (byte_off + 1u) * 8u;
+            if (loaded_bits >= 32u) {
+                regs[rt] = val;
+            } else {
+                u32 mask = (1u << loaded_bits) - 1u;
+                regs[rt] = (regs[rt] & ~mask) | (val & mask);
+            }
+        }
         break;
     }
 
@@ -289,28 +298,36 @@ void CPU::execute(u32 insn) {
         break;
     }
     case 0x29: mem->write_u16(regs[rs] + imm, (u16)regs[rt]); break;
-    case 0x2A: {  // SWL
+    case 0x2A: {  // SWL (little-endian MIPS: stores high bytes of rt into low part of aligned word)
         u32 addr = regs[rs] + imm;
         u32 aligned = addr & ~3;
-        u32 shift = (addr & 3) * 8;
+        u32 byte_off = addr & 3;
         u32 existing = mem->read_u32(aligned);
-        mem->write_u32(aligned, (existing & ~(0xFFFFFFFF >> shift)) | (regs[rt] >> shift));
-        break;
-    }
-    case 0x2B: {
-        u32 store_addr = regs[rs] + imm;
-        if (store_addr >= 0x80BFFFF0 && store_addr <= 0x80C00010) {
-            printf("[SW-stack] 0x%08X = 0x%08X (r%d) at pc=0x%08X\n", store_addr, regs[rt], rt, g_cpu_pc - 4);
+        u32 stored_bits = (byte_off + 1u) * 8u;
+        if (stored_bits >= 32u) {
+            mem->write_u32(aligned, regs[rt]);
+        } else {
+            u32 mask = (1u << stored_bits) - 1u;
+            u32 shift = (3u - byte_off) * 8u;
+            mem->write_u32(aligned, (existing & ~mask) | ((regs[rt] >> shift) & mask));
         }
-        mem->write_u32(store_addr, regs[rt]);
         break;
     }
-    case 0x2E: {  // SWR
+    case 0x2B:
+        mem->write_u32(regs[rs] + imm, regs[rt]);
+        break;
+    case 0x2E: {  // SWR (little-endian MIPS: stores low bytes of rt into high part of aligned word)
         u32 addr = regs[rs] + imm;
         u32 aligned = addr & ~3;
-        u32 shift = (addr & 3) * 8;
+        u32 byte_off = addr & 3;
         u32 existing = mem->read_u32(aligned);
-        mem->write_u32(aligned, (existing & (0xFFFFFFFF >> (32 - shift))) | (regs[rt] << (32 - shift)));
+        u32 shift = byte_off * 8u;
+        if (shift == 0u) {
+            mem->write_u32(aligned, regs[rt]);
+        } else {
+            u32 mask = ~((1u << shift) - 1u);
+            mem->write_u32(aligned, (existing & ~mask) | (regs[rt] << shift));
+        }
         break;
     }
 
@@ -398,7 +415,6 @@ void CPU::execute_one() {
     }
 
     u32 insn = fetch();
-    u32 fetch_pc = pc;
     trace_add(pc, insn);
     u32 next_pc = pc + 4;
     pc = next_pc;
@@ -459,11 +475,14 @@ void CPU::execute_one() {
         int idx = mem->got_index(pc);
         if (idx >= 0 && (u32)idx < GOT_COUNT) {
             u32 return_addr = regs[31];
+            syscalls->clear_task_switched();
             syscalls->dispatch(idx, return_addr);
             memcpy(regs, g_cpu_regs, sizeof(regs));
             hi = g_cpu_hi;
             lo = g_cpu_lo;
-            pc = regs[31];
+            // If the syscall did a task switch, g_cpu_pc holds the new task's resume PC.
+            // Otherwise return to the caller via $ra (which dispatch may have set).
+            pc = syscalls->task_switched() ? g_cpu_pc : return_addr;
             if ((pc & 0x80000000) == 0 && pc >= 0x4000) {
                 printf("[KUSEG] GOT dispatch idx=%d pc=0x%08X (invalid)\n", idx, pc);
                 printf("[KUSEG] return_addr=0x%08X\n", return_addr);
@@ -481,12 +500,20 @@ void CPU::run_frame(u32 max_insns) {
     }
     // Simulate VSYNC once per frame
     if (syscalls) {
+        // Sync current CPU state to globals so save_current_task() works correctly
+        memcpy(g_cpu_regs, regs, sizeof(g_cpu_regs));
+        g_cpu_pc = pc;
+        g_cpu_hi = hi;
+        g_cpu_lo = lo;
+
+        syscalls->clear_task_switched();
         bool switched = syscalls->simulate_vsync();
+
         memcpy(regs, g_cpu_regs, sizeof(regs));
         hi = g_cpu_hi;
         lo = g_cpu_lo;
         if (switched) {
-            pc = regs[31];
+            pc = g_cpu_pc;  // use dedicated saved task PC, not $ra
         }
     }
 }

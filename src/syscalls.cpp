@@ -13,7 +13,7 @@ extern u32 g_detected_fb_addr;
 Syscalls::Syscalls(Memory& mem, Display& display)
     : m_mem(mem)
     , m_display(display)
-    , m_heap_top(0x00B45000)
+    , m_heap_top(0x00200000)  // phys: low memory, below game binary at 0x00A00000 (~8MB free)
     , m_got_call_count(0)
     , m_current_task(-1)
     , m_task_count(0)
@@ -21,6 +21,8 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     , m_audio_write_count(0)
     , m_os_ticks(0)
     , m_scheduler_started(false)
+    , m_task_switched(false)
+    , m_idle_pc(0)
 {
     memset(m_got_call_counts, 0, sizeof(m_got_call_counts));
     for (int i = 0; i < MAX_TASKS; i++) {
@@ -227,15 +229,19 @@ u32 Syscalls::heap_alloc(u32 size) {
     }
     u32 addr = m_heap_top;
     m_heap_top += size;
-    if (m_heap_top > 0x03F00000) return 0;
+    if (m_heap_top > 0x009F0000) {
+        printf("[HEAP] OOM: top=0x%08X size=%u\n", m_heap_top, size);
+        return 0;
+    }
     m_heap.push_back({addr, size, false});
     return addr | 0x80000000;  // KSEG0 for TLB bypass
 }
 
 void Syscalls::heap_free(u32 addr) {
     if (addr == 0) return;
+    u32 phys = addr & 0x1FFFFFFFu;  // strip KSEG0/KSEG1 bit — game holds virt, we store phys
     for (auto& block : m_heap) {
-        if (block.addr == addr && !block.free) {
+        if (block.addr == phys && !block.free) {
             block.free = true;
             return;
         }
@@ -245,8 +251,9 @@ void Syscalls::heap_free(u32 addr) {
 u32 Syscalls::heap_realloc(u32 addr, u32 new_size) {
     if (addr == 0) return heap_alloc(new_size);
     if (new_size == 0) { heap_free(addr); return 0; }
+    u32 phys = addr & 0x1FFFFFFFu;
     for (auto& block : m_heap) {
-        if (block.addr == addr && !block.free) {
+        if (block.addr == phys && !block.free) {
             if (new_size <= block.size) return addr;
             u32 new_addr = heap_alloc(new_size);
             if (new_addr) {
@@ -384,59 +391,95 @@ u32 Syscalls::do_ferror(u32 file_handle) {
     return 0;
 }
 
+// === Format string helper ===
+
+std::string Syscalls::format_string(const std::string& fmt, int first_arg) {
+    std::string result;
+    int arg_idx = first_arg;
+
+    for (size_t i = 0; i < fmt.size(); ) {
+        if (fmt[i] != '%') { result += fmt[i++]; continue; }
+        size_t spec_start = i++;
+        if (i >= fmt.size()) { result += '%'; break; }
+        if (fmt[i] == '%') { result += '%'; i++; continue; }
+
+        // Collect flags
+        while (i < fmt.size() && (fmt[i] == '-' || fmt[i] == '+' ||
+               fmt[i] == ' ' || fmt[i] == '#' || fmt[i] == '0')) i++;
+        // Width
+        while (i < fmt.size() && fmt[i] >= '0' && fmt[i] <= '9') i++;
+        // Precision
+        if (i < fmt.size() && fmt[i] == '.') {
+            i++;
+            while (i < fmt.size() && fmt[i] >= '0' && fmt[i] <= '9') i++;
+        }
+        // Strip length modifiers (all values are 32-bit in guest)
+        while (i < fmt.size() && (fmt[i] == 'l' || fmt[i] == 'h' ||
+               fmt[i] == 'z' || fmt[i] == 'L')) i++;
+
+        if (i >= fmt.size()) break;
+        char conv = fmt[i++];
+
+        // Rebuild clean spec string (no length modifier)
+        std::string spec;
+        for (size_t j = spec_start; j < i - 1; j++) {
+            char c = fmt[j];
+            if (c != 'l' && c != 'h' && c != 'z' && c != 'L') spec += c;
+        }
+        spec += conv;
+
+        char buf[512];
+        switch (conv) {
+        case 'd': case 'i':
+            snprintf(buf, sizeof(buf), spec.c_str(), (int)(s32)arg(arg_idx++));
+            result += buf; break;
+        case 'u':
+            snprintf(buf, sizeof(buf), spec.c_str(), (unsigned)arg(arg_idx++));
+            result += buf; break;
+        case 'x': case 'X': case 'o':
+            snprintf(buf, sizeof(buf), spec.c_str(), (unsigned)arg(arg_idx++));
+            result += buf; break;
+        case 'p':
+            snprintf(buf, sizeof(buf), "%08x", arg(arg_idx++));
+            result += buf; break;
+        case 's': {
+            u32 saddr = arg(arg_idx++);
+            std::string s = (saddr != 0) ? guest_string(saddr) : "(null)";
+            snprintf(buf, sizeof(buf), spec.c_str(), s.c_str());
+            result += buf; break;
+        }
+        case 'c':
+            result += (char)(arg(arg_idx++) & 0xFF); break;
+        case 'f': case 'g': case 'e': case 'E': case 'G':
+            snprintf(buf, sizeof(buf), spec.c_str(), 0.0);
+            result += buf; arg_idx++; break;
+        default:
+            // Unknown: emit literal spec text
+            result += fmt.substr(spec_start, i - spec_start);
+            break;
+        }
+    }
+    return result;
+}
+
 // === GOT 0-10: libc ===
 
 void Syscalls::impl_abort() {
-    // Game calls abort on fatal error - this is a soft recovery
+    printf("[ABORT] abort() called from PC=0x%08X (returning as no-op)\n", g_cpu_pc);
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_printf() {
-    u32 fmt_addr = arg(0);
-    std::string fmt = guest_string(fmt_addr);
-    int arg_idx = 1;
-    for (size_t i = 0; i < fmt.size(); i++) {
-        if (fmt[i] == '%' && i + 1 < fmt.size()) {
-            char spec = fmt[i + 1];
-            if (spec == 's') {
-                u32 saddr = arg(arg_idx++);
-                printf("%s", guest_string(saddr).c_str());
-            } else if (spec == 'd' || spec == 'i') {
-                printf("%d", (s32)arg(arg_idx++));
-            } else if (spec == 'u') {
-                printf("%u", arg(arg_idx++));
-            } else if (spec == 'x' || spec == 'X') {
-                printf("%08X", arg(arg_idx++));
-            } else if (spec == 'p') {
-                printf("%08X", arg(arg_idx++));
-            } else if (spec == 'f' || spec == 'g') {
-                printf("<float>");
-                arg_idx++;
-            } else if (spec == 'c') {
-                printf("%c", (char)arg(arg_idx++));
-            } else if (spec == '%') {
-                putchar('%');
-            } else {
-                putchar('%');
-                putchar(spec);
-            }
-            i++;
-        } else {
-            putchar(fmt[i]);
-        }
-    }
+    std::string out = format_string(guest_string(arg(0)), 1);
+    fputs(out.c_str(), stdout);
     fflush(stdout);
-    g_cpu_regs[2] = 0;
+    g_cpu_regs[2] = (u32)out.size();
 }
 
 void Syscalls::impl_sprintf() {
     u32 buf_addr = arg(0);
-    u32 fmt_addr = arg(1);
-    std::string fmt = guest_string(fmt_addr);
-    std::string result = fmt;
-    for (u32 i = 0; i < result.size() && i < 255; i++)
-        m_mem.write_u8(buf_addr + i, (u8)result[i]);
-    m_mem.write_u8(buf_addr + result.size(), 0);
+    std::string result = format_string(guest_string(arg(1)), 2);
+    m_mem.write_block(buf_addr, (const u8*)result.c_str(), (u32)result.size() + 1);
     g_cpu_regs[2] = (u32)result.size();
 }
 
@@ -531,19 +574,16 @@ void Syscalls::impl_strlen() {
 
 void Syscalls::impl__lcd_set_frame() {
     u32 addr = arg(0);
-    // Game passes KSEG0/KSEG1 addresses for frame buffers (e.g., 0x80B45XXX).
-    // Convert to physical for storage and bounds checking.
     u32 phys = addr & 0x1FFFFFFF;
-    // Only wrap physical addresses within the buffer ring (safety check).
-    // The game's own frame counter handles the 67-buffer ring correctly.
     u32 ring_base = 0x00B45000;
     u32 ring_size = 0x9D0800;
-    if (phys >= ring_base && phys < ring_base + ring_size) {
-        // Within ring - use as-is
-    } else if (ring_base + ring_size > 0 && phys >= ring_base + ring_size) {
+    if (phys < ring_base || phys >= ring_base + ring_size)
         phys = ring_base;
+    static u32 last_phys = 0;
+    if (phys != last_phys) {
+        printf("[LCD] _lcd_set_frame -> phys=0x%08X\n", phys);
+        last_phys = phys;
     }
-    // Flip first (using current/last frame buffer), then set new address for next frame
     m_display.flip(m_mem.get_raw_ptr(), m_mem.size());
     m_display.set_frame_addr(phys);
     g_cpu_regs[2] = 0;
@@ -564,6 +604,7 @@ void Syscalls::impl_ap_lcd_set_frame() {
 }
 
 void Syscalls::impl_lcd_flip() {
+    printf("[LCD] lcd_flip() frame_addr=0x%08X\n", m_display.get_frame_addr());
     m_display.flip(m_mem.get_raw_ptr(), m_mem.size());
     g_cpu_regs[2] = 0;
 }
@@ -778,18 +819,6 @@ void Syscalls::impl_waveout_can_write() {
 void Syscalls::impl_waveout_write() {
     g_cpu_regs[2] = arg(2);
     m_audio_write_count++;
-    // After enough audio buffers, auto-advance past loading screen
-    // by clearing the task's "keep running" flag at task_arg + 0x18C
-    if (m_audio_write_count >= 300) {
-        if (m_current_task >= 0) {
-            u32 task_arg = m_tasks[m_current_task].task_arg;
-            u32 val = m_mem.read_u8(task_arg + 0x18C);
-            if (val != 0) {
-                printf("[AUDIO] Auto-clearing task flag after %u writes\n", m_audio_write_count);
-                m_mem.write_u8(task_arg + 0x18C, 0);
-            }
-        }
-    }
 }
 
 void Syscalls::impl_pcm_can_write() {
@@ -805,8 +834,9 @@ void Syscalls::impl_pcm_ioctl() {
 void Syscalls::save_current_task() {
     if (m_current_task >= 0 && m_current_task < m_task_count) {
         memcpy(m_tasks[m_current_task].regs, g_cpu_regs, sizeof(g_cpu_regs));
-        m_tasks[m_current_task].hi = g_cpu_hi;
-        m_tasks[m_current_task].lo = g_cpu_lo;
+        m_tasks[m_current_task].hi  = g_cpu_hi;
+        m_tasks[m_current_task].lo  = g_cpu_lo;
+        m_tasks[m_current_task].pc  = g_cpu_pc;
     }
 }
 
@@ -815,7 +845,9 @@ void Syscalls::switch_to_task(int task_idx) {
     memcpy(g_cpu_regs, m_tasks[task_idx].regs, sizeof(g_cpu_regs));
     g_cpu_hi = m_tasks[task_idx].hi;
     g_cpu_lo = m_tasks[task_idx].lo;
-    m_current_task = task_idx;
+    g_cpu_pc = m_tasks[task_idx].pc;
+    m_current_task   = task_idx;
+    m_task_switched  = true;
 }
 
 int Syscalls::find_ready_task() {
@@ -838,21 +870,24 @@ void Syscalls::impl_OSSemCreate() {
     m_mem.write_u8(ecb + 8, 1);
     g_cpu_regs[2] = ecb;
     m_semaphores.push_back(ecb);
+    printf("[OSSemCreate] ecb=0x%08X cnt=%u\n", ecb, cnt);
 }
 
 void Syscalls::impl_OSTaskCreate() {
     u32 entry = arg(0);
     u32 task_arg = arg(1);
-    // µC/OS-II OSTaskCreate(void(*task)(void*), void* p_arg, OS_STK* ptos, INT8U prio)
-    // In O32: $a0=entry, $a1=p_arg, $a2=ptos(stack_top), $a3=prio
     u32 stack_top = arg(2);
     u32 prio = arg(3);
 
-    // Check if priority already exists (µC/OS-II returns error for duplicate priorities)
+    printf("[OSTaskCreate] entry=0x%08X arg=0x%08X stack=0x%08X prio=%u (task_count=%d)\n",
+           entry, task_arg, stack_top, prio, m_task_count);
+
+    // Allow multiple tasks with same priority (round-robin scheduling)
+    // Check if priority already exists - only warn but allow it
     for (int i = 0; i < m_task_count; i++) {
         if (m_tasks[i].task_prio == (u8)prio) {
-            g_cpu_regs[2] = prio;  // non-zero = error
-            return;
+            printf("[OSTaskCreate] WARNING: duplicate priority %u for task %d (allowing)\n", (u8)prio, i);
+            break;
         }
     }
 
@@ -867,26 +902,26 @@ void Syscalls::impl_OSTaskCreate() {
         t.block_sem = 0;
         t.regs[4] = task_arg;
         u32 sp = stack_top & ~0xF;
-        sp &= ~0xF; // align to 16 bytes
+        sp &= ~0xF;
         t.regs[29] = sp;
         t.regs[30] = sp;
         t.regs[31] = entry;
+        t.pc = entry;  // dedicated resume PC
 
         m_task_count++;
-        // µC/OS-II returns OS_ERR_NONE (0) on success
+        printf("[OSTaskCreate] Created task %d: entry=0x%08X prio=%u\n",
+               m_task_count - 1, entry, (u8)prio);
         g_cpu_regs[2] = 0;
     } else {
-        g_cpu_regs[2] = 0xFF;  // non-zero = error (max tasks reached)
+        printf("[OSTaskCreate] FAILED: max tasks (%d) reached\n", MAX_TASKS);
+        g_cpu_regs[2] = 0xFF;
     }
 
-    // Start scheduler immediately on first task creation
-    if (!m_scheduler_started && m_task_count >= 1 && m_current_task < 0) {
-        m_scheduler_started = true;
-        m_current_task = 0;
-        for (int i = 0; i < 32; i++)
-            g_cpu_regs[i] = m_tasks[0].regs[i];
-    }
+    // Don't auto-start the scheduler here.
+    // The init code (GameEngineInit) needs to finish setting up before tasks run.
+    // On real Dingoo µC/OS-II, this would return to the caller which then calls OSStart.
 }
+
 
 void Syscalls::impl_OSSemPend() {
     u32 sem_ptr = arg(0);
@@ -981,9 +1016,10 @@ void Syscalls::impl_OSTaskDel() {
         printf("[OSTaskDel] Deleted task %d, switched to task %d\n",
                deleted_task, next);
     } else {
-        // No ready tasks — restore idle context (dl_main continuation)
         printf("[OSTaskDel] Deleted task %d, resumed idle\n", deleted_task);
         memcpy(g_cpu_regs, m_idle_regs, sizeof(g_cpu_regs));
+        g_cpu_pc = m_idle_pc;
+        m_task_switched = true;
     }
 }
 
@@ -992,11 +1028,11 @@ void Syscalls::impl_GetTickCount() {
 }
 
 void Syscalls::impl__sys_judge_event() {
-    // Read event queue at 0x80BFECD8 (pressed keys injected by simulate_vsync)
     u32 event_queue = 0x80BFECD8;
     u32 event_val = m_mem.read_u32(event_queue);
+    printf("[EVENT] _sys_judge_event() queue=0x%08X task=%d\n", event_val, m_current_task);
     if (event_val) {
-        m_mem.write_u32(event_queue, 0);  // consume event
+        m_mem.write_u32(event_queue, 0);
         g_cpu_regs[2] = event_val;
     } else {
         g_cpu_regs[2] = 0;
@@ -1116,6 +1152,25 @@ void Syscalls::impl_get_current_language() {
 bool Syscalls::simulate_vsync() {
     bool switched = false;
 
+    // Auto-start the scheduler if OSStart has already run (task code is executing)
+    if (m_current_task < 0 && m_task_count > 0) {
+        int highest = -1;
+        u8 best_prio = 255;
+        for (int i = 0; i < m_task_count; i++) {
+            if (m_tasks[i].active && !m_tasks[i].blocked && m_tasks[i].task_prio < best_prio) {
+                highest = i;
+                best_prio = m_tasks[i].task_prio;
+            }
+        }
+        if (highest >= 0) {
+            memcpy(m_tasks[highest].regs, g_cpu_regs, sizeof(g_cpu_regs));
+            m_tasks[highest].hi = g_cpu_hi;
+            m_tasks[highest].lo = g_cpu_lo;
+            m_current_task = highest;
+            printf("[SCHEDULER] Auto-start: task %d (prio %u) running\n", highest, best_prio);
+        }
+    }
+
     // Advance µC/OS-II tick counter (approx 1 tick per frame = 16.6ms)
     m_os_ticks += 1;
 
@@ -1127,7 +1182,7 @@ bool Syscalls::simulate_vsync() {
         }
     }
 
-    // Detect key events and directly clear the task flag to exit the loading screen
+    // Detect key events and inject into the event queue
     static u32 vsync_count = 0;
     vsync_count++;
 
@@ -1144,36 +1199,33 @@ bool Syscalls::simulate_vsync() {
         printf("[INPUT] Auto-press START at frame %u\n", vsync_count);
     }
 
-    // When a key is pressed (or auto-pressed), bypass the event queue
-    // and directly clear the game task's keep-running flag.
-    // The main loop checks [task_arg + 0x18C]; when zero, it exits
-    // (posts exit semaphore and calls OSTaskDel).
-    if (pressed & (DKEY_START | DKEY_A | DKEY_B)) {
-        for (int i = 0; i < m_task_count; i++) {
-            if (m_tasks[i].active) {
-                u32 flag_addr = m_tasks[i].task_arg + 0x18C;
-                u8 val = m_mem.read_u8(flag_addr);
-                if (val != 0) {
-                    printf("[INPUT] Key 0x%04X pressed, clearing flag for task %d\n", pressed, i);
-                    m_mem.write_u8(flag_addr, 0);
-                }
-            }
-        }
-    }
-
-    // Still write to event queue for any game code that does read it
+    // Write pressed keys to the event queue for game code to read via _sys_judge_event
     if (pressed) {
         u32 event_queue = 0x80BFECD8;
         m_mem.write_u32(event_queue, pressed);
+        printf("[INPUT] Wrote key 0x%04X to event queue\n", pressed);
     }
 
-    // If current task is blocked, try to switch to a ready task
+    // Cooperative multitasking: if current task is not blocked, yield to others
     if (m_current_task >= 0 && m_current_task < m_task_count) {
-        if (m_tasks[m_current_task].blocked) {
+        Task& current = m_tasks[m_current_task];
+        if (current.blocked) {
+            // Current task is blocked (on semaphore or delay) — try to find a ready task
+            save_current_task();
             int next = find_ready_task();
             if (next >= 0) {
                 switch_to_task(next);
                 switched = true;
+            }
+        } else {
+            // Current task is still running — preempt and yield to another ready task
+            for (int i = 0; i < m_task_count; i++) {
+                if (i != m_current_task && m_tasks[i].active && !m_tasks[i].blocked) {
+                    save_current_task();  // saves g_cpu_pc into tasks[current].pc (no $ra corruption)
+                    switch_to_task(i);
+                    switched = true;
+                    break;
+                }
             }
         }
     } else {
@@ -1208,6 +1260,14 @@ bool Syscalls::simulate_vsync() {
             }
         }
         m_display.set_frame_addr(best_addr);
+    }
+    // Periodic GOT call dump every 1000 frames
+    if (vsync_count % 1000 == 0) {
+        for (int i = 0; i < 72; i++) {
+            if (m_got_call_counts[i] > 0) {
+                printf("[GOT] %3d: %-25s %u\n", i, got_name(i), m_got_call_counts[i]);
+            }
+        }
     }
     m_display.flip(m_mem.get_raw_ptr(), m_mem.size());
     return switched;
