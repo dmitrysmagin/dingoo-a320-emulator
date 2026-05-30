@@ -9,8 +9,10 @@ u32 g_cpu_pc;
 u32 g_cpu_hi;
 u32 g_cpu_lo;
 
-// Frame buffer address detected by intercepting the LW at 0x80A21E78 (game render function).
-// Needed so simulate_vsync can set the correct display buffer each frame.
+// Framebuffer physical address, intercepted by the LW at 0x80A21E78 before the
+// first _lcd_get_frame() call.  The game reads the OS-allocated framebuffer address
+// from a global at that PC; capturing it here lets _lcd_get_frame() return a valid
+// pointer without emulating fb_malloc() inside the OS.
 u32 g_detected_fb_addr = 0;
 
 // Sign extend helpers
@@ -265,11 +267,14 @@ void CPU::execute(u32 insn) {
         u32 load_addr = regs[rs] + imm;
         u32 load_val = mem->read_u32(load_addr);
         if (rt) regs[rt] = load_val;
+        // Intercept the framebuffer-address load inside the OS render function.
+        // The OS stores the allocated framebuffer pointer in a global; the game
+        // reads it here before calling _lcd_get_frame(), so capturing it gives us
+        // the correct address without having to emulate fb_malloc().
         if ((pc - 4) == 0x80A21E78) {
-            u32 loaded = load_val & 0x1FFFFFFF;
-            if (g_detected_fb_addr != load_val && loaded < RAM_SIZE) {
-                g_detected_fb_addr = load_val;
-            }
+            u32 phys = load_val & 0x1FFFFFFF;
+            if (phys && phys < RAM_SIZE)
+                g_detected_fb_addr = phys;
         }
         break;
     }

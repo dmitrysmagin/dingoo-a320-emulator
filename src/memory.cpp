@@ -4,7 +4,8 @@
 
 Memory::Memory()
     : m_mem(RAM_SIZE, 0)
-    , m_hw_base(0x02000000)  // above our RAM, reads return 0
+    , m_hw_base(0x02000000)
+    , m_write_counts(RAM_SIZE / 4096, 0)
 {
 }
 
@@ -95,6 +96,23 @@ u32 Memory::read_u32(u32 vaddr) {
            ((u32)m_mem[phys + 2] << 16) | ((u32)m_mem[phys + 3] << 24);
 }
 
+// JZ4740 LCD controller register space: physical 0x13050000–0x130500FF
+static void log_lcd_write(u32 phys, u32 val, int width) {
+    static const struct { u32 off; const char* name; } regs[] = {
+        {0x00, "LCD_CFG"}, {0x04, "LCD_VSYNC"}, {0x08, "LCD_HSYNC"},
+        {0x0C, "LCD_VAT"},  {0x10, "LCD_DAH"},   {0x14, "LCD_DAV"},
+        {0x18, "LCD_PS"},   {0x1C, "LCD_CLS"},   {0x20, "LCD_SPL"},
+        {0x24, "LCD_REV"},  {0x30, "LCD_CTRL"},  {0x34, "LCD_STATE"},
+        {0x40, "LCD_DA0"},  {0x44, "LCD_SA0"},   {0x48, "LCD_FID0"},
+        {0x4C, "LCD_CMD0"}, {0x50, "LCD_DA1"},   {0x54, "LCD_SA1"},
+        {0x58, "LCD_FID1"}, {0x5C, "LCD_CMD1"},
+    };
+    u32 off = phys - 0x13050000;
+    const char* name = "LCD_???";
+    for (auto& r : regs) if (r.off == off) { name = r.name; break; }
+    printf("[LCD_REG] write%d phys=0x%08X %-12s = 0x%08X\n", width, phys, name, val);
+}
+
 // JZ4740 IPU register space: physical 0x13080000–0x130800FF
 // Intercept writes here so we can detect and eventually emulate the Image Processing Unit.
 static void log_ipu_write(u32 phys, u32 val, int width) {
@@ -115,26 +133,31 @@ static void log_ipu_write(u32 phys, u32 val, int width) {
 void Memory::write_u8(u32 vaddr, u8 val) {
     u32 phys = vaddr_to_phys(vaddr);
     if (phys == 0xFFFFFFFF || phys >= m_mem.size()) {
+        if (phys >= 0x13050000 && phys < 0x13050100) log_lcd_write(phys, val, 8);
         if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 8);
         return;
     }
     m_mem[phys] = val;
+    m_write_counts[phys >> 12]++;
 }
 
 void Memory::write_u16(u32 vaddr, u16 val) {
     u32 phys = vaddr_to_phys(vaddr);
     if (phys == 0xFFFFFFFF || phys + 1 >= m_mem.size()) {
+        if (phys >= 0x13050000 && phys < 0x13050100) log_lcd_write(phys, val, 16);
         if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 16);
         return;
     }
     if (is_code_section(phys)) return;
     m_mem[phys]     = (u8)(val & 0xFF);
     m_mem[phys + 1] = (u8)((val >> 8) & 0xFF);
+    m_write_counts[phys >> 12]++;
 }
 
 void Memory::write_u32(u32 vaddr, u32 val) {
     u32 phys = vaddr_to_phys(vaddr);
     if (phys == 0xFFFFFFFF || phys + 3 >= m_mem.size()) {
+        if (phys >= 0x13050000 && phys < 0x13050100) log_lcd_write(phys, val, 32);
         if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 32);
         return;
     }
@@ -143,6 +166,7 @@ void Memory::write_u32(u32 vaddr, u32 val) {
     m_mem[phys + 1] = (u8)((val >> 8) & 0xFF);
     m_mem[phys + 2] = (u8)((val >> 16) & 0xFF);
     m_mem[phys + 3] = (u8)((val >> 24) & 0xFF);
+    m_write_counts[phys >> 12]++;
 }
 
 std::string Memory::read_string(u32 vaddr, size_t max_len) {

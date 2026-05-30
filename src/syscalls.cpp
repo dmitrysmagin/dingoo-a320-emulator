@@ -8,7 +8,7 @@ extern u32 g_cpu_regs[32];
 extern u32 g_cpu_pc;
 extern u32 g_cpu_hi;
 extern u32 g_cpu_lo;
-extern u32 g_detected_fb_addr;
+extern u32 g_detected_fb_addr;  // physical, intercepted from OS at PC 0x80A21E78
 
 Syscalls::Syscalls(Memory& mem, Display& display)
     : m_mem(mem)
@@ -575,68 +575,47 @@ void Syscalls::impl_strlen() {
     g_cpu_regs[2] = (u32)guest_string(arg(0)).size();
 }
 
-// DRAM fill pattern values used by the Dingoo OS before buffers are rendered to.
-// Counting these as "real content" produces false positives in the smart scan.
-static inline bool is_fill_pixel(u16 px) {
-    return px == 0x72E6 || px == 0x7FFF;
-}
-
-// Sample a framebuffer candidate: returns (real_pixel_count, avg_inter_sample_gradient).
-// "Real" pixels are non-zero and not DRAM fill pattern.
-static void scan_fb_candidate(const u8* ram, u32 phys, u32 fb_bytes, u32& real_px, u32& avg_grad) {
-    constexpr u32 stride = 256;
-    u32 n = fb_bytes / stride;
-    u32 grad = 0;
-    real_px = 0;
-    u16 prev = 0;
-    for (u32 i = 0; i < fb_bytes; i += stride) {
-        u16 px = (u16)ram[phys + i] | ((u16)ram[phys + i + 1] << 8);
-        if (px && !is_fill_pixel(px)) real_px++;
-        u32 d = (px > prev) ? (px - prev) : (prev - px);
-        grad += d;
-        prev = px;
-    }
-    avg_grad = grad / n;
-}
-
 void Syscalls::impl__lcd_set_frame() {
-    (void)arg(0);  // fixed address 0x80144090 — never populated at call time
-    constexpr u32 fb_bytes = Display::WIDTH * Display::HEIGHT * Display::PIXEL_SIZE;
-    static u32 call_count = 0;
-    call_count++;
+    // The game passes the END of the blit region, not the start.
+    // The render loop copies 320×240 RGB565 halfwords to the framebuffer returned by
+    // _lcd_get_frame(), then calls _lcd_set_frame(get_frame_result + 320*240*2).
+    // Subtract one framebuffer's worth of bytes to recover the actual display start.
+    // After displaying, the old front buffer becomes the new back (double-buffer swap).
+    //
+    // Framebuffer size = 320 × 240 × 2 bytes (RGB565).
+    static constexpr u32 FB_SIZE = Display::WIDTH * Display::HEIGHT * 2;
 
-    const u8* ram = m_mem.get_raw_ptr();
-    u32 ram_size = m_mem.size();
+    u32 end_ptr = arg(0) & 0x1FFFFFFF;
+    if (end_ptr >= FB_SIZE && end_ptr < m_mem.size()) {
+        u32 actual_start = end_ptr - FB_SIZE;
 
-    // 0x00144090 (_lcd_set_frame argument) is always zero at call time — the game never
-    // renders to it before calling this function. Use scan + overlay instead.
-    u32 overlay_phys = g_detected_fb_addr ? (g_detected_fb_addr & 0x1FFFFFFF) : 0;
-    static u32 best_fb = 0;
-    if (call_count <= 3 || call_count % 50 == 0) {
-        u32 best_real = 0, best_addr = 0;
-        for (u32 scan = 0x00200000; scan + fb_bytes <= 0x00A00000; scan += 0x4000) {
-            if (scan == overlay_phys) continue;
-            u32 real_px, ag;
-            scan_fb_candidate(ram, scan, fb_bytes, real_px, ag);
-            if (ag > 8000) continue;
-            if (real_px > best_real) { best_real = real_px; best_addr = scan; }
-        }
-        if (best_addr && best_addr != best_fb) {
-            printf("[LCD] _lcd_set_frame #%u: bg=0x%08X (real=%u)\n", call_count, best_addr, best_real);
-            best_fb = best_addr;
-        }
+        // Determine the old front buffer (which becomes the new back).
+        u32 old_front = m_display.get_frame_addr();
+        if (!old_front && g_detected_fb_addr)
+            old_front = g_detected_fb_addr + FB_SIZE;  // initial front = back + one frame
+
+        m_display.set_frame_addr(actual_start);
+        m_display.set_back_addr(old_front);
     }
-    if (best_fb) m_display.set_frame_addr(best_fb);
-    m_display.flip_composite(ram, ram_size, overlay_phys);
+    m_display.flip(m_mem.get_raw_ptr(), m_mem.size());  // RGB565 framebuffer
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl__lcd_get_frame() {
-    g_cpu_regs[2] = g_detected_fb_addr ? g_detected_fb_addr : m_display.get_frame_addr();
+    // Returns the BACK buffer (= the one NOT currently displayed) as a KSEG1 address.
+    // Real OS: lcd_get_change_frame() = LCD_UNCACHED(old_lcd_frame_desc->DATA_PA).
+    // m_frame_back is set by impl__lcd_set_frame() on each frame swap.
+    // Falls back to g_detected_fb_addr on the very first call (before any set_frame).
+    u32 phys = m_display.get_back_addr();
+    if (!phys) phys = g_detected_fb_addr;
+    g_cpu_regs[2] = phys ? (phys | 0xa0000000u) : 0;
 }
 
 void Syscalls::impl_lcd_get_cframe() {
-    g_cpu_regs[2] = m_display.get_frame_addr();
+    // Real OS: lcd_get_cframe() = jzfb.cframe = front buffer | 0x80000000 (KSEG0, cached).
+    u32 phys = m_display.get_frame_addr();
+    if (!phys) phys = g_detected_fb_addr;
+    g_cpu_regs[2] = phys ? (phys | 0x80000000u) : 0;
 }
 
 void Syscalls::impl_ap_lcd_set_frame() {
@@ -645,6 +624,8 @@ void Syscalls::impl_ap_lcd_set_frame() {
 }
 
 void Syscalls::impl_lcd_flip() {
+    // Real OS: lcd_change_frame() — advance the DMA descriptor ring and present.
+    // The game's framebuffer is RGB565 (16bpp): use flip() not flip_argb8888().
     m_display.flip(m_mem.get_raw_ptr(), m_mem.size());
     g_cpu_regs[2] = 0;
 }

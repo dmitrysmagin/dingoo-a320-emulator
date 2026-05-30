@@ -4,20 +4,23 @@
 #include "types.h"
 #include <SDL2/SDL.h>
 
-// Dingoo A320 key codes (bitmask for _kbd_get_status)
+// Dingoo A320 key bitmasks for _kbd_get_status / get_key_val.
+// Values match the VK_GAME_* constants in gamelib.h (gameplay/gamelib.h):
+//   VK_GAME_RIGHT=0x0002, LEFT=0x0004, UP=0x0008, B=0x0010, DOWN=0x0020,
+//   A=0x0040, X=0x0100, Y=0x0200, START=0x0400, R=0x0800, L=0x1000, SELECT=0x2000.
 enum DingooKey : u32 {
-    DKEY_UP     = 0x001,
-    DKEY_DOWN   = 0x002,
-    DKEY_LEFT   = 0x004,
-    DKEY_RIGHT  = 0x008,
-    DKEY_A      = 0x010,
-    DKEY_B      = 0x020,
-    DKEY_X      = 0x040,
-    DKEY_Y      = 0x080,
-    DKEY_L      = 0x100,
-    DKEY_R      = 0x200,
-    DKEY_START  = 0x400,
-    DKEY_SELECT = 0x800,
+    DKEY_RIGHT  = 0x0002,
+    DKEY_LEFT   = 0x0004,
+    DKEY_UP     = 0x0008,
+    DKEY_B      = 0x0010,
+    DKEY_DOWN   = 0x0020,
+    DKEY_A      = 0x0040,
+    DKEY_X      = 0x0100,
+    DKEY_Y      = 0x0200,
+    DKEY_START  = 0x0400,
+    DKEY_R      = 0x0800,
+    DKEY_L      = 0x1000,
+    DKEY_SELECT = 0x2000,
 };
 
 class Display {
@@ -36,8 +39,14 @@ public:
     // Framebuffer access
     u16* get_framebuffer() { return m_framebuffer; }
     u32  get_frame_addr() const { return m_frame_addr; }
+    u32  get_back_addr()  const { return m_frame_back; }
+    void set_back_addr(u32 addr) { m_frame_back = addr; }
 
     void flip(const u8* guest_ram = nullptr, u32 ram_size = 0);
+    // flip() reading WIDTH pixels per row but advancing src_stride bytes between rows (RGB565)
+    void flip_strided(const u8* guest_ram, u32 ram_size, u32 src_stride);
+    // flip() reading the framebuffer as 32-bit ARGB8888 (4 bytes/pixel, stride WIDTH*4)
+    void flip_argb8888(const u8* guest_ram, u32 ram_size);
     // flip() with a secondary overlay buffer: background from frame_addr, text from overlay_phys
     void flip_composite(const u8* guest_ram, u32 ram_size, u32 overlay_phys);
     void set_frame_addr(u32 addr) { m_frame_addr = addr; }
@@ -46,7 +55,8 @@ public:
     void set_display_on(bool on) { m_display_on = on; }
 
     bool pump_events();
-    void present_blank();  // SDL_RenderPresent without touching dirty flag or framebuffer
+    void present_blank();    // SDL_RenderPresent without touching dirty flag or framebuffer
+    void upload_and_present(); // convert RGB565 → ARGB8888, upload to texture, present
     void save_screenshot(const char* path);
     bool is_dirty() const { return m_dirty; }
     void clear_dirty() { m_dirty = false; }
@@ -63,10 +73,13 @@ private:
     SDL_Texture*  m_texture;
 
     u16 m_framebuffer[WIDTH * HEIGHT];
-    u32 m_frame_addr;
+    u32 m_argb_cache[WIDTH * HEIGHT];   // last ARGB8888 frame written by flip_argb8888
+    u32 m_frame_addr;   // physical address of the front (currently displayed) buffer
+    u32 m_frame_back;   // physical address of the back (available for rendering) buffer
     bool m_display_on;
     bool m_dirty;
     bool m_initialized;
+    bool m_argb_valid;                  // true once m_argb_cache has been populated
     u32 m_dingoo_keys;
 };
 

@@ -45,6 +45,13 @@ public:
     u8* get_raw_ptr() { return m_mem.data(); }
     u32 size() const { return (u32)m_mem.size(); }
 
+    // Write hotspot tracking: counts writes per 4KB page
+    void reset_write_counts() { std::fill(m_write_counts.begin(), m_write_counts.end(), 0); }
+    u32  write_count(u32 page_4k) const {
+        return page_4k < m_write_counts.size() ? m_write_counts[page_4k] : 0;
+    }
+    u32  page_count() const { return (u32)m_write_counts.size(); }
+
     // Set the code section range (writes to this range are rejected)
     void set_code_region(u32 phys_start, u32 size) {
         m_code_start = phys_start;
@@ -57,9 +64,10 @@ private:
     }
 
     std::vector<u8> m_mem;
-    u32 m_hw_base;  // hardware register base (returns 0/ignores writes)
+    u32 m_hw_base;
     u32 m_code_start = 0;
     u32 m_code_end = 0;
+    std::vector<u32> m_write_counts;  // one counter per 4KB page
 };
 
 #endif // MEMORY_H

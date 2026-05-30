@@ -8,12 +8,15 @@ Display::Display()
     , m_renderer(nullptr)
     , m_texture(nullptr)
     , m_frame_addr(0)
+    , m_frame_back(0)
     , m_display_on(true)
     , m_dirty(false)
     , m_initialized(false)
+    , m_argb_valid(false)
     , m_dingoo_keys(0)
 {
     memset(m_framebuffer, 0, sizeof(m_framebuffer));
+    memset(m_argb_cache,  0, sizeof(m_argb_cache));
 }
 
 Display::~Display() {
@@ -50,13 +53,14 @@ bool Display::init() {
         return false;
     }
 
-    // Dingoo A320 (JZ4740, little-endian MIPS) uses RGB565: u16 with R at bits[15:11],
-    // G at bits[10:5], B at bits[4:0], stored little-endian.  SDL_PIXELFORMAT_RGB565 on
-    // a little-endian x86/x64 host uses the identical packed u16 layout, so guest framebuffer
-    // bytes upload to the texture without any byte-swap or channel conversion.
+    // Use ARGB8888 for the SDL texture: RGB565 on Windows D3D backends maps to
+    // DXGI_FORMAT_B5G6R5_UNORM (B in high bits), which swaps R and B vs our RGB565 layout.
+    // Some D3D drivers also lack native 16-bit texture support, causing the data to be
+    // reinterpreted with wrong stride and producing 4-copies artefacts.  ARGB8888 is
+    // universally supported without ambiguity on all SDL backends.
     m_texture = SDL_CreateTexture(
         m_renderer,
-        SDL_PIXELFORMAT_RGB565,
+        SDL_PIXELFORMAT_ARGB8888,
         SDL_TEXTUREACCESS_STREAMING,
         WIDTH, HEIGHT
     );
@@ -67,18 +71,9 @@ bool Display::init() {
         SDL_Quit();
         return false;
     }
-
-    // Confirm the texture format SDL actually allocated (renderer may substitute)
-    {
-        Uint32 fmt; int access, tw, th;
-        SDL_QueryTexture(m_texture, &fmt, &access, &tw, &th);
-        if (fmt != SDL_PIXELFORMAT_RGB565)
-            printf("[DISPLAY] Note: texture format substituted to 0x%08X (SDL_PIXELFORMAT_RGB565=0x%08X)\n",
-                   fmt, SDL_PIXELFORMAT_RGB565);
-    }
+    printf("[DISPLAY] SDL2 initialized: %dx%d (scale %d)\n", WIDTH * SCALE, HEIGHT * SCALE, SCALE);
 
     m_initialized = true;
-    printf("[DISPLAY] SDL2 initialized: %dx%d (scale %d)\n", WIDTH * SCALE, HEIGHT * SCALE, SCALE);
     return true;
 }
 
@@ -102,7 +97,45 @@ void Display::flip(const u8* guest_ram, u32 ram_size) {
             memcpy(m_framebuffer, &guest_ram[phys], WIDTH * HEIGHT * PIXEL_SIZE);
     }
 
-    SDL_UpdateTexture(m_texture, nullptr, m_framebuffer, WIDTH * PIXEL_SIZE);
+    upload_and_present();
+}
+
+void Display::flip_strided(const u8* guest_ram, u32 ram_size, u32 src_stride) {
+    if (!m_initialized) return;
+    m_display_on = true;
+    m_dirty = true;
+
+    u32 phys = m_frame_addr & 0x1FFFFFFF;
+    constexpr u32 row_bytes = WIDTH * PIXEL_SIZE;
+    if (guest_ram && phys + src_stride * (HEIGHT - 1) + row_bytes <= ram_size) {
+        for (int y = 0; y < HEIGHT; y++)
+            memcpy(&m_framebuffer[y * WIDTH], &guest_ram[phys + y * src_stride], row_bytes);
+    }
+    upload_and_present();
+}
+
+void Display::flip_argb8888(const u8* guest_ram, u32 ram_size) {
+    if (!m_initialized) return;
+    m_display_on = true;
+    m_dirty = true;
+
+    u32 phys = m_frame_addr & 0x1FFFFFFF;
+    constexpr u32 src_stride = WIDTH * 4;
+    if (guest_ram && phys + src_stride * HEIGHT <= ram_size) {
+        for (int y = 0; y < HEIGHT; y++) {
+            const u8* src = &guest_ram[phys + y * src_stride];
+            for (int x = 0; x < WIDTH; x++) {
+                // JZ4740 framebuffer: 0x00RRGGBB in the 32-bit word → bytes [B, G, R, 0] in LE memory.
+                // Confirmed by lcdtest.c: LCD_RED=0x00FF0000, LCD_GREEN=0x0000FF00, LCD_BLUE=0x000000FF.
+                u8 b = src[x*4 + 0];
+                u8 g = src[x*4 + 1];
+                u8 r = src[x*4 + 2];
+                m_argb_cache[y * WIDTH + x] = (0xFFu << 24) | ((u32)r << 16) | ((u32)g << 8) | b;
+            }
+        }
+        m_argb_valid = true;
+        SDL_UpdateTexture(m_texture, nullptr, m_argb_cache, WIDTH * sizeof(u32));
+    }
     SDL_RenderClear(m_renderer);
     SDL_RenderCopy(m_renderer, m_texture, nullptr, nullptr);
     SDL_RenderPresent(m_renderer);
@@ -130,7 +163,25 @@ void Display::flip_composite(const u8* guest_ram, u32 ram_size, u32 overlay_phys
         }
     }
 
-    SDL_UpdateTexture(m_texture, nullptr, m_framebuffer, WIDTH * PIXEL_SIZE);
+    upload_and_present();
+}
+
+// Convert m_framebuffer (RGB565) to ARGB8888 and upload to the SDL texture.
+// RGB565 layout: R[15:11] G[10:5] B[4:0].
+// Bits are replicated into the vacated LSBs so 0x1F → 0xFF (not 0xF8).
+void Display::upload_and_present() {
+    static u32 argb[WIDTH * HEIGHT];
+    for (int i = 0; i < WIDTH * HEIGHT; i++) {
+        u16 px = m_framebuffer[i];
+        u8 r5 = (px >> 11) & 0x1F;
+        u8 g6 = (px >>  5) & 0x3F;
+        u8 b5 = (px      ) & 0x1F;
+        u8 r = (r5 << 3) | (r5 >> 2);
+        u8 g = (g6 << 2) | (g6 >> 4);
+        u8 b = (b5 << 3) | (b5 >> 2);
+        argb[i] = (0xFFu << 24) | ((u32)r << 16) | ((u32)g << 8) | b;
+    }
+    SDL_UpdateTexture(m_texture, nullptr, argb, WIDTH * sizeof(u32));
     SDL_RenderClear(m_renderer);
     SDL_RenderCopy(m_renderer, m_texture, nullptr, nullptr);
     SDL_RenderPresent(m_renderer);
@@ -161,14 +212,28 @@ void Display::present_blank() {
 
 void Display::save_screenshot(const char* path) {
     if (!m_initialized) return;
-    // Wrap m_framebuffer as an RGB565 surface (zero-copy), then let SDL convert to
-    // BGR24 for the BMP.  SDL's converter replicates the top bits into the vacated LSBs
-    // (e.g. 5-bit 0x1F → 8-bit 0xFF) which a plain left-shift would not do.
-    SDL_Surface* src = SDL_CreateRGBSurfaceWithFormatFrom(
-        m_framebuffer, WIDTH, HEIGHT, 16, WIDTH * PIXEL_SIZE, SDL_PIXELFORMAT_RGB565);
-    if (!src) return;
-    SDL_Surface* dst = SDL_ConvertSurfaceFormat(src, SDL_PIXELFORMAT_BGR24, 0);
-    SDL_FreeSurface(src);
+
+    SDL_Surface* dst = nullptr;
+    if (m_argb_valid) {
+        // flip_argb8888 path (32bpp ARGB8888 — normal Dingoo A320 game mode).
+        // Read from m_argb_cache which is kept in sync with every flip_argb8888 call.
+        // We cannot reliably use SDL_RenderReadPixels after SDL_RenderPresent because
+        // double-buffered backends swap the back buffer, leaving it undefined.
+        SDL_Surface* src = SDL_CreateRGBSurfaceWithFormatFrom(
+            m_argb_cache, WIDTH, HEIGHT, 32, WIDTH * sizeof(u32), SDL_PIXELFORMAT_ARGB8888);
+        if (!src) return;
+        dst = SDL_ConvertSurfaceFormat(src, SDL_PIXELFORMAT_BGR24, 0);
+        SDL_FreeSurface(src);
+    } else {
+        // flip / flip_strided path (16bpp RGB565).
+        // Replicate the 5/6-bit component values into the vacated LSBs (e.g. 0x1F → 0xFF).
+        SDL_Surface* src = SDL_CreateRGBSurfaceWithFormatFrom(
+            m_framebuffer, WIDTH, HEIGHT, 16, WIDTH * PIXEL_SIZE, SDL_PIXELFORMAT_RGB565);
+        if (!src) return;
+        dst = SDL_ConvertSurfaceFormat(src, SDL_PIXELFORMAT_BGR24, 0);
+        SDL_FreeSurface(src);
+    }
+
     if (!dst) return;
     SDL_SaveBMP(dst, path);
     SDL_FreeSurface(dst);
