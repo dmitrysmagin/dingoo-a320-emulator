@@ -40,12 +40,20 @@ bool Display::init() {
 
     m_renderer = SDL_CreateRenderer(m_window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!m_renderer) {
+        // Offscreen/dummy driver doesn't support hardware acceleration — try software
+        m_renderer = SDL_CreateRenderer(m_window, -1, SDL_RENDERER_SOFTWARE);
+    }
+    if (!m_renderer) {
         fprintf(stderr, "[SDL] Failed to create renderer: %s\n", SDL_GetError());
         SDL_DestroyWindow(m_window);
         SDL_Quit();
         return false;
     }
 
+    // Dingoo A320 (JZ4740, little-endian MIPS) uses RGB565: u16 with R at bits[15:11],
+    // G at bits[10:5], B at bits[4:0], stored little-endian.  SDL_PIXELFORMAT_RGB565 on
+    // a little-endian x86/x64 host uses the identical packed u16 layout, so guest framebuffer
+    // bytes upload to the texture without any byte-swap or channel conversion.
     m_texture = SDL_CreateTexture(
         m_renderer,
         SDL_PIXELFORMAT_RGB565,
@@ -58,6 +66,15 @@ bool Display::init() {
         SDL_DestroyWindow(m_window);
         SDL_Quit();
         return false;
+    }
+
+    // Confirm the texture format SDL actually allocated (renderer may substitute)
+    {
+        Uint32 fmt; int access, tw, th;
+        SDL_QueryTexture(m_texture, &fmt, &access, &tw, &th);
+        if (fmt != SDL_PIXELFORMAT_RGB565)
+            printf("[DISPLAY] Note: texture format substituted to 0x%08X (SDL_PIXELFORMAT_RGB565=0x%08X)\n",
+                   fmt, SDL_PIXELFORMAT_RGB565);
     }
 
     m_initialized = true;
@@ -81,11 +98,35 @@ void Display::flip(const u8* guest_ram, u32 ram_size) {
     // Read frame buffer data from guest RAM if available
     if (guest_ram && m_frame_addr + WIDTH * HEIGHT * PIXEL_SIZE <= ram_size) {
         u32 phys = m_frame_addr & 0x1FFFFFFF;
-        if (phys + WIDTH * HEIGHT * PIXEL_SIZE <= ram_size) {
+        if (phys + WIDTH * HEIGHT * PIXEL_SIZE <= ram_size)
             memcpy(m_framebuffer, &guest_ram[phys], WIDTH * HEIGHT * PIXEL_SIZE);
-            // Dump frame buffer periodically
-            static u32 dump_count = 0;
-            dump_count++;
+    }
+
+    SDL_UpdateTexture(m_texture, nullptr, m_framebuffer, WIDTH * PIXEL_SIZE);
+    SDL_RenderClear(m_renderer);
+    SDL_RenderCopy(m_renderer, m_texture, nullptr, nullptr);
+    SDL_RenderPresent(m_renderer);
+}
+
+void Display::flip_composite(const u8* guest_ram, u32 ram_size, u32 overlay_phys) {
+    if (!m_initialized) return;
+
+    m_display_on = true;
+    m_dirty = true;
+
+    constexpr u32 fb_bytes = WIDTH * HEIGHT * PIXEL_SIZE;
+    u32 bg_phys = m_frame_addr & 0x1FFFFFFF;
+
+    // Copy background layer
+    if (guest_ram && bg_phys + fb_bytes <= ram_size)
+        memcpy(m_framebuffer, &guest_ram[bg_phys], fb_bytes);
+
+    // Overlay text layer: copy non-zero pixels from overlay_phys on top
+    if (guest_ram && overlay_phys && overlay_phys + fb_bytes <= ram_size) {
+        const u16* overlay = reinterpret_cast<const u16*>(&guest_ram[overlay_phys]);
+        for (int i = 0; i < WIDTH * HEIGHT; i++) {
+            if (overlay[i])
+                m_framebuffer[i] = overlay[i];
         }
     }
 
@@ -120,19 +161,17 @@ void Display::present_blank() {
 
 void Display::save_screenshot(const char* path) {
     if (!m_initialized) return;
-    // Convert RGB565 framebuffer to RGBA8888 for SDL_SaveBMP
-    SDL_Surface* surf = SDL_CreateRGBSurfaceWithFormat(0, WIDTH, HEIGHT, 32, SDL_PIXELFORMAT_RGBA8888);
-    if (!surf) return;
-    u32* px = (u32*)surf->pixels;
-    for (int i = 0; i < WIDTH * HEIGHT; i++) {
-        u16 c = m_framebuffer[i];
-        u8 r = ((c >> 11) & 0x1F) << 3;
-        u8 g = ((c >>  5) & 0x3F) << 2;
-        u8 b = ((c >>  0) & 0x1F) << 3;
-        px[i] = SDL_MapRGBA(surf->format, r, g, b, 255);
-    }
-    SDL_SaveBMP(surf, path);
-    SDL_FreeSurface(surf);
+    // Wrap m_framebuffer as an RGB565 surface (zero-copy), then let SDL convert to
+    // BGR24 for the BMP.  SDL's converter replicates the top bits into the vacated LSBs
+    // (e.g. 5-bit 0x1F → 8-bit 0xFF) which a plain left-shift would not do.
+    SDL_Surface* src = SDL_CreateRGBSurfaceWithFormatFrom(
+        m_framebuffer, WIDTH, HEIGHT, 16, WIDTH * PIXEL_SIZE, SDL_PIXELFORMAT_RGB565);
+    if (!src) return;
+    SDL_Surface* dst = SDL_ConvertSurfaceFormat(src, SDL_PIXELFORMAT_BGR24, 0);
+    SDL_FreeSurface(src);
+    if (!dst) return;
+    SDL_SaveBMP(dst, path);
+    SDL_FreeSurface(dst);
     printf("[DISPLAY] Screenshot saved: %s\n", path);
 }
 

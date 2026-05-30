@@ -38,6 +38,8 @@ public:
     u32  get_frame_addr() const { return m_frame_addr; }
 
     void flip(const u8* guest_ram = nullptr, u32 ram_size = 0);
+    // flip() with a secondary overlay buffer: background from frame_addr, text from overlay_phys
+    void flip_composite(const u8* guest_ram, u32 ram_size, u32 overlay_phys);
     void set_frame_addr(u32 addr) { m_frame_addr = addr; }
 
     bool is_display_on() const { return m_display_on; }

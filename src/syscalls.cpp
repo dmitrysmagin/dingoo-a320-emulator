@@ -579,16 +579,49 @@ void Syscalls::impl__lcd_set_frame() {
     u32 addr = arg(0);
     u32 phys = addr & 0x1FFFFFFF;
     constexpr u32 fb_bytes = Display::WIDTH * Display::HEIGHT * Display::PIXEL_SIZE;
+    static u32 call_count = 0;
+    call_count++;
     if (phys + fb_bytes > m_mem.size())
         phys = 0;  // invalid addr — keep current
-    m_display.flip(m_mem.get_raw_ptr(), m_mem.size());
-    if (phys)
-        m_display.set_frame_addr(phys);
+    // Find the heap buffer with the most non-zero pixels and use it as the display framebuffer.
+    // Sample every 128th halfword (600 samples per window) for speed. Scan at 0x4000 steps.
+    // Re-evaluate only the first few frames then reuse the winner.
+    static u32 best_fb = 0;
+    if (call_count <= 3 || call_count % 50 == 0) {
+        u32 best_addr = phys ? phys : m_display.get_frame_addr();
+        u32 best_count = 0;
+        for (u32 scan = 0x00020000; scan + fb_bytes <= 0x00A00000; scan += 0x4000) {
+            const u8* fb = m_mem.get_raw_ptr() + scan;
+            u32 sample = 0;
+            for (u32 i = 0; i < fb_bytes; i += 256) {  // sample every 128th halfword
+                u16 px = (u16)fb[i] | ((u16)fb[i+1] << 8);
+                if (px) sample++;
+            }
+            if (sample > best_count) {
+                best_count = sample;
+                best_addr = scan;
+            }
+        }
+        if (best_addr != best_fb) {
+            printf("[LCD] _lcd_set_frame #%u: selected phys=0x%08X (sample=%u)\n",
+                   call_count, best_addr, best_count);
+            best_fb = best_addr;
+        }
+        m_display.set_frame_addr(best_fb);
+    } else if (best_fb) {
+        m_display.set_frame_addr(best_fb);
+    }
+    // Composite: background from best_fb, text overlay from g_detected_fb_addr
+    u32 overlay = (g_detected_fb_addr && g_detected_fb_addr != best_fb)
+                  ? (g_detected_fb_addr & 0x1FFFFFFF) : 0;
+    m_display.flip_composite(m_mem.get_raw_ptr(), m_mem.size(), overlay);
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl__lcd_get_frame() {
-    g_cpu_regs[2] = m_display.get_frame_addr();
+    // Return the detected render-target address (where the game writes pixels).
+    // This may differ from m_frame_addr (the display buffer chosen for flip()).
+    g_cpu_regs[2] = g_detected_fb_addr ? g_detected_fb_addr : m_display.get_frame_addr();
 }
 
 void Syscalls::impl_lcd_get_cframe() {
@@ -1228,16 +1261,36 @@ bool Syscalls::simulate_vsync() {
     u32 pressed = keys & ~prev_keys;
     prev_keys = keys;
 
-    // Auto-press: simulate a held key for one vsync window (sets both event queue and
-    // kbd_get_status state, then releases it next frame so pressed edge fires cleanly).
+    // Auto-press sequence: each entry presses a key for exactly 1 vsync.
+    // vsync 200: START (dismiss title screen, reach save/continue menu)
+    // vsync 250: A    (select "New Game" from menu)
+    // vsync 350+: A every 100 vsyncs to keep advancing story dialogue
+    struct AutoPress { u32 frame; u32 key; };
+    static const AutoPress auto_presses[] = {
+        {200, DKEY_START}, {250, DKEY_A},
+        {350, DKEY_A}, {500, DKEY_A}, {600, DKEY_A}, {700, DKEY_A},
+        {800, DKEY_A}, {900, DKEY_A}, {1000, DKEY_A}, {1100, DKEY_A},
+        {1200, DKEY_A}, {1300, DKEY_A}, {1400, DKEY_A}, {1500, DKEY_A},
+        {1600, DKEY_A}, {1700, DKEY_A}, {1800, DKEY_A}, {1900, DKEY_A},
+        {2000, DKEY_A}, {2100, DKEY_A}, {2200, DKEY_A}, {2300, DKEY_A},
+        {2400, DKEY_A}, {2500, DKEY_A}, {2600, DKEY_A}, {2700, DKEY_A},
+        {2800, DKEY_A}, {2900, DKEY_A}, {3000, DKEY_A},
+    };
+    static u32 auto_release_frame = 0;
     static u32 auto_held = 0;
-    if (vsync_count == 200) {
-        m_display.set_key(DKEY_START, true);
-        auto_held = DKEY_START;
-        printf("[INPUT] Auto-press START at frame %u\n", vsync_count);
-    } else if (auto_held && vsync_count == 201) {
+    // Release previous key
+    if (auto_held && vsync_count == auto_release_frame) {
         m_display.set_key(auto_held, false);
         auto_held = 0;
+    }
+    // Press next key
+    for (const auto& ap : auto_presses) {
+        if (vsync_count == ap.frame) {
+            m_display.set_key(ap.key, true);
+            auto_held = ap.key;
+            auto_release_frame = vsync_count + 1;
+            printf("[INPUT] Auto-press 0x%04X at vsync %u\n", ap.key, vsync_count);
+        }
     }
 
     // Write pressed keys to the event queue for game code to read via _sys_judge_event
@@ -1275,12 +1328,6 @@ bool Syscalls::simulate_vsync() {
             switch_to_task(next);
             switched = true;
         }
-    }
-
-    // Update frame buffer address from the render function's LW interception.
-    // Required so _lcd_get_frame returns a valid address before the first _lcd_set_frame call.
-    if (g_detected_fb_addr) {
-        m_display.set_frame_addr(g_detected_fb_addr & 0x1FFFFFFF);
     }
 
     // Keep SDL window alive without triggering frame-count dirty flag.

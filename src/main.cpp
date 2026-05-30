@@ -205,7 +205,7 @@ int main(int argc, char* argv[]) {
         if (display.is_dirty()) {
             display.clear_dirty();
             frame_count++;
-            if (frame_count == 1 || frame_count == 10 || frame_count == 50 || frame_count == 100) {
+            if (frame_count <= 5 || frame_count % 25 == 0) {
                 char path[64];
                 snprintf(path, sizeof(path), "screenshot_%04d.bmp", frame_count);
                 display.save_screenshot(path);
