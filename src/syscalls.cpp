@@ -575,52 +575,63 @@ void Syscalls::impl_strlen() {
     g_cpu_regs[2] = (u32)guest_string(arg(0)).size();
 }
 
+// DRAM fill pattern values used by the Dingoo OS before buffers are rendered to.
+// Counting these as "real content" produces false positives in the smart scan.
+static inline bool is_fill_pixel(u16 px) {
+    return px == 0x72E6 || px == 0x7FFF;
+}
+
+// Sample a framebuffer candidate: returns (real_pixel_count, avg_inter_sample_gradient).
+// "Real" pixels are non-zero and not DRAM fill pattern.
+static void scan_fb_candidate(const u8* ram, u32 phys, u32 fb_bytes, u32& real_px, u32& avg_grad) {
+    constexpr u32 stride = 256;
+    u32 n = fb_bytes / stride;
+    u32 grad = 0;
+    real_px = 0;
+    u16 prev = 0;
+    for (u32 i = 0; i < fb_bytes; i += stride) {
+        u16 px = (u16)ram[phys + i] | ((u16)ram[phys + i + 1] << 8);
+        if (px && !is_fill_pixel(px)) real_px++;
+        u32 d = (px > prev) ? (px - prev) : (prev - px);
+        grad += d;
+        prev = px;
+    }
+    avg_grad = grad / n;
+}
+
 void Syscalls::impl__lcd_set_frame() {
-    u32 addr = arg(0);
-    u32 phys = addr & 0x1FFFFFFF;
+    (void)arg(0);  // fixed address 0x80144090 — never populated at call time
     constexpr u32 fb_bytes = Display::WIDTH * Display::HEIGHT * Display::PIXEL_SIZE;
     static u32 call_count = 0;
     call_count++;
-    if (phys + fb_bytes > m_mem.size())
-        phys = 0;  // invalid addr — keep current
-    // Find the heap buffer with the most non-zero pixels and use it as the display framebuffer.
-    // Sample every 128th halfword (600 samples per window) for speed. Scan at 0x4000 steps.
-    // Re-evaluate only the first few frames then reuse the winner.
+
+    const u8* ram = m_mem.get_raw_ptr();
+    u32 ram_size = m_mem.size();
+
+    // 0x00144090 (_lcd_set_frame argument) is always zero at call time — the game never
+    // renders to it before calling this function. Use scan + overlay instead.
+    u32 overlay_phys = g_detected_fb_addr ? (g_detected_fb_addr & 0x1FFFFFFF) : 0;
     static u32 best_fb = 0;
     if (call_count <= 3 || call_count % 50 == 0) {
-        u32 best_addr = phys ? phys : m_display.get_frame_addr();
-        u32 best_count = 0;
-        for (u32 scan = 0x00020000; scan + fb_bytes <= 0x00A00000; scan += 0x4000) {
-            const u8* fb = m_mem.get_raw_ptr() + scan;
-            u32 sample = 0;
-            for (u32 i = 0; i < fb_bytes; i += 256) {  // sample every 128th halfword
-                u16 px = (u16)fb[i] | ((u16)fb[i+1] << 8);
-                if (px) sample++;
-            }
-            if (sample > best_count) {
-                best_count = sample;
-                best_addr = scan;
-            }
+        u32 best_real = 0, best_addr = 0;
+        for (u32 scan = 0x00200000; scan + fb_bytes <= 0x00A00000; scan += 0x4000) {
+            if (scan == overlay_phys) continue;
+            u32 real_px, ag;
+            scan_fb_candidate(ram, scan, fb_bytes, real_px, ag);
+            if (ag > 8000) continue;
+            if (real_px > best_real) { best_real = real_px; best_addr = scan; }
         }
-        if (best_addr != best_fb) {
-            printf("[LCD] _lcd_set_frame #%u: selected phys=0x%08X (sample=%u)\n",
-                   call_count, best_addr, best_count);
+        if (best_addr && best_addr != best_fb) {
+            printf("[LCD] _lcd_set_frame #%u: bg=0x%08X (real=%u)\n", call_count, best_addr, best_real);
             best_fb = best_addr;
         }
-        m_display.set_frame_addr(best_fb);
-    } else if (best_fb) {
-        m_display.set_frame_addr(best_fb);
     }
-    // Composite: background from best_fb, text overlay from g_detected_fb_addr
-    u32 overlay = (g_detected_fb_addr && g_detected_fb_addr != best_fb)
-                  ? (g_detected_fb_addr & 0x1FFFFFFF) : 0;
-    m_display.flip_composite(m_mem.get_raw_ptr(), m_mem.size(), overlay);
+    if (best_fb) m_display.set_frame_addr(best_fb);
+    m_display.flip_composite(ram, ram_size, overlay_phys);
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl__lcd_get_frame() {
-    // Return the detected render-target address (where the game writes pixels).
-    // This may differ from m_frame_addr (the display buffer chosen for flip()).
     g_cpu_regs[2] = g_detected_fb_addr ? g_detected_fb_addr : m_display.get_frame_addr();
 }
 

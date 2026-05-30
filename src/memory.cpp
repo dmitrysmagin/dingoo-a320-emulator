@@ -95,9 +95,27 @@ u32 Memory::read_u32(u32 vaddr) {
            ((u32)m_mem[phys + 2] << 16) | ((u32)m_mem[phys + 3] << 24);
 }
 
+// JZ4740 IPU register space: physical 0x13080000–0x130800FF
+// Intercept writes here so we can detect and eventually emulate the Image Processing Unit.
+static void log_ipu_write(u32 phys, u32 val, int width) {
+    static const struct { u32 off; const char* name; } regs[] = {
+        {0x00, "IPU_CTRL"}, {0x04, "IPU_STATUS"}, {0x08, "IPU_D_FMT"},
+        {0x0C, "IPU_IN_FM_GS"}, {0x10, "IPU_IN_SUBM"}, {0x14, "IPU_OUT_FM_GS"},
+        {0x18, "IPU_RSZ_COEF_LUT"}, {0x1C, "IPU_CSC_C0_COEF"}, {0x20, "IPU_CSC_C1_COEF"},
+        {0x24, "IPU_Y_ADDR"}, {0x28, "IPU_U_ADDR"}, {0x2C, "IPU_V_ADDR"},
+        {0x30, "IPU_OUT_ADDR"}, {0x34, "IPU_IN_STRIDE"}, {0x38, "IPU_OUT_STRIDE"},
+        {0x3C, "IPU_CSC_OFFSET_PARA"},
+    };
+    u32 off = phys - 0x13080000;
+    const char* name = "IPU_???";
+    for (auto& r : regs) if (r.off == off) { name = r.name; break; }
+    printf("[IPU] write%d phys=0x%08X %-20s = 0x%08X\n", width, phys, name, val);
+}
+
 void Memory::write_u8(u32 vaddr, u8 val) {
     u32 phys = vaddr_to_phys(vaddr);
     if (phys == 0xFFFFFFFF || phys >= m_mem.size()) {
+        if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 8);
         return;
     }
     m_mem[phys] = val;
@@ -106,12 +124,10 @@ void Memory::write_u8(u32 vaddr, u8 val) {
 void Memory::write_u16(u32 vaddr, u16 val) {
     u32 phys = vaddr_to_phys(vaddr);
     if (phys == 0xFFFFFFFF || phys + 1 >= m_mem.size()) {
+        if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 16);
         return;
     }
-    // Protect code section from stray frame buffer writes
-    if (is_code_section(phys)) {
-        return;
-    }
+    if (is_code_section(phys)) return;
     m_mem[phys]     = (u8)(val & 0xFF);
     m_mem[phys + 1] = (u8)((val >> 8) & 0xFF);
 }
@@ -119,11 +135,10 @@ void Memory::write_u16(u32 vaddr, u16 val) {
 void Memory::write_u32(u32 vaddr, u32 val) {
     u32 phys = vaddr_to_phys(vaddr);
     if (phys == 0xFFFFFFFF || phys + 3 >= m_mem.size()) {
+        if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 32);
         return;
     }
-    if (is_code_section(phys)) {
-        return;
-    }
+    if (is_code_section(phys)) return;
     m_mem[phys]     = (u8)(val & 0xFF);
     m_mem[phys + 1] = (u8)((val >> 8) & 0xFF);
     m_mem[phys + 2] = (u8)((val >> 16) & 0xFF);
