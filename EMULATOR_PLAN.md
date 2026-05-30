@@ -842,61 +842,78 @@ void exec_cop0_tlbwi() {
 
 ## 8. Development Plan
 
-### Phase 1: Minimal Viable Emulator
-- MIPS32 interpreter (all standard opcodes)
-- Memory management (KSEG0/KSEG1 flat map)
-- COP0 stubs
-- 72 Dingoo OS function stubs (printing to console)
-- Load RAWD binary at 0x80A00000
-- Execute dl_main → AppMain, verify it starts and logs
+### Phase 1: Minimal Viable Emulator — ✅ COMPLETE
+- [x] MIPS32 interpreter (all standard opcodes, incl. LWL/LWR with correct LE formulas)
+- [x] Memory management (KSEG0/KSEG1 flat map) — **128 MB allocated** (not 16 MB as planned; needed to hold resource archive in guest RAM at phys 0x00B50000)
+- [x] COP0 stubs (Count/Compare auto-increment per instruction)
+- [x] All 72 GOT handlers implemented
+- [x] RAWD loaded at 0x80A00000, BSS zeroed, stack initialised
+- [x] dl_main → AppMain executes; game reaches dialogue loop
 
-### Phase 2: Display
-- Implement LcdGetDisMode, _lcd_set_frame, lcd_flip
-- SDL2 window with 320×240 framebuffer
-- Verify game menu renders
+### Phase 2: Display — ✅ COMPLETE (implementation significantly exceeded plan)
+The plan assumed a single framebuffer pointed to by `_lcd_set_frame`. In reality the game
+uses two separate buffers — background and text overlay — composited by the LCD hardware.
 
-### Phase 3: Filesystem + Resources
-- fsys_fopen/fread/fseek/fclose implementations
-- Resource archive loader (7days.app[0x150000])
-- All .spk files and individual assets accessible
-- Save file I/O
+- [x] `_lcd_set_frame` / `_lcd_get_frame` / `LcdGetDisMode` implemented
+- [x] SDL2 window: 320×240 internal, scaled 3× → 960×720
+- [x] **Smart framebuffer scan**: samples heap at 0x4000 steps every 50 calls to find richest buffer
+- [x] **Composite rendering** (`flip_composite`): background from scan winner, text from `g_detected_fb_addr`
+- [x] CPU interception at PC 0x80A21E78 tracks render-target address
+- [x] RGB565 format verified byte-compatible with SDL on LE host; no conversion needed in hot path
+- [x] Screenshot conversion fixed: `SDL_ConvertSurfaceFormat` gives proper 5→8/6→8 bit expansion
+- [x] Game renders full-screen backgrounds (99.6–100% pixel coverage) with advancing dialogue text
 
-### Phase 4: Input
-- Keyboard remapping Dingoo → PC keys
-- SDL event handling
-- Verify menu navigation works
+### Phase 3: Filesystem + Resources — ✅ MOSTLY COMPLETE
+- [x] `fsys_fopenW` / `fsys_fread` / `fsys_fseek` / `fsys_ftell` / `fsys_fclose`
+- [x] Resource archive loader (3216 SPK entries served on demand)
+- [x] Resource archive also loaded into guest RAM at phys 0x00B50000
+- [ ] **Save file write path** — `slot1-3.sav` / `config.sdt` return NOT FOUND; game handles gracefully but no persistence
 
-### Phase 5: Audio
-- waveout_open/write API
-- SDL2 audio callback
-- MXU coprocessor implementation for audio mixing
-- Verify sound effects play
+### Phase 4: Input — ✅ COMPLETE
+- [x] Full SDL keyboard → Dingoo bitmask mapping (`display.h`)
+- [x] SDL event loop in `pump_events()` feeding `m_dingoo_keys`
+- [x] `_sys_judge_event` reads event queue at 0x80BFECD8; live keypresses work
+- [x] Auto-press schedule (START at vsync 200, then A every 100 vsyncs to vsync 3000) for automated testing
+- [x] `SDL_VIDEODRIVER=offscreen` + software renderer fallback for headless runs
+- Note: SELECT mapped to Tab (plan appendix said Right Shift — minor divergence)
 
-### Phase 6: MXU Implementation
-- Study the 30 observed MXU instructions in context
-- Implement DSP ops (multiply-accumulate, fixed-point math)
-- Test with audio playback and 3D rendering
+### Phase 5: Audio — ❌ STUBBED, NOT IMPLEMENTED
+The audio task runs correctly and produces PCM data; it is silently discarded.
 
-### Phase 7: Polish
-- Frame rate capping (60fps)
-- Save/load state synchronization
-- Config file support
-- Window scaling
-- Debug logging
-- Performance optimization
+- [x] `waveout_open` / `waveout_close` / `waveout_can_write` (stubs; audio task unblocked)
+- [x] `waveout_write` called ~737K times per vsync-1000 — data arrives at correct rate
+- [ ] **SDL audio device never opened** — no `SDL_OpenAudioDevice` call
+- [ ] **PCM samples discarded** — `waveout_write` is a no-op returning size
+- [ ] **SDL audio callback not implemented**
+- Next step: open device in `waveout_open`, queue samples in `waveout_write`, drain in callback
+
+### Phase 6: MXU Implementation — ✅ PRESENT, CORRECTNESS UNVERIFIED
+- [x] `mxu.cpp` handles all COP2 custom opcodes encountered
+- [x] Zero unknown-opcode hits across 6.4 billion instructions in a 2-minute run
+- [ ] Output correctness unverified — audio is the main consumer but is not being played back
+- Note: will need re-verification once Phase 5 is complete
+
+### Phase 7: Polish — ⚠️ PARTIAL
+- [ ] Frame rate capping (60fps) — currently uncapped; emulator is ~5× slower than real hardware so irrelevant for now
+- [ ] Save/load state synchronisation — blocked on Phase 3 save write path
+- [ ] Config file support (`config.sdt`) — game uses Chinese-language defaults without it
+- [x] Window scaling (3× scale)
+- [x] Debug logging (GOT call counts, LCD scan, frame stats, auto-press)
+- [x] Screenshot auto-save at milestones (frames 1–5, every 25th)
+- Performance: 64M insns/s (~5× slower than 336 MHz JZ4730); was 14–20M at Phase 1 completion
 
 ---
 
 ## 9. Key Risks & Mitigations
 
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| MXU instruction set incompletely understood | Audio/3D corruption | Implement observed ops, log unencountered ones |
-| TLB operations during boot are complex | Boot hangs | TLBWI/WR are already understood as no-ops for runtime |
-| .spk path resolution differs from Dingoo OS | Resource loading fails | Log all fsys_fopen calls, compare with known paths |
-| µC/OS-II task model (multithreading) | Wrong execution order | Tasks can be run sequentially or eager; each OSTaskCreate queues a work item |
-| Audio timing mismatch | Crackling/stuttering | SDL2 callback + queue handles this naturally |
-| Performance of interpreter | Too slow for gameplay | ~100K insns/frame may be enough; optimize hot paths |
+| Risk | Impact | Mitigation / Status |
+|------|--------|---------------------|
+| MXU instruction set incompletely understood | Audio/3D corruption | All observed ops implemented; no unknowns in 6.4B insns. Verify once audio plays back. |
+| TLB operations during boot are complex | Boot hangs | ✅ TLBWI/WR confirmed no-ops at runtime |
+| .spk path resolution differs from Dingoo OS | Resource loading fails | ✅ 177+ successful fread calls across 3216-entry archive |
+| µC/OS-II task model (multithreading) | Wrong execution order | ✅ Preemptive time-slicing in simulate_vsync; both tasks get CPU time |
+| Audio timing mismatch | Crackling/stuttering | SDL2 callback + queue still the right approach; not yet implemented |
+| Performance of interpreter | Too slow for gameplay | 64M insns/s achieved; 5× slower than real HW; acceptable for dialogue game |
 
 ---
 
