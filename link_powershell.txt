@@ -1,7 +1,0 @@
-﻿g++.exe : collect2.exe: error: ld returned 1 exit status
-строка:1 знак:1
-+ & 'C:\Users\user\msys64\ucrt64\bin\g++.exe' -o emu.exe main.o memory. ...
-+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (collect2.exe: e...d 1 exit status:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 

@@ -488,8 +488,12 @@ void Syscalls::impl_sprintf() {
 }
 
 void Syscalls::impl_fprintf() {
-    // Forward to our printf implementation (file argument ignored — no guest stderr/stdout)
-    impl_printf();
+    // arg(0) = FILE*, arg(1) = format string, arg(2+) = varargs
+    // FILE* is ignored — all guest output goes to host stdout.
+    std::string out = format_string(guest_string(arg(1)), 2);
+    fputs(out.c_str(), stdout);
+    fflush(stdout);
+    g_cpu_regs[2] = (u32)out.size();
 }
 
 void Syscalls::impl_strncasecmp() {

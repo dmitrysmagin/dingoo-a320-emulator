@@ -103,32 +103,51 @@ void CPU::exec_special(u32 insn) {
 
 void CPU::exec_special2(u32 insn) {
     int func = insn & 0x3F;
+    int rs = (insn >> 21) & 0x1F;
+    int rt = (insn >> 16) & 0x1F;
+    int rd = (insn >> 11) & 0x1F;
     switch (func) {
-    case 0x02: {  // MUL (MIPS32r1 SPECIAL2 func 0x02)
-        int rs = (insn >> 21) & 0x1F;
-        int rt = (insn >> 16) & 0x1F;
-        int rd = (insn >> 11) & 0x1F;
+    // MIPS32r1 SPECIAL2 multiply-accumulate: {HI,LO} op= rs * rt
+    case 0x00: {  // MADD: {HI,LO} += signed(rs) * signed(rt)
+        s64 acc = ((s64)(s32)hi << 32) | lo;
+        acc += (s64)(s32)regs[rs] * (s64)(s32)regs[rt];
+        lo = (u32)(acc & 0xFFFFFFFF);
+        hi = (u32)((u64)acc >> 32);
+        break;
+    }
+    case 0x01: {  // MADDU: {HI,LO} += unsigned(rs) * unsigned(rt)
+        u64 acc = ((u64)hi << 32) | lo;
+        acc += (u64)regs[rs] * (u64)regs[rt];
+        lo = (u32)(acc & 0xFFFFFFFF);
+        hi = (u32)(acc >> 32);
+        break;
+    }
+    case 0x02: {  // MUL rd, rs, rt: rd = low32(rs * rt), HI/LO UNPREDICTABLE
         if (rd) regs[rd] = regs[rs] * regs[rt];
         break;
     }
-    case 0x20: case 0x21: case 0x22: case 0x23: {
-        int rs = (insn >> 21) & 0x1F;
-        int rt = (insn >> 16) & 0x1F;
-        u64 acc = ((u64)hi << 32) | lo;
-        s64 result;
-        if (func == 0x20) result = (s64)acc + (s64)(s32)regs[rs] * (s64)(s32)regs[rt];
-        else if (func == 0x21) result = (s64)acc + (s64)regs[rs] * (s64)regs[rt];
-        else if (func == 0x22) result = (s64)acc - (s64)(s32)regs[rs] * (s64)(s32)regs[rt];
-        else result = (s64)acc - (s64)regs[rs] * (s64)regs[rt];
-        lo = (u32)(result & 0xFFFFFFFF);
-        hi = (u32)((result >> 32) & 0xFFFFFFFF);
+    case 0x04: {  // MSUB: {HI,LO} -= signed(rs) * signed(rt)
+        s64 acc = ((s64)(s32)hi << 32) | lo;
+        acc -= (s64)(s32)regs[rs] * (s64)(s32)regs[rt];
+        lo = (u32)(acc & 0xFFFFFFFF);
+        hi = (u32)((u64)acc >> 32);
         break;
     }
-    case 0x24: {
-        int rs = (insn >> 21) & 0x1F;
-        int rd = (insn >> 11) & 0x1F;
+    case 0x05: {  // MSUBU: {HI,LO} -= unsigned(rs) * unsigned(rt)
+        u64 acc = ((u64)hi << 32) | lo;
+        acc -= (u64)regs[rs] * (u64)regs[rt];
+        lo = (u32)(acc & 0xFFFFFFFF);
+        hi = (u32)(acc >> 32);
+        break;
+    }
+    case 0x20: {  // CLZ rd, rs: count leading zeros
         if (regs[rs] == 0) regs[rd] = 32;
-        else { u32 v = regs[rs]; int c = 0; while ((v & 0x80000000) == 0) { v <<= 1; c++; } regs[rd] = c; }
+        else { u32 v = regs[rs]; int c = 0; while ((v & 0x80000000u) == 0) { v <<= 1; c++; } regs[rd] = c; }
+        break;
+    }
+    case 0x21: {  // CLO rd, rs: count leading ones
+        if (regs[rs] == 0xFFFFFFFF) regs[rd] = 32;
+        else { u32 v = regs[rs]; int c = 0; while ((v & 0x80000000u) != 0) { v <<= 1; c++; } regs[rd] = c; }
         break;
     }
     default:

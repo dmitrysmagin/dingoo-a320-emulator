@@ -10,12 +10,25 @@
 #include <ctime>
 
 int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <7days.app>\n", argv[0]);
-        return 1;
+    const char* app_path = nullptr;
+    u32 arg_max_frames = 0;  // 0 = unlimited
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
+            arg_max_frames = (u32)atoi(argv[++i]);
+        } else if (argv[i][0] != '-') {
+            app_path = argv[i];
+        } else {
+            fprintf(stderr, "Unknown option: %s\n", argv[i]);
+            fprintf(stderr, "Usage: %s [--frames <n>] <7days.app>\n", argv[0]);
+            return 1;
+        }
     }
 
-    const char* app_path = argv[1];
+    if (!app_path) {
+        fprintf(stderr, "Usage: %s [--frames <n>] <7days.app>\n", argv[0]);
+        return 1;
+    }
     printf("=== 7days Dingoo A320 Emulator (Phase 2) ===\n\n");
 
     // Parse the .app file
@@ -169,8 +182,11 @@ int main(int argc, char* argv[]) {
     clock_t start = clock();
     u32 frame = 0;
     u32 max_insns_per_frame = 2000000;
-    u32 max_frames = 0;  // 0 = unlimited (runs until quit or CPU halts)
+    u32 max_frames = arg_max_frames;  // 0 = unlimited (runs until quit or CPU halts)
     u32 frame_count = 0;
+
+    if (max_frames)
+        printf("[INIT] Frame limit: %u CPU frames\n", max_frames);
 
     while (cpu.running && (max_frames == 0 || frame < max_frames)) {
         // Process SDL events (quit, keyboard)
