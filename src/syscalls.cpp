@@ -13,9 +13,12 @@ extern u32 g_detected_fb_addr;  // physical, intercepted from OS at PC 0x80A21E7
 Syscalls::Syscalls(Memory& mem, Display& display)
     : m_mem(mem)
     , m_display(display)
-    , m_heap_top(0x00020000)  // phys: zone1 0x00020000–0x009FFFFC, zone2 0x00C10000–0x01FFFFFC
+    , m_heap_top(0x00020000)  // phys: zone1 above exception vectors, zone2 at 0x04000000 (above archive)
     , m_audio_open(false)
+    , m_audio_device_open(false)
     , m_audio_write_count(0)
+    , m_audio_device(0)
+    , m_audio_mutex(nullptr)
     , m_got_call_count(0)
     , m_current_task(-1)
     , m_task_count(0)
@@ -42,6 +45,38 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     }
     m_archive = nullptr;
     m_audio_open = false;
+    m_audio_mutex = SDL_CreateMutex();
+}
+
+void Syscalls::shutdown_audio() {
+    if (m_audio_device > 0) {
+        SDL_CloseAudioDevice(m_audio_device);
+        m_audio_device = 0;
+    }
+    if (m_audio_mutex) {
+        SDL_LockMutex(m_audio_mutex);
+        while (!m_audio_queue.empty()) m_audio_queue.pop();
+        SDL_UnlockMutex(m_audio_mutex);
+        SDL_DestroyMutex(m_audio_mutex);
+        m_audio_mutex = nullptr;
+    }
+    m_audio_open = false;
+    m_audio_device_open = false;
+}
+
+void SDLCALL Syscalls::audio_callback(void* userdata, Uint8* stream, int len) {
+    Syscalls* sys = static_cast<Syscalls*>(userdata);
+    if (!sys || !sys->m_audio_mutex) return;
+    s16* buf = reinterpret_cast<s16*>(stream);
+    int samples = len / 2;
+    SDL_LockMutex(sys->m_audio_mutex);
+    int i = 0;
+    while (i < samples && !sys->m_audio_queue.empty()) {
+        buf[i++] = sys->m_audio_queue.front();
+        sys->m_audio_queue.pop();
+    }
+    while (i < samples) buf[i++] = 0;
+    SDL_UnlockMutex(sys->m_audio_mutex);
 }
 
 u32 Syscalls::arg(int n) {
@@ -780,11 +815,20 @@ void Syscalls::impl_fsys_fread() {
     u32 size   = arg(1);
     u32 nmemb  = arg(2);
     u32 handle = arg(3);
+    u32 before = (handle < 64 && m_files[handle].in_use) ? m_files[handle].offset : 0;
     u32 n = do_fread(buf, size, nmemb, handle);
+    // Log: show offset-before-read, total bytes requested, first 4 magic bytes of result
+    u32 total = size * nmemb;
+    u8 magic[4] = {};
+    m_mem.read_block(buf, magic, std::min(total, 4u));
+    printf("[FREAD] handle=%u off=0x%08X size=%u*%u=%u -> %u items  dest=0x%08X  magic=%02X%02X%02X%02X\n",
+           handle, before, size, nmemb, total, n, buf,
+           magic[0], magic[1], magic[2], magic[3]);
     g_cpu_regs[2] = n;
 }
 
 void Syscalls::impl_fsys_fclose() {
+    printf("[FCLOSE] handle=%u\n", arg(0));
     close_file_handle(arg(0));
     g_cpu_regs[2] = 0;
 }
@@ -793,6 +837,9 @@ void Syscalls::impl_fsys_fseek() {
     u32 handle = arg(0);
     s32 offset = (s32)arg(1);
     u32 whence = arg(2);
+    static const char* whence_name[] = {"SET","CUR","END"};
+    printf("[FSEEK] handle=%u offset=0x%08X (%d) whence=%s\n",
+           handle, (u32)offset, offset, whence < 3 ? whence_name[whence] : "?");
     u32 ret = do_fseek(handle, offset, whence);
     g_cpu_regs[2] = ret;
 }
@@ -862,21 +909,59 @@ void Syscalls::impl_USB_No_Connect() {
 // === GOT 49-57: audio ===
 
 void Syscalls::impl_waveout_open() {
-    m_audio_open = true;
-    g_cpu_regs[2] = 0;
-}
+    int sample_rate = (int)arg(0);
+    int channels = (int)arg(1);
+    int bits = (int)arg(2);
 
-void Syscalls::impl_waveout_close() {
-    if (m_audio_open) {
-        m_audio_open = false;
+    if (sample_rate <= 0) sample_rate = 44100;
+    if (channels <= 0) channels = 2;
+    if (bits <= 0) bits = 16;
+
+    if (m_audio_device > 0) {
+        SDL_CloseAudioDevice(m_audio_device);
+        m_audio_device = 0;
+    }
+
+    SDL_AudioSpec want, have;
+    SDL_zero(want);
+    want.freq = sample_rate;
+    want.format = AUDIO_S16SYS;
+    want.channels = (Uint8)channels;
+    want.samples = 2048;
+    want.callback = audio_callback;
+    want.userdata = this;
+
+    m_audio_device = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+    if (m_audio_device > 0) {
+        SDL_PauseAudioDevice(m_audio_device, 0);
+        m_audio_open = true;
+        m_audio_device_open = true;
+        printf("[AUDIO] waveout_open: %dHz %dch %dbit -> device=%u (got %dHz %dch)\n",
+               sample_rate, channels, bits, m_audio_device, have.freq, have.channels);
         g_cpu_regs[2] = 0;
     } else {
-        g_cpu_regs[2] = 0xFFFFFFFF;
+        printf("[AUDIO] waveout_open FAILED: %s\n", SDL_GetError());
+        m_audio_open = false;
+        m_audio_device_open = false;
+        g_cpu_regs[2] = (u32)-1;
     }
 }
 
-void Syscalls::impl_waveout_close_at_once() {
+void Syscalls::impl_waveout_close() {
+    if (m_audio_device > 0) {
+        SDL_CloseAudioDevice(m_audio_device);
+        m_audio_device = 0;
+    }
+    m_audio_open = false;
+    m_audio_device_open = false;
+    SDL_LockMutex(m_audio_mutex);
+    while (!m_audio_queue.empty()) m_audio_queue.pop();
+    SDL_UnlockMutex(m_audio_mutex);
     g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_waveout_close_at_once() {
+    impl_waveout_close();
 }
 
 void Syscalls::impl_waveout_set_volume() {
@@ -887,17 +972,39 @@ void Syscalls::impl_HP_Mute_sw() {
     g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_waveout_can_write() {
-    g_cpu_regs[2] = 4096;
-}
-
 void Syscalls::impl_waveout_write() {
-    g_cpu_regs[2] = arg(2);
+    u32 buf_addr = arg(0);
+    u32 size = arg(1);
+
+    if (size == 0 || !buf_addr) {
+        g_cpu_regs[2] = 0;
+        return;
+    }
+
+    u32 count = size / 2;
+    std::vector<s16> samples(count);
+    m_mem.read_block(buf_addr, (u8*)samples.data(), size);
+
+    SDL_LockMutex(m_audio_mutex);
+    for (u32 i = 0; i < count; i++)
+        m_audio_queue.push(samples[i]);
+    SDL_UnlockMutex(m_audio_mutex);
+
+    g_cpu_regs[2] = size;
     m_audio_write_count++;
 }
 
+void Syscalls::impl_waveout_can_write() {
+    // Return available write space in bytes (max 64KB ring, subtract queued)
+    SDL_LockMutex(m_audio_mutex);
+    size_t queued = m_audio_queue.size();
+    SDL_UnlockMutex(m_audio_mutex);
+    u32 free = (queued >= 32768) ? 0 : (u32)((32768 - queued) * 2);
+    g_cpu_regs[2] = free ? free : 4096;
+}
+
 void Syscalls::impl_pcm_can_write() {
-    g_cpu_regs[2] = 4096;
+    impl_waveout_can_write();
 }
 
 void Syscalls::impl_pcm_ioctl() {

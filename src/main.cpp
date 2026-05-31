@@ -255,6 +255,7 @@ int main(int argc, char* argv[]) {
     }
     printf("  HI: %08X  LO: %08X\n", cpu.hi, cpu.lo);
 
+    syscalls.shutdown_audio();
     display.shutdown();
     return 0;
 }

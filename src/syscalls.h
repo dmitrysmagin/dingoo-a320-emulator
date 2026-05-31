@@ -8,6 +8,8 @@
 #include "archive.h"
 #include <string>
 #include <vector>
+#include <queue>
+#include <SDL2/SDL.h>
 
 class Syscalls {
 public:
@@ -147,7 +149,11 @@ private:
     Archive* m_archive;
     std::string m_app_path;
     bool m_audio_open;
+    bool m_audio_device_open;
     u32 m_audio_write_count;
+    SDL_AudioDeviceID m_audio_device;
+    SDL_mutex* m_audio_mutex;
+    std::queue<s16> m_audio_queue;
     u32 m_got_call_count;
     u32 m_got_call_counts[72];
     std::vector<u32> m_semaphores;
@@ -183,6 +189,9 @@ private:
     int find_ready_task();
 
 public:
+    // Audio
+    void shutdown_audio();
+    static void SDLCALL audio_callback(void* userdata, Uint8* stream, int len);
     u32 got_call_count() const { return m_got_call_count; }
     u32 got_call_counts(int i) const { return m_got_call_counts[i]; }
     bool simulate_vsync();
