@@ -46,10 +46,10 @@
 | **ISA** | MIPS32 Release 1 (r1) | Dingoo JZ4730 core: MIPS32 4Kc-like, little-endian |
 | **Endianness** | Little-endian (MIPSEB flag=0) | Confirmed by first 128 bytes parsing |
 | **Delay slots** | Full support | Every branch/jump has a delay slot |
-| **COP0** | Stub (17 MFC0, 2 MTC0) | Reads return 0, writes ignored. Count/TLB regs simulated minimally. |
+| **COP0** | Real (54K+ MFC0, 3.5K MTC0 in 7days.app) | TLB fully emulated (32 entries); all CP0 regs tracked; TLB refill, invalid, and modified exceptions raised; ERET implemented |
 | **COP1 (FPU)** | None | 0 real COP1 instructions in code section (false positives in data) |
 | **COP2 (MXU)** | **Required** (30 instructions) | See Section 2 |
-| **TLB** | Stub (8 instructions: TLBP, TLBWI, TLBWR) | Return success, don't modify TLB. Memory is flat-mapped. |
+| **TLB** | Fully emulated (32 entries) | TLBP/TLBWI/TLBR/TLBWR all implemented. See Phase 7. |
 | **CACHE** | No-op | 0 CACHE instructions found anyway |
 | **ERET** | No-op | 0 found, but should trigger a minimal exception return |
 
@@ -105,10 +105,28 @@ while (running):
 ### Memory Access (Load/Store)
 
 All loads/stores go through a single function that:
-1. Translates virtual address to physical (simple: `KSEG0_MASK = ~0x9FFFFFFF | ~0x80000000` → strip bit 29 for KSEG0→KSEG1, or just mask off top bits)
-2. Checks for unmapped regions → bus error exception
-3. Reads/writes the memory array
+1. Translates virtual address to physical:
+   - **KSEG0/KSEG1** (0x80000000–0xBFFFFFFF): direct map, strip bit 29
+   - **KUSEG** (0x00000000–0x7FFFFFFF): TLB translation via 32-entry walk
+   - **KSEG2/KSEG3** (0xC0000000–0xFFFFFFFF): TLB translation
+2. TLB miss → raises TLB refill exception (vector 0x200) or TLB invalid (vector 0x180)
+3. On match: checks V (valid) bit, D (dirty/writable) bit for stores
+4. Reads/writes the memory array at the physical address
 
+```
+phys = mips_vaddr_to_phys(vaddr):
+    if (vaddr & 0xE0000000) == 0x80000000:
+        // KSEG0 or KSEG1: strip bit 29
+        return vaddr & 0x1FFFFFFF
+    // KUSEG or KSEG2/3: probe TLB
+    entry = tlb_probe(vaddr)
+    if no_entry:
+        raise exception(EXC_TLBL)  // or EXC_TLBS for store
+    if not entry.V:
+        raise exception(EXC_TLBL)
+    if store and not entry.D:
+        raise exception(EXC_TLBS)  // TLB Modified
+    return entry.PFN * page_size + (vaddr & (page_size - 1))
 ```
 phys = mips_vaddr_to_phys(vaddr):
     if (vaddr & 0x80000000) == 0:
@@ -779,64 +797,84 @@ Frame pacing:
 
 ---
 
-## 7. COP0 Stub Details
+## 7. COP0 Details (Phase 7: Real TLB)
 
-### Observed COP0 Operations
+### COP0 Register Set
+
+All 32 MIPS32 CP0 registers tracked. Key ones for TLB:
+
+| Reg | Name | Purpose |
+|-----|------|---------|
+| $0  | Index | TLB entry index (0–31); bit 31 set = probe not found |
+| $1  | Random | Pseudo-random index for TLBWR (wraps, excludes wired) |
+| $2  | EntryLo0 | PFN, C, D, V, G for even page in TLB pair |
+| $3  | EntryLo1 | PFN, C, D, V, G for odd page in TLB pair |
+| $4  | Context | BadVPN2 for TLB refill handler page-table walk |
+| $5  | PageMask | Variable page size mask (4K–16M) |
+| $6  | Wired | Number of wired (locked) entries; Random wraps to Wired |
+| $8  | BadVAddr | Faulting virtual address on TLB miss |
+| $10 | EntryHi | VPN2 + ASID for TLB lookup and programming |
+
+### TLB Instruction Implementations
 
 ```
-MFC0  $rt, $rd          (17×)  — Read system register
-  Found register selects: Count, Compare, Status, Cause, PRId, Config
-  Return simulated values.
-
-MTC0  $rt, $rd          (2×)   — Write system register
-  Writes to Count/Compare — need to track for timer interrupts.
-
-TLBP                     (1×)  — TLB Probe (not needed, no actual TLB)
-TLBWI                    (3×)  — TLB Write Indexed
-TLBWR                    (4×)  — TLB Write Random
-  All are boot-time initialization. Return without doing anything.
+TLBP:   Probe TLB for match on (EntryHi.VPN2, EntryHi.ASID, PageMask.Mask)
+        → sets Index to match position, or Index[31]=1 if no match
+TLBR:   Read TLB[Index] → EntryHi, EntryLo0, EntryLo1, PageMask
+TLBWI:  Write programmed EntryHi/EntryLo0/EntryLo1/PageMask to TLB[Index]
+TLBWR:  Same as TLBWI but writes to TLB[Random] instead
+        (Random auto-decrements; wraps between Wired and 31)
 ```
 
-### Implementation
+### TLB Entry Structure (32 entries)
 
-```c
-void exec_cop0_mfc0(uint32_t insn) {
-    int rd = (insn >> 11) & 0x1F;  // COP0 register select
-    int rt = (insn >> 16) & 0x1F;  // CPU destination register
-    
-    switch (rd) {
-    case 0:   // Index (for TLB)
-    case 1:   // Random (for TLB)
-    case 2:   // EntryLo0
-    case 3:   // EntryLo1
-    case 4:   // Context
-    case 5:   // PageMask
-    case 6:   // Wired
-        cpu.regs[rt] = 0; break;
-    case 9:   // Count
-        cpu.regs[rt] = SDL_GetTicks(); break;
-    case 11:  // Compare
-        cpu.regs[rt] = cpu.cp0.compare; break;
-    case 12:  // Status
-        cpu.regs[rt] = cpu.cp0.status; break;
-    case 13:  // Cause
-        cpu.regs[rt] = cpu.cp0.cause; break;
-    case 14:  // EPC
-        cpu.regs[rt] = cpu.cp0.epc; break;
-    case 15:  // PRId
-        cpu.regs[rt] = 0x00018200; break;  // MIPS 4Kc
-    case 16:  // Config
-        cpu.regs[rt] = 0x8000; break;      // basic config
-    default:
-        cpu.regs[rt] = 0;
-        log("Unknown MFC0 rd=%d", rd);
-    }
-}
-
-void exec_cop0_tlbwi() {
-    // No-op. TLB is unused at runtime.
-}
 ```
+struct TLBEntry {
+    u32 entry_hi;     // [31:13] VPN2, [7:0] ASID
+    u32 entry_lo0;    // [31:6] PFN, [5:3] C, [2] D, [1] V, [0] G
+    u32 entry_lo1;    // same layout
+    u32 page_mask;    // [28:13] mask field → page size
+};
+```
+
+### Memory Translation Integration
+
+Translation in Memory::vaddr_to_phys():
+
+```
+if (vaddr & 0xE0000000) == 0x80000000:
+    return vaddr & 0x1FFFFFFF           // KSEG0/KSEG1 bypass TLB
+else:
+    entry = tlb_walk(vaddr)             // probe all 32 entries
+    if !entry: raise EXC_TLBL/TLBS     // TLB refill
+    if !entry.valid: raise EXC_TLBL    // TLB invalid
+    if store && !entry.dirty: raise EXC_TLBS  // TLB modified
+    phys = (entry.pfn << page_shift) | (vaddr & page_mask)
+    return phys
+```
+
+### Exception Handling for TLB
+
+- **TLB Refill** (cause=2/3): occurs when no TLB entry matches. The CPU vectors to 0x80000200 (XTLB refill). The OS handler at 0x8001F330 walks the page table using the Context register and fills a TLB entry via TLBWI, then ERETs.
+- **TLB Invalid** (cause=2/3, V=0): vectors to general exception handler at 0x80000180.
+- **TLB Modified** (cause=1, write to D=0 entry): vectors to 0x80000180.
+
+The emulator must:
+1. Properly set Cause, EPC, BadVAddr, Context on TLB exceptions
+2. Not halt on exception — allow the OS refill handler to run
+3. Execute ERET correctly: jump to EPC, clear EXL
+
+### ERET Implementation
+
+```
+ERET:
+    pc = cop0.regs.epc
+    cop0.regs.status &= ~EXL  // clear Exception Level bit 1
+    llbit = 0                 // clear load-linked bit
+    ll_addr = 0
+```
+
+(Already implemented in cpu.cpp:235–241; needed for TLB refill to return.)
 
 ---
 
@@ -877,23 +915,46 @@ uses two separate buffers — background and text overlay — composited by the 
 - [x] `SDL_VIDEODRIVER=offscreen` + software renderer fallback for headless runs
 - Note: SELECT mapped to Tab (plan appendix said Right Shift — minor divergence)
 
-### Phase 5: Audio — ❌ STUBBED, NOT IMPLEMENTED
-The audio task runs correctly and produces PCM data; it is silently discarded.
-
-- [x] `waveout_open` / `waveout_close` / `waveout_can_write` (stubs; audio task unblocked)
-- [x] `waveout_write` called ~737K times per vsync-1000 — data arrives at correct rate
-- [ ] **SDL audio device never opened** — no `SDL_OpenAudioDevice` call
-- [ ] **PCM samples discarded** — `waveout_write` is a no-op returning size
-- [ ] **SDL audio callback not implemented**
-- Next step: open device in `waveout_open`, queue samples in `waveout_write`, drain in callback
+### Phase 5: Audio — ✅ COMPLETE
+- [x] SDL audio device opened in `impl_waveout_open()` with AUDIO_S16SYS, 44100 Hz, stereo
+- [x] `impl_waveout_write()` reads PCM from guest RAM via `m_mem.read_block()`, pushes to mutex-protected `std::queue<s16>`
+- [x] Static `audio_callback()` drains queue into SDL stream, fills underrun with silence
+- [x] `impl_waveout_can_write()` reports available queue space (up to 32K samples)
+- [x] `impl_waveout_close()` / `impl_waveout_close_at_once()`: close device, drain queue
+- [x] `shutdown_audio()` called from `main.cpp` before `display.shutdown()`
+- [ ] Output correctness unverified — MXU mixing and TLB addressing both affect PCM fidelity
 
 ### Phase 6: MXU Implementation — ✅ PRESENT, CORRECTNESS UNVERIFIED
 - [x] `mxu.cpp` handles all COP2 custom opcodes encountered
 - [x] Zero unknown-opcode hits across 6.4 billion instructions in a 2-minute run
-- [ ] Output correctness unverified — audio is the main consumer but is not being played back
-- Note: will need re-verification once Phase 5 is complete
+- [ ] Output correctness unverified — audio is the main consumer; MXU mixing and TLB-addressed PCM samples both need verification
+- Note: will need re-verification once Phase 7 (TLB) is complete
 
-### Phase 7: Polish — ⚠️ PARTIAL
+### Phase 7: TLB Implementation — ❌ NOT STARTED
+The game manages its own virtual memory via TLB (285 TLBWI, 250 TLBR, 58 TLBP —
+see [`TLB.md`](../TLB.md)). The current no-op TLB stubs cause writes to KUSEG
+addresses to land at identity-mapped physical locations instead of the TLB-mapped
+destination, breaking compressed background rendering.
+
+**Reference: Dingoo A320 OS (`ccpmp.bin` v1.22)**
+- TLB refill handler at `0x8001F330`, reached from XTLB vector `0x200`
+- OS boot sets up identity entries for DRAM, then page-table entries for loaded modules
+- `ccpmp` uses 30 TLBWI, 27 TLBR, 22 TLBP — simple 4KB page identity map for DRAM
+- Context register used for page-table walk in refill handler
+
+- [ ] **TLB data structure** — 32-entry array in COP0, each entry holding EntryHi, EntryLo0, EntryLo1, PageMask, and decoded fields (VPN2, PFN, C, D, V, G, mask)
+- [ ] **CP0 register tracking** — all TLB-related regs: Index, Random, Wired, EntryLo0/1, EntryHi, PageMask, Context, BadVAddr. Random auto-decrements each cycle (wraps Wired→31)
+- [ ] **TLBWI** — write EntryHi/EntryLo0/EntryLo1/PageMask to TLB[Index]
+- [ ] **TLBR** — read TLB[Index] back to EntryHi/EntryLo0/EntryLo1/PageMask
+- [ ] **TLBP** — probe all 32 entries for VPN2+ASID match; set Index on hit, Index[31]=1 on miss
+- [ ] **TLBWR** — write to TLB[Random] (excludes wired entries)
+- [ ] **Memory translation** — `Memory::vaddr_to_phys()` probes TLB for KUSEG and KSEG2/3 addresses; raises EXC_TLBL/EXC_TLBS on miss/invalid/modified
+- [ ] **Exception handling** — TLB refill exception vectors to `0x200`, TLB invalid/modified to `0x180`; sets Cause, EPC, BadVAddr, Context correctly; does NOT halt the emulator
+- [ ] **OS refill handler** — the handler at `0x8001F330` runs after TLB miss, fills TLB entry, ERETs back. The emulator must allow this handler code to execute (PC in `0x80000000–0x809FFFFF` currently returns JR $ra — this must be replaced for the refill range)
+- [ ] **Variable page sizes** — support PageMask for 4KB (mask=0), 16KB, 64KB, 256KB, 1MB, 4MB, 16MB — the game may use large pages for the resource cache
+- [ ] **Verification** — boot to dialogue, verify prologue backgrounds render correctly
+
+### Phase 8: Polish — ⚠️ PARTIAL
 - [ ] Frame rate capping (60fps) — currently uncapped; emulator is ~5× slower than real hardware so irrelevant for now
 - [ ] Save/load state synchronisation — blocked on Phase 3 save write path
 - [ ] Config file support (`config.sdt`) — game uses Chinese-language defaults without it
@@ -908,11 +969,13 @@ The audio task runs correctly and produces PCM data; it is silently discarded.
 
 | Risk | Impact | Mitigation / Status |
 |------|--------|---------------------|
-| MXU instruction set incompletely understood | Audio/3D corruption | All observed ops implemented; no unknowns in 6.4B insns. Verify once audio plays back. |
-| TLB operations during boot are complex | Boot hangs | ✅ TLBWI/WR confirmed no-ops at runtime |
+| MXU instruction set incompletely understood | Audio/3D corruption | All observed ops implemented; no unknowns in 6.4B insns. Audio working with TLB pending. |
+| TLB refill handler at 0x200 was never tested | Boot hangs on first KUSEG access | Must allow code execution in OS area (0x80000000–0x809FFFFF) rather than returning JR $ra |
+| TLB translation correctness | Memory corruption or black backgrounds | Start with identity mapping for DRAM (same as current KUSEG flat-map), then verify game-specific entries via logging |
+| Variable page sizes | Wrong page mask breaks translation | Log all PageMask values written by game; start with 4KB-only then add larger sizes |
+| ERET used in exception return | Wrong PC after TLB refill | Already implemented in cpu.cpp; verify EPC is set correctly before ERET |
 | .spk path resolution differs from Dingoo OS | Resource loading fails | ✅ 177+ successful fread calls across 3216-entry archive |
 | µC/OS-II task model (multithreading) | Wrong execution order | ✅ Preemptive time-slicing in simulate_vsync; both tasks get CPU time |
-| Audio timing mismatch | Crackling/stuttering | SDL2 callback + queue still the right approach; not yet implemented |
 | Performance of interpreter | Too slow for gameplay | 64M insns/s achieved; 5× slower than real HW; acceptable for dialogue game |
 
 ---

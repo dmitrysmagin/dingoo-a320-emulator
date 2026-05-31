@@ -45,11 +45,13 @@ Boot the Dingoo game **"7days"** (`7days.app`, SPK archive) to playable gameplay
 - Auto-press schedule: START at vsync 100, A every 10 vsyncs from vsync 150 onwards (held 5 vsyncs each)
 - `SDL_VIDEODRIVER=offscreen` + software renderer fallback for headless/CI testing
 
-### Audio (partial)
-- `waveout_open` / `waveout_write` / `waveout_close` all accepted by audio task
-- `waveout_can_write` returns 4,096 (always ready) to keep audio task unblocked
+### Audio
+- SDL2 audio device opened in `waveout_open` with guest-specified rate/channels/bits (16-bit signed LE)
+- `waveout_write` reads PCM samples from guest RAM and pushes to a mutex-protected queue
+- SDL audio callback drains the queue to the host speaker; silence on underrun
+- `waveout_can_write` reports available queue space (up to 64KB) instead of hardcoded 4096
 - Audio task runs correctly — `waveout_write` called ~22M times per 9,990-frame test run
-- **No actual audio output** — samples are discarded; see Missing section
+- Clean shutdown: `shutdown_audio()` closes device and destroys mutex
 
 ### Filesystem
 - `fsys_fopenW` / `fsys_fread` / `fsys_fseek` / `fsys_ftell` / `fsys_fclose` implemented
@@ -72,6 +74,7 @@ Boot the Dingoo game **"7days"** (`7days.app`, SPK archive) to playable gameplay
 | Screenshot bit expansion | `display.cpp` | SDL `ConvertSurfaceFormat` replaces manual loop; white → (255,255,255) not (248,252,248) |
 | SDL software renderer fallback | `display.cpp` | Allows `SDL_VIDEODRIVER=offscreen` for headless tests |
 | `_kbd_get_status` dual-write | `syscalls.cpp` | Also writes keys to guest RAM `0x80B49D08`; without this text never advanced |
+| SDL audio output | `syscalls.cpp`/`display.cpp` | Opens SDL2 audio device in `waveout_open`; queues PCM in `waveout_write`; drains via callback |
 
 ## Current Status
 
@@ -94,16 +97,22 @@ Three large resource reads occur at startup (before/during prologue):
 These are far smaller than an uncompressed RGB565 framebuffer (153,600 bytes), confirming they are
 compressed images. The game must decompress them before writing to the framebuffer.
 
-**Hypothesis**: The JZ4740 SoC includes an **Image Processing Unit (IPU)** — a hardware 2D blitter
-capable of DMA-based image decoding, scaling, and blitting. The Dingoo A320 firmware uses this for
-CG background rendering. Because the emulator does not implement IPU MMIO registers, the decompressed
-pixel data never reaches guest RAM and the framebuffer remains black.
+**Previous hypothesis (IPU) refuted** — TLB analysis (`docs/TLB.md`) found **zero** references to
+JZ4740 IPU MMIO registers (`0xB306XXXX`) in either `ccpmp.bin` or `7days.app`.
+
+**New hypothesis**: `7days.app` manages its own virtual memory via TLB (285 TLBWI, 250 TLBR,
+58 TLBP — see TLB.md). The emulator's TLB stubs in `cop0.cpp` are all no-ops, so writes to
+page-faulted-in KUSEG addresses land in the identity-mapped physical location instead of the
+TLB-mapped destination. The decompressed pixel data likely ends up at the wrong physical address
+and never reaches the framebuffer.
 
 **Supporting evidence**:
 - `GOT[20] ap_lcd_set_frame` and `GOT[21] lcd_flip` are never called — the background blitting
   does not go through those paths
 - The title CG (431,444 bytes — a full uncompressed 320×240 frame) renders correctly via the normal
   `_lcd_set_frame` path; only compressed prologue images fail
+- 7days.app touches every CP0 register (54,753 reads, 3,509 writes) — far more than the emulator's
+  minimal COP0 stub handles
 
 ### Performance
 - ~64M guest instructions/second on modern x86
@@ -120,8 +129,7 @@ SDL_VIDEODRIVER=offscreen timeout 60 ./emulator.exe ../7days.app
 
 | Item | Notes |
 |------|-------|
-| **CG backgrounds** | Prologue backgrounds compressed; likely decoded by JZ4740 IPU hardware (not emulated) — top priority to investigate |
-| **Audio output** | `waveout_write` is a no-op; SDL audio device never opened; samples discarded |
+| **CG backgrounds** | Prologue backgrounds compressed; game manages virtual memory via TLB (285 TLBWI/250 TLBR) but emulator has no-op TLB stubs; decompressed pixel data likely lands at wrong physical address |
 | **Save files** | `slot1-3.sav` / `config.sdt` not present; game uses defaults, no persistence |
 | **Frame rate cap** | Emulator runs uncapped; no 60fps limiter |
 | **OSTimeDly accuracy** | Returns immediately (no-op); simulate_vsync provides approximate tick cadence |
@@ -130,23 +138,22 @@ SDL_VIDEODRIVER=offscreen timeout 60 ./emulator.exe ../7days.app
 ## Next Steps
 
 ### High Priority
-1. **Investigate background blitting** — Disassemble the scene-update function (candidate: `0x80A661C8`)
-   to determine whether it writes pixels directly to the framebuffer or writes to JZ4740 IPU MMIO
-   registers (base `0xB3080000`). If IPU registers: implement minimal IPU emulation (DMA blit from
-   compressed source to framebuffer). If direct CPU stores: trace why they never reach the framebuffer.
-
-2. **Audio output** — Open SDL audio device in `waveout_open`; queue 16-bit stereo PCM in
-   `waveout_write`; SDL callback drains to speaker. The game produces continuous PCM — data is there,
-   just discarded.
+1. **Phase 7: Implement TLB emulation** — Full 32-entry MIPS32 TLB with TLBP/TLBWI/TLBR/TLBWR,
+   variable page sizes (4KB–16MB), CP0 register tracking (Index/Random/Wired/EntryLo/EntryHi/
+   PageMask/Context/BadVAddr), and TLB-aware memory translation in `vaddr_to_phys()`. See
+   [`EMULATOR_PLAN.md`](EMULATOR_PLAN.md) Phase 7 for spec.
+2. **OS refill handler** — Allow code execution in the OS area (0x80000000–0x809FFFFF) which
+   currently returns JR $ra. The handler at 0x8001F330 must run to fill TLB entries on miss.
+3. **Test background rendering** — Verify prologue CGs render after TLB is properly wired.
 
 ### Medium Priority
-3. **Save files** — Implement write path for `slot1-3.sav`; allows testing save/load code paths
-4. **config.sdt** — Determine format (likely simple key/value); create stub to test non-default settings
+2. **Save files** — Implement write path for `slot1-3.sav`; allows testing save/load code paths
+3. **config.sdt** — Determine format (likely simple key/value); create stub to test non-default settings
 
 ### Lower Priority
-5. **Frame rate cap** — Add 60fps limiter in main loop; currently irrelevant as emulator runs slower than real hardware
-6. **MXU verification** — Cross-check audio mixing output once SDL audio is active
-7. **Performance** — Profile hot paths in `cpu.cpp`; target 10× real-hardware speed for smoother playback
+4. **Frame rate cap** — Add 60fps limiter in main loop; currently irrelevant as emulator runs slower than real hardware
+5. **MXU verification** — Listen for correct audio output; verify MXU mixing produces expected audio
+6. **Performance** — Profile hot paths in `cpu.cpp`; target 10× real-hardware speed for smoother playback
 
 ## Relevant Files
 
