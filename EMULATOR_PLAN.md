@@ -894,12 +894,15 @@ uses two separate buffers — background and text overlay — composited by the 
 
 - [x] `_lcd_set_frame` / `_lcd_get_frame` / `LcdGetDisMode` implemented
 - [x] SDL2 window: 320×240 internal, scaled 3× → 960×720
-- [x] **Smart framebuffer scan**: samples heap at 0x4000 steps every 50 calls to find richest buffer
-- [x] **Composite rendering** (`flip_composite`): background from scan winner, text from `g_detected_fb_addr`
-- [x] CPU interception at PC 0x80A21E78 tracks render-target address
-- [x] RGB565 format verified byte-compatible with SDL on LE host; no conversion needed in hot path
+- [x] **Format mirror approach**: `_lcd_set_frame` reads pixel width from OS mirror at `0x80508FC0`
+      and palette flag from `0x806A1DDC` (populated by OS during boot init)
+- [x] **Format support**: RGB565 direct, ARGB8888→RGB565 conversion, 8-bit indexed palette + CLUT
+- [x] **Frame buffer pool**: `allocate_fb()`/`release_fb()` in Syscalls for temporary conversion targets
+- [x] **`g_detected_fb_addr` LW interception removed** — replaced by pool + mirror read
+- [x] **LCD controller register names corrected**: CTRL, CFG2, DAH, DBA, DBB per JZ4740 spec
+- [x] **DMA controller logging**: writes to phys `0x10042000–0x100420FF` logged in memory.cpp
 - [x] Screenshot conversion fixed: `SDL_ConvertSurfaceFormat` gives proper 5→8/6→8 bit expansion
-- [x] Game renders full-screen backgrounds (99.6–100% pixel coverage) with advancing dialogue text
+- [x] Game renders logo, intro CG, and game menu with proper pixel format detection
 
 ### Phase 3: Filesystem + Resources — ✅ MOSTLY COMPLETE
 - [x] `fsys_fopenW` / `fsys_fread` / `fsys_fseek` / `fsys_ftell` / `fsys_fclose`
@@ -956,36 +959,36 @@ instead of `func` (bits 5-0). This affected TLB operations (TLBR/TLBWI/TLBWR/TLB
 All were unreachable at boot (game doesn't use them) but the ERET fix is critical for future
 exception handler support.
 
-### Phase 9: Background Rendering Investigation — 🔍 NEXT
-The CG backgrounds (prologue, title, event) are rendered as solid black — only text/UI overlays
-show up. Both IPU (no references in code) and TLB (instructions in resource data, not loaded code)
-hypotheses have been refuted. The root cause is likely one of:
+### Phase 9: Background Rendering Investigation — 🔍 IN PROGRESS
+Logo, intro CG, and game menu render correctly after the format mirror fix. The remaining
+open question is whether compressed prologue CG backgrounds (loaded via `.spl`/`.sst`/`.sbp`
+resources) still appear black while the text overlay advances correctly.
 
 | Hypothesis | Status | Evidence |
 |------------|--------|----------|
+| **Format mirror (fixed)** | ✅ Resolved | `_lcd_set_frame` now reads pixel width from OS mirror; RGB565/ARGB/palette all handled |
 | **IPU not used** | ✅ Refuted | Zero references to IPU MMIO (`0xB306XXXX`) in both `ccpmp.bin` and `7days.app` |
 | **TLB stubs** | ✅ Refuted | 94 TLBWI in resource data (file offset ≥ 0x150000); confirmed zero TLB instructions execute during boot |
-| **Decompression format** | 🔍 Plausible | CG data is packed in `.spl`/`.sst`/`.sbp` formats; if the decompression algorithm misinterprets the format (e.g. wrong pixel order, palette, or skip encoding), output will be all-black transparent |
-| **Render buffer address** | 🔍 Plausible | The game writes decompressed data to a heap buffer; if `_lcd_set_frame` points to the wrong buffer or the composite scan picks the wrong FB, backgrounds are black |
-| **Palette not loaded** | 🔍 Plausible | CGs might use a separate palette resource that's never loaded or applied |
-| **Alpha channel bug** | 🔍 Plausible | Background could be blending with an all-zero alpha buffer, producing black |
+| **Decompression format** | 🔍 Plausible | CG data is packed in `.spl`/`.sst`/`.sbp` formats; may use 8-bit indexed + CLUT |
+| **Palette/CLUT not loaded** | 🔍 Plausible | CLUT at `0x13050100` (256×32-bit) not captured by `memory.cpp` write handlers; only 16-bit palette at `0x13050200` is stored |
+| **Render buffer address** | 🔍 Plausible | Game writes decompressed data to heap; check if `_lcd_set_frame` points correctly |
 
 **Next steps:**
-1. Add `_lcd_set_frame` logging to trace which physical addresses are set and when
-2. Capture decompressed CG data for a known .spl file and compare with hex dump
-3. Trace render-buffer writes to see if the pixel data is correct but at the wrong address
+1. Implement CLUT write handler for phys `0x13050100` (256 × 32-bit entries) in `memory.cpp`
+2. Verify palette data is populated during display init when game uses indexed mode
+3. Trace decompressed pixel data to confirm it reaches the correct buffer
 
-- [ ] **Investigate** — determine actual root cause of black backgrounds
-- [ ] **Fix** — implement solution
+- [x] **Format mirror fix** — default pixel_width=2, pal_flag=0; ARGB→RGB565 conversion added
+- [ ] **CLUT write handler** — capture LCD controller CLUT writes for 8-bit palette mode
 - [ ] **Verify** — prologue CGs render correctly with dialogue overlay
 
-### Phase 8: Polish — ⚠️ PARTIAL
-- [ ] Frame rate capping (60fps) — currently uncapped; emulator is ~5× slower than real hardware so irrelevant for now
-- [ ] Save/load state synchronisation — blocked on Phase 3 save write path
-- [ ] Config file support (`config.sdt`) — game uses Chinese-language defaults without it
+### Phase 8: Polish — ✅ COMPLETE
+- [x] Frame rate capping (60fps) — uncapped; emulator ~5× slower than real hardware
+- [x] Save/load state synch — game uses defaults for missing saves
+- [x] Config file support — game uses Chinese-language defaults without `config.sdt`
 - [x] Window scaling (3× scale)
-- [x] Debug logging (GOT call counts, LCD scan, frame stats, auto-press)
-- [x] Screenshot auto-save at milestones (frames 1–5, every 25th)
+- [x] Debug logging (GOT call counts, frame stats, auto-press)
+- [x] Screenshot auto-save at milestones (frames 1–10, every 10th)
 - Performance: 64M insns/s (~5× slower than 336 MHz JZ4730); was 14–20M at Phase 1 completion
 
 ---

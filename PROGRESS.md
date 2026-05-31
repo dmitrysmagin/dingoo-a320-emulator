@@ -20,14 +20,18 @@ Boot the Dingoo game **"7days"** (`7days.app`, SPK archive) to playable gameplay
 
 ### Display
 - 320×240 internal framebuffer, scaled 3× → 960×720 via SDL2
-- **Current pipeline** — `_lcd_set_frame(end_ptr)`:
-  - Game passes the **end** of the framebuffer (back_buf + 153,600 bytes), not the start
-  - `impl__lcd_set_frame` subtracts `FB_SIZE = 153,600` to recover the actual start address
-  - Strips KSEG bits (`& 0x1FFFFFFF`) to get physical address
-  - Calls `m_display.flip()` which reads RGB565 pixels from guest RAM
-- `_lcd_get_frame()` returns the back buffer address as a KSEG1 uncached pointer (`phys | 0xA0000000`)
-- `g_detected_fb_addr` intercepted at PC `0x80A21E78` (CPU LW instruction) = phys `0x0011E890`
-- Double-buffering confirmed: `_lcd_set_frame` and `_lcd_get_frame` called equal numbers of times
+- **Current pipeline** — `_lcd_set_frame(end_ptr)` uses real OS format mirror:
+  - Format pixel width read from OS mirror at `0x80508FC0` (set during `LcdGetDisMode` boot init)
+  - Palette flag read from `0x806A1DDC` (0 = RGB565/ARGB, non-zero = 8-bit indexed + CLUT)
+  - BPP determined: 1 (palette), 2 (RGB565), 4 (ARGB8888), etc.
+  - ARGB8888 detected via format mirror → converted to RGB565 via pool buffer
+  - 8-bit indexed palette mode → CLUT lookup at `0x13050100` (256×32-bit entries) → RGB565
+  - Direct RGB565 → memcpy to pool buffer, flip
+- Format mirror and palette flag initialised at boot to default values (pixel_width=2, pal_flag=0)
+- `_lcd_get_frame()` returns back buffer (KSEG1), allocates from guest heap if needed
+- `lcd_get_cframe()` returns current front buffer (KSEG0)
+- Frame buffer pool (`allocate_fb`/`release_fb`) for temporary RGB565 conversion targets
+- Double-buffering tracked via front/back address swap in display
 - RGB565 → ARGB8888 conversion with proper 5→8 and 6→8 bit replication (top bits fill LSBs)
 - Screenshot auto-save: frames 1–10, then every 10th frame thereafter
 - F12 manual screenshot; Escape to quit
@@ -75,44 +79,37 @@ Boot the Dingoo game **"7days"** (`7days.app`, SPK archive) to playable gameplay
 | SDL software renderer fallback | `display.cpp` | Allows `SDL_VIDEODRIVER=offscreen` for headless tests |
 | `_kbd_get_status` dual-write | `syscalls.cpp` | Also writes keys to guest RAM `0x80B49D08`; without this text never advanced |
 | SDL audio output | `syscalls.cpp`/`display.cpp` | Opens SDL2 audio device in `waveout_open`; queues PCM in `waveout_write`; drains via callback |
+| `g_detected_fb_addr` removed | `cpu.cpp`/`syscalls.cpp` | Replaced by proper FB pool + format mirror in `_lcd_set_frame` |
+| LCD format mirror init | `syscalls.cpp` | Writes pixel_width=2 and pal_flag=0 to OS runtime mirrors at boot |
+| DMA controller logging | `memory.cpp` | Added `log_dma_write()` for phys 0x10042000–0x100420FF |
+| LCD reg names corrected | `memory.cpp` | Fixed JZ4740 LCD register map (CTRL, CFG2, DAH, DBA, DBB) |
+| FB pool + format conv | `syscalls.cpp` | `allocate_fb()/release_fb()`, `argb8888_to_rgb565()`, palette CLUT support |
 
 ## Current Status
 
-### Game Progression (9,990-frame test run)
-- Boots through `dl_main` → `GameEngineInit` → `AppMain`
-- **Flip #1**: Title/intro CG — 75,419 non-black pixels (phys `0x0011E890`), nearly full 320×240 screen
-- **Flip #2–3**: 0 non-black pixels (framebuffers cleared between scenes)
-- **Flip #4 onwards**: 1,269 non-black pixels per frame — Chinese text strip only (x=128–314, y=222–239)
-  - Background is permanently black throughout the entire prologue
-  - Text IS advancing — all 9,990 frames have distinct content (confirmed by frame hash comparison)
-  - Pixel count and position remain constant; only glyph content changes
+### Game Progression
+- Logo, intro CG, and game menu render correctly
+- Dialogue text overlay advances properly through the prologue
+- Format mirror fix ensures `_lcd_set_frame` correctly interprets the pixel format
 - No crashes, no unknown opcodes across the entire run
 
-### Open Problem: Prologue Backgrounds Never Appear
+### Open Problem: Prologue CG Backgrounds
 Three large resource reads occur at startup (before/during prologue):
 - 77,240 bytes at file offset ~`0x02EB63FC` (prologue background 1)
 - 77,324 bytes (prologue background 2)
 - 90,888 bytes (prologue background 3)
 
-These are far smaller than an uncompressed RGB565 framebuffer (153,600 bytes), confirming they are
-compressed images. The game must decompress them before writing to the framebuffer.
+These are compressed images (far smaller than 153,600 bytes for an RGB565 frame). The game
+decompresses them before writing to the framebuffer. If prologue backgrounds fail to appear
+while text overlay works, the root cause is likely in the decompression or write path:
 
-**Previous hypothesis (IPU) refuted** — TLB analysis (`docs/TLB.md`) found **zero** references to
-JZ4740 IPU MMIO registers (`0xB306XXXX`) in either `ccpmp.bin` or `7days.app`.
-
-**New hypothesis**: `7days.app` manages its own virtual memory via TLB (285 TLBWI, 250 TLBR,
-58 TLBP — see TLB.md). The emulator's TLB stubs in `cop0.cpp` are all no-ops, so writes to
-page-faulted-in KUSEG addresses land in the identity-mapped physical location instead of the
-TLB-mapped destination. The decompressed pixel data likely ends up at the wrong physical address
-and never reaches the framebuffer.
-
-**Supporting evidence**:
-- `GOT[20] ap_lcd_set_frame` and `GOT[21] lcd_flip` are never called — the background blitting
-  does not go through those paths
-- The title CG (431,444 bytes — a full uncompressed 320×240 frame) renders correctly via the normal
-  `_lcd_set_frame` path; only compressed prologue images fail
-- 7days.app touches every CP0 register (54,753 reads, 3,509 writes) — far more than the emulator's
-  minimal COP0 stub handles
+- **TLB hypothesis**: Game may use TLB-mapped KUSEG for decompression output. TLB stubs in
+  `cop0.cpp` are no-ops, so writes land in identity-mapped physical addresses instead.
+  **But** TLB instructions counted in `docs/TLB.md` are in the resource section, not code
+  section — game may not execute them at all during boot/prologue.
+- **Decompression format**: `.spl`/`.sst`/`.sbp` formats may use palette/indexed color modes
+  that depend on CLUT at `0x13050100`. Palette support is stubbed but untested.
+- **Buffer address**: Decompressed data might write to a buffer `_lcd_set_frame` doesn't point to.
 
 ### Performance
 - ~64M guest instructions/second on modern x86
@@ -129,7 +126,7 @@ SDL_VIDEODRIVER=offscreen timeout 60 ./emulator.exe ../7days.app
 
 | Item | Notes |
 |------|-------|
-| **CG backgrounds** | Prologue backgrounds compressed; game manages virtual memory via TLB (285 TLBWI/250 TLBR) but emulator has no-op TLB stubs; decompressed pixel data likely lands at wrong physical address |
+| **Prologue CG backgrounds** | Compressed `.spl`/`.sst` images; TLB or decompression issue suspected |
 | **Save files** | `slot1-3.sav` / `config.sdt` not present; game uses defaults, no persistence |
 | **Frame rate cap** | Emulator runs uncapped; no 60fps limiter |
 | **OSTimeDly accuracy** | Returns immediately (no-op); simulate_vsync provides approximate tick cadence |
@@ -138,33 +135,32 @@ SDL_VIDEODRIVER=offscreen timeout 60 ./emulator.exe ../7days.app
 ## Next Steps
 
 ### High Priority
-1. **Phase 7: Implement TLB emulation** — Full 32-entry MIPS32 TLB with TLBP/TLBWI/TLBR/TLBWR,
-   variable page sizes (4KB–16MB), CP0 register tracking (Index/Random/Wired/EntryLo/EntryHi/
-   PageMask/Context/BadVAddr), and TLB-aware memory translation in `vaddr_to_phys()`. See
-   [`EMULATOR_PLAN.md`](EMULATOR_PLAN.md) Phase 7 for spec.
-2. **OS refill handler** — Allow code execution in the OS area (0x80000000–0x809FFFFF) which
-   currently returns JR $ra. The handler at 0x8001F330 must run to fill TLB entries on miss.
-3. **Test background rendering** — Verify prologue CGs render after TLB is properly wired.
+1. **Prologue CG debugging** — Determine root cause of black backgrounds:
+   - Trace decompression output writes (capture buffer addresses and contents)
+   - Verify CLUT palette data at `0x13050100` is populated for indexed-mode CGs
+   - Check if game uses TLB-mapped addresses for decompression targets
+2. **Palette/CLUT write handler** — Implement proper storage for LCD controller CLUT writes
+   at phys `0x13050100` (256 × 32-bit entries) in `memory.cpp`
 
 ### Medium Priority
-2. **Save files** — Implement write path for `slot1-3.sav`; allows testing save/load code paths
-3. **config.sdt** — Determine format (likely simple key/value); create stub to test non-default settings
+1. **Save files** — Implement write path for `slot1-3.sav`; allows testing save/load code paths
+2. **config.sdt** — Determine format (likely simple key/value); create stub
 
 ### Lower Priority
-4. **Frame rate cap** — Add 60fps limiter in main loop; currently irrelevant as emulator runs slower than real hardware
-5. **MXU verification** — Listen for correct audio output; verify MXU mixing produces expected audio
-6. **Performance** — Profile hot paths in `cpu.cpp`; target 10× real-hardware speed for smoother playback
+3. **Frame rate cap** — Add 60fps limiter in main loop
+4. **MXU verification** — Listen for correct audio output; verify MXU mixing
+5. **Performance** — Profile hot paths in `cpu.cpp`; target 10× real-hardware speed
 
 ## Relevant Files
 
 | File | Role |
 |------|------|
 | `emulator/src/main.cpp` | Init, patches, BSS stub, main loop, screenshot milestones |
-| `emulator/src/syscalls.cpp` | All 72 GOT handlers, µC/OS-II stubs, vsync/scheduler, input |
-| `emulator/src/cpu.cpp` | MIPS32 execute loop, GOT trampoline, `g_detected_fb_addr` interception |
+| `emulator/src/syscalls.cpp` | All 72 GOT handlers, µC/OS-II stubs, vsync/scheduler, input, LCD format mirror, FB pool |
+| `emulator/src/cpu.cpp` | MIPS32 execute loop, GOT trampoline |
 | `emulator/src/display.cpp` | SDL2 window, flip/flip_argb8888, RGB565 format, screenshots |
 | `emulator/src/display.h` | Dingoo key codes, Display class |
-| `emulator/src/memory.cpp` | Memory map, vaddr translation, raw pointer access |
+| `emulator/src/memory.cpp` | Memory map, vaddr translation, raw pointer access, LCD/DMA/IPU register logging |
 | `emulator/src/mxu.cpp` | MXU/COP2 instruction implementations |
 | `emulator/src/archive.cpp` | SPK archive parser (3,216 entries) |
 | `7days.app` | Game binary + resource archive (RESOURCE_OFFSET = 0x150000) |

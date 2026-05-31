@@ -13,21 +13,24 @@
 int main(int argc, char* argv[]) {
     const char* app_path = nullptr;
     u32 arg_max_frames = 0;  // 0 = unlimited
+    bool save_screenshots = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
             arg_max_frames = (u32)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--save-screenshots") == 0) {
+            save_screenshots = true;
         } else if (argv[i][0] != '-') {
             app_path = argv[i];
         } else {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
-            fprintf(stderr, "Usage: %s [--frames <n>] <7days.app>\n", argv[0]);
+            fprintf(stderr, "Usage: %s [--frames <n>] [--save-screenshots] <7days.app>\n", argv[0]);
             return 1;
         }
     }
 
     if (!app_path) {
-        fprintf(stderr, "Usage: %s [--frames <n>] <7days.app>\n", argv[0]);
+        fprintf(stderr, "Usage: %s [--frames <n>] [--save-screenshots] <7days.app>\n", argv[0]);
         return 1;
     }
     printf("=== 7days Dingoo A320 Emulator (Phase 2) ===\n\n");
@@ -236,11 +239,11 @@ int main(int argc, char* argv[]) {
             cpu.running = false;
         }
 
-        // Present frame if display is dirty; auto-save screenshots at milestones
+        // Present frame if display is dirty; optionally save screenshots
         if (display.is_dirty()) {
             display.clear_dirty();
             frame_count++;
-            if (frame_count <= 10 || frame_count % 10 == 0) {
+            if (save_screenshots && (frame_count <= 10 || frame_count % 10 == 0)) {
                 char path[64];
                 snprintf(path, sizeof(path), "screenshot_%04d.bmp", frame_count);
                 display.save_screenshot(path);
