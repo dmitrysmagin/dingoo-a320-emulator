@@ -1,6 +1,36 @@
 #include "memory.h"
 #include <cstdio>
 #include <cstring>
+#include <unordered_set>
+
+// Log unmapped phys accesses once per (phys, kind) so the log isn't flooded.
+// kind: 0=read, 1=write
+static void log_unmapped(u32 phys, u32 val, int width, int kind) {
+    static std::unordered_set<u64> seen;
+    // Skip if already logged (encode kind+width+phys into one key).
+    u64 key = ((u64)kind << 40) | ((u64)width << 32) | (u64)phys;
+    if (!seen.insert(key).second) return;
+    const char* region = "UNKNOWN";
+    if (phys >= 0x10000000 && phys <  0x10001000) region = "CPM";
+    else if (phys >= 0x10001000 && phys <  0x10002000) region = "INTC";
+    else if (phys >= 0x10002000 && phys <  0x10003000) region = "TCU/WDT";
+    else if (phys >= 0x10003000 && phys <  0x10004000) region = "RTC";
+    else if (phys >= 0x10010000 && phys <  0x10011000) region = "GPIO";
+    else if (phys >= 0x10020000 && phys <  0x10021000) region = "AIC";
+    else if (phys >= 0x10021000 && phys <  0x10022000) region = "MSC";
+    else if (phys >= 0x10030000 && phys <  0x10031000) region = "UART0";
+    else if (phys >= 0x10043000 && phys <  0x10044000) region = "SSI";
+    else if (phys >= 0x10070000 && phys <  0x10071000) region = "SADC";
+    else if (phys >= 0x13010000 && phys <  0x13011000) region = "EMC";
+    else if (phys >= 0x13020000 && phys <  0x13021000) region = "DMAC";
+    else if (phys >= 0x13030000 && phys <  0x13031000) region = "UHC";
+    else if (phys >= 0x13040000 && phys <  0x13041000) region = "UDC";
+    else if (phys >= 0x13100000 && phys <  0x13101000) region = "ETH";
+    else if (phys >= 0x16000000 && phys <  0x16004000) region = "TCSM";
+    else if (phys >= 0x1FC00000 && phys <  0x1FC02000) region = "BootROM";
+    printf("[HW-UNMAPPED] %s phys=0x%08X (%s) width=%d val=0x%08X\n",
+           kind ? "WRITE" : "READ", phys, region, width, val);
+}
 
 Memory::Memory()
     : m_mem(RAM_SIZE, 0)
@@ -63,17 +93,16 @@ u32 Memory::vaddr_to_phys(u32 vaddr) {
     if ((vaddr & KSEG_MASK) == KSEG0_BASE || (vaddr & KSEG_MASK) == KSEG1_BASE) {
         return vaddr & KSEG0_KSEG1_MASK;
     }
-    // Direct physical address within our RAM
-    if (vaddr < m_mem.size()) {
-        return vaddr;
-    }
-    return 0xFFFFFFFF;  // unmapped
+    // KUSEG/KSEG2/KSEG3 — TLB-mapped on real HW, unused by Dingoo OS.
+    // Refuse to silently treat low addresses as direct physical access;
+    // a wild pointer that lands here should be visible as unmapped.
+    return 0xFFFFFFFF;
 }
 
 u8 Memory::read_u8(u32 vaddr) {
     u32 phys = vaddr_to_phys(vaddr);
     if (phys == 0xFFFFFFFF || phys >= m_mem.size()) {
-        // Hardware register read → return 0
+        log_unmapped(phys, 0, 8, 0);
         return 0;
     }
     return m_mem[phys];
@@ -82,6 +111,7 @@ u8 Memory::read_u8(u32 vaddr) {
 u16 Memory::read_u16(u32 vaddr) {
     u32 phys = vaddr_to_phys(vaddr);
     if (phys == 0xFFFFFFFF || phys + 1 >= m_mem.size()) {
+        log_unmapped(phys, 0, 16, 0);
         return 0;
     }
     return (u16)m_mem[phys] | ((u16)m_mem[phys + 1] << 8);
@@ -90,6 +120,7 @@ u16 Memory::read_u16(u32 vaddr) {
 u32 Memory::read_u32(u32 vaddr) {
     u32 phys = vaddr_to_phys(vaddr);
     if (phys == 0xFFFFFFFF || phys + 3 >= m_mem.size()) {
+        log_unmapped(phys, 0, 32, 0);
         return 0;
     }
     return (u32)m_mem[phys] | ((u32)m_mem[phys + 1] << 8) |
@@ -133,10 +164,12 @@ static void log_ipu_write(u32 phys, u32 val, int width) {
 void Memory::write_u8(u32 vaddr, u8 val) {
     u32 phys = vaddr_to_phys(vaddr);
     if (phys == 0xFFFFFFFF || phys >= m_mem.size()) {
-        if (phys >= 0x13050000 && phys < 0x13050100) log_lcd_write(phys, val, 8);
-        if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 8);
+        if      (phys >= 0x13050000 && phys < 0x13050100) log_lcd_write(phys, val, 8);
+        else if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 8);
+        else log_unmapped(phys, val, 8, 1);
         return;
     }
+    if (is_code_section(phys)) return;
     m_mem[phys] = val;
     m_write_counts[phys >> 12]++;
 }
@@ -144,8 +177,9 @@ void Memory::write_u8(u32 vaddr, u8 val) {
 void Memory::write_u16(u32 vaddr, u16 val) {
     u32 phys = vaddr_to_phys(vaddr);
     if (phys == 0xFFFFFFFF || phys + 1 >= m_mem.size()) {
-        if (phys >= 0x13050000 && phys < 0x13050100) log_lcd_write(phys, val, 16);
-        if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 16);
+        if      (phys >= 0x13050000 && phys < 0x13050100) log_lcd_write(phys, val, 16);
+        else if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 16);
+        else log_unmapped(phys, val, 16, 1);
         return;
     }
     if (is_code_section(phys)) return;
@@ -157,8 +191,9 @@ void Memory::write_u16(u32 vaddr, u16 val) {
 void Memory::write_u32(u32 vaddr, u32 val) {
     u32 phys = vaddr_to_phys(vaddr);
     if (phys == 0xFFFFFFFF || phys + 3 >= m_mem.size()) {
-        if (phys >= 0x13050000 && phys < 0x13050100) log_lcd_write(phys, val, 32);
-        if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 32);
+        if      (phys >= 0x13050000 && phys < 0x13050100) log_lcd_write(phys, val, 32);
+        else if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 32);
+        else log_unmapped(phys, val, 32, 1);
         return;
     }
     if (is_code_section(phys)) return;
