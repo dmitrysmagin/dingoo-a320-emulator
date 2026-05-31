@@ -8,8 +8,6 @@ extern u32 g_cpu_regs[32];
 extern u32 g_cpu_pc;
 extern u32 g_cpu_hi;
 extern u32 g_cpu_lo;
-extern u32 g_detected_fb_addr;  // physical, intercepted from OS at PC 0x80A21E78
-
 Syscalls::Syscalls(Memory& mem, Display& display)
     : m_mem(mem)
     , m_display(display)
@@ -42,6 +40,19 @@ Syscalls::Syscalls(Memory& mem, Display& display)
         m_files[i].archive = nullptr;
         m_files[i].archive_entry = nullptr;
         m_files[i].offset = 0;
+    }
+    for (int i = 0; i < FB_POOL_SIZE; i++) {
+        m_fb_pool[i].phys = 0;
+        m_fb_pool[i].size = 0;
+        m_fb_pool[i].in_use = false;
+    }
+    // Populate OS LCD format mirror (normally set during LcdGetDisMode/rgb_user_init).
+    // phys 0x00508FC0: pixel format width (2 = RGB565, 4 = ARGB8888)
+    // phys 0x006A1DDC: palette flag  (0 = RGB/ARGB, non-zero = 8-bit indexed + CLUT)
+    {
+        u8* raw = m_mem.get_raw_ptr();
+        *(u32*)(raw + 0x00508FC0) = 2;
+        *(u32*)(raw + 0x006A1DDC) = 0;
     }
     m_archive = nullptr;
     m_audio_open = false;
@@ -613,34 +624,129 @@ void Syscalls::impl_strlen() {
     g_cpu_regs[2] = (u32)guest_string(arg(0)).size();
 }
 
+// Frame buffer pool management
+u32 Syscalls::allocate_fb(u32 size) {
+    // First try an unused slot with enough capacity
+    for (auto& e : m_fb_pool) {
+        if (!e.in_use && e.size >= size) {
+            e.in_use = true;
+            return e.phys;
+        }
+    }
+    // Next try an unused slot that can be reallocated
+    for (auto& e : m_fb_pool) {
+        if (!e.in_use) {
+            e.phys = heap_alloc(size) & 0x1FFFFFFF;
+            e.size = size;
+            e.in_use = true;
+            return e.phys;
+        }
+    }
+    // Pool full: reuse the least-recently-used slot (index 0)
+    if (m_fb_pool[0].in_use) {
+        // Don't free the old one — just leak it and overwrite
+        m_fb_pool[0].in_use = false;
+    }
+    // Retry now that slot 0 is freed
+    return allocate_fb(size);
+}
+
+void Syscalls::release_fb(u32 phys) {
+    for (auto& e : m_fb_pool) {
+        if (e.phys == phys && e.in_use) {
+            e.in_use = false;
+            return;
+        }
+    }
+}
+
+// Heuristic: sample 10 pixels and check byte[3] (alpha in LE word [B,G,R,A]).
+// If >= 8/10 have alpha == 0x00 or 0xFF → ARGB8888 (4 bytes/pixel).
+// Otherwise → RGB565 (2 bytes/pixel). Return pixel size (2 or 4).
+
+void Syscalls::argb8888_to_rgb565(const u8* src, u8* dst, u32 pixel_count) {
+    for (u32 i = 0; i < pixel_count; i++) {
+        u8 b = src[i * 4 + 0];
+        u8 g = src[i * 4 + 1];
+        u8 r = src[i * 4 + 2];
+        u16 rgb565 = (u16)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+        dst[i * 2 + 0] = (u8)(rgb565 & 0xFF);
+        dst[i * 2 + 1] = (u8)(rgb565 >> 8);
+    }
+}
+
 void Syscalls::impl__lcd_set_frame() {
-    static constexpr u32 FB_SIZE = Display::WIDTH * Display::HEIGHT * 2;
+    static constexpr u32 PIXEL_COUNT = Display::WIDTH * Display::HEIGHT;  // 76800
 
     u32 end_ptr = arg(0) & 0x1FFFFFFF;
-    if (end_ptr >= FB_SIZE && end_ptr < m_mem.size()) {
-        u32 actual_start = end_ptr - FB_SIZE;
-        u32 old_front = m_display.get_frame_addr();
-        if (!old_front && g_detected_fb_addr)
-            old_front = g_detected_fb_addr + FB_SIZE;
+    u32 fmt_mirror = m_mem.read_u32(0x80508FC0);
+    u32 pal_flag   = m_mem.read_u32(0x806A1DDC);
+    u32 bpp = (pal_flag != 0) ? 1 : ((fmt_mirror >= 2) ? fmt_mirror : 2);
 
-        m_display.set_frame_addr(actual_start);
-        m_display.set_back_addr(old_front);
+    u32 buf_size = PIXEL_COUNT * bpp;
+    g_cpu_regs[2] = 0;
+
+    if (end_ptr < buf_size || end_ptr > m_mem.size())
+        return;
+
+    u32 start = end_ptr - buf_size;
+    u8* ram = m_mem.get_raw_ptr();
+    u32 display_addr = 0;
+
+    if (pal_flag != 0) {
+        // 8-bit indexed → CLUT lookup, convert to RGB565
+        u32 buf_phys = allocate_fb(PIXEL_COUNT * 2);
+        if (buf_phys && buf_phys + PIXEL_COUNT * 2 <= m_mem.size()) {
+            u16* dst = (u16*)(ram + buf_phys);
+            for (u32 i = 0; i < PIXEL_COUNT; i++) {
+                u8 idx = ram[start + i];
+                // CLUT at phys 0x03050100 (KSEG1 0xB3050100): 256 × 32-bit ARGB entries
+                u32 clut_entry = 0;
+                u32 clut_phys = 0x03050100 + idx * 4;
+                if (clut_phys + 3 < m_mem.size()) {
+                    clut_entry = *(u32*)(ram + clut_phys);
+                }
+                u8 r = (u8)(clut_entry >> 16);
+                u8 g = (u8)(clut_entry >> 8);
+                u8 b = (u8)(clut_entry);
+                dst[i] = (u16)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+            }
+            display_addr = buf_phys;
+        }
+    } else if (bpp == 4) {
+        // ARGB8888 → convert to RGB565
+        u32 buf_phys = allocate_fb(PIXEL_COUNT * 2);
+        if (buf_phys && buf_phys + PIXEL_COUNT * 2 <= m_mem.size()) {
+            argb8888_to_rgb565(ram + start, ram + buf_phys, PIXEL_COUNT);
+            display_addr = buf_phys;
+        } else {
+            display_addr = start;
+        }
+    } else {
+        // RGB565 or other direct 2-byte format — use directly
+        display_addr = start;
     }
 
-    m_display.flip(m_mem.get_raw_ptr(), m_mem.size());
-    g_cpu_regs[2] = 0;
+    if (display_addr) {
+        u32 old_front = m_display.get_frame_addr();
+        m_display.set_frame_addr(display_addr);
+        if (old_front != display_addr && old_front != 0)
+            m_display.set_back_addr(old_front);
+        m_display.flip(ram, m_mem.size());
+    }
 }
 
 void Syscalls::impl__lcd_get_frame() {
-    u32 phys = m_display.get_back_addr();
-    if (!phys) phys = g_detected_fb_addr;
-    g_cpu_regs[2] = phys ? (phys | 0xa0000000u) : 0;
+    u32 back = m_display.get_back_addr();
+    // If no back buffer known, allocate from guest heap
+    if (!back || back == m_display.get_frame_addr())
+        back = allocate_fb(Display::WIDTH * Display::HEIGHT * 4) & 0x1FFFFFFF;
+    g_cpu_regs[2] = back ? (back | 0xA0000000u) : 0;
 }
 
 void Syscalls::impl_lcd_get_cframe() {
-    u32 phys = m_display.get_frame_addr();
-    if (!phys) phys = g_detected_fb_addr;
-    g_cpu_regs[2] = phys ? (phys | 0x80000000u) : 0;
+    u32 front = m_display.get_frame_addr();
+    g_cpu_regs[2] = front ? (front | 0x80000000u) : 0;
 }
 
 void Syscalls::impl_ap_lcd_set_frame() {
@@ -649,8 +755,6 @@ void Syscalls::impl_ap_lcd_set_frame() {
 }
 
 void Syscalls::impl_lcd_flip() {
-    // Real OS: lcd_change_frame() — advance the DMA descriptor ring and present.
-    // The game's framebuffer is RGB565 (16bpp): use flip() not flip_argb8888().
     m_display.flip(m_mem.get_raw_ptr(), m_mem.size());
     g_cpu_regs[2] = 0;
 }

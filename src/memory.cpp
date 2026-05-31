@@ -186,17 +186,31 @@ static void log_lcd_write(u32 phys, u32 val, int width) {
         return;
     }
     static const struct { u32 off; const char* name; } regs[] = {
-        {0x00, "LCD_CFG"}, {0x04, "LCD_VSYNC"}, {0x08, "LCD_HSYNC"},
-        {0x0C, "LCD_VAT"},  {0x10, "LCD_DAH"},   {0x14, "LCD_DAV"},
-        {0x18, "LCD_PS"},   {0x1C, "LCD_CLS"},   {0x20, "LCD_SPL"},
-        {0x24, "LCD_REV"},  {0x30, "LCD_CTRL"},  {0x34, "LCD_STATE"},
-        {0x40, "LCD_DA0"},  {0x44, "LCD_SA0"},   {0x48, "LCD_FID0"},
-        {0x4C, "LCD_CMD0"}, {0x50, "LCD_DA1"},   {0x54, "LCD_SA1"},
-        {0x58, "LCD_FID1"}, {0x5C, "LCD_CMD1"},
+        {0x00, "LCD_CFG"},   {0x04, "LCD_CTRL"},  {0x08, "LCD_HSYNC"},
+        {0x0C, "LCD_CFG2"},  {0x10, "LCD_VAT"},   {0x14, "LCD_DAV"},
+        {0x18, "LCD_PS"},    {0x1C, "LCD_CLS"},   {0x20, "LCD_SPL"},
+        {0x24, "LCD_REV"},   {0x30, "LCD_DAH"},   {0x34, "LCD_STATE"},
+        {0x40, "LCD_DBA"},   {0x44, "LCD_SA0"},   {0x48, "LCD_FID0"},
+        {0x4C, "LCD_CMD0"},  {0x50, "LCD_DBB"},   {0x54, "LCD_SA1"},
+        {0x58, "LCD_FID1"},  {0x5C, "LCD_CMD1"},
     };
     const char* name = "LCD_???";
     for (auto& r : regs) if (r.off == off) { name = r.name; break; }
     printf("[LCD_REG] write%d phys=0x%08X %-12s = 0x%08X\n", width, phys, name, val);
+}
+
+// JZ4740 DMA controller register space: physical 0x10042000–0x100420FF
+static void log_dma_write(u32 phys, u32 val, int width) {
+    static const struct { u32 off; const char* name; } regs[] = {
+        {0x00, "DMA_CTRL"},   {0x04, "DMA_IRQ"},     {0x08, "DMA_ADDR"},
+        {0x0C, "DMA_CMD"},    {0x10, "DMA_SA"},      {0x14, "DMA_DA"},
+        {0x18, "DMA_COUNT"},  {0x1C, "DMA_SKIP"},    {0x20, "DMA_STRIDE"},
+        {0x24, "DMA_MODE"},   {0x28, "DMA_DESC_SA"}, {0x2C, "DMA_STATUS"},
+    };
+    u32 off = phys - 0x10042000;
+    const char* name = "DMA_???";
+    for (auto& r : regs) if (r.off == off) { name = r.name; break; }
+    printf("[DMA] write%d phys=0x%08X %-12s = 0x%08X\n", width, phys, name, val);
 }
 
 // JZ4740 IPU register space: physical 0x13080000–0x130800FF
@@ -229,6 +243,7 @@ void Memory::write_u8(u32 vaddr, u8 val) {
                 return;
             }
             if      (phys >= 0x13050000 && phys < 0x13050400) log_lcd_write(phys, val, 8);
+            else if (phys >= 0x10042000 && phys < 0x10042100) log_dma_write(phys, val, 8);
             else if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 8);
             else log_unmapped(phys, val, 8, 1, vaddr);
         }
@@ -250,6 +265,7 @@ void Memory::write_u16(u32 vaddr, u16 val) {
                 return;
             }
             if      (phys >= 0x13050000 && phys < 0x13050400) log_lcd_write(phys, val, 16);
+            else if (phys >= 0x10042000 && phys < 0x10042100) log_dma_write(phys, val, 16);
             else if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 16);
             else log_unmapped(phys, val, 16, 1, vaddr);
         }
@@ -273,6 +289,7 @@ void Memory::write_u32(u32 vaddr, u32 val) {
                 return;
             }
             if      (phys >= 0x13050000 && phys < 0x13050400) log_lcd_write(phys, val, 32);
+            else if (phys >= 0x10042000 && phys < 0x10042100) log_dma_write(phys, val, 32);
             else if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 32);
             else log_unmapped(phys, val, 32, 1, vaddr);
         }

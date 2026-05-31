@@ -158,6 +158,18 @@ private:
     u32 m_got_call_counts[72];
     std::vector<u32> m_semaphores;
 
+    // Frame buffer pool for format conversion (ARGB8888→RGB565)
+    static constexpr int FB_POOL_SIZE = 4;
+    struct FbEntry {
+        u32 phys;
+        u32 size;
+        bool in_use;
+    };
+    FbEntry m_fb_pool[FB_POOL_SIZE];
+    u32 allocate_fb(u32 size);
+    void release_fb(u32 phys);
+    void argb8888_to_rgb565(const u8* src, u8* dst, u32 pixel_count);
+
     // µC/OS-II cooperative task scheduler
     static constexpr int MAX_TASKS = 8;
     struct Task {
