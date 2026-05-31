@@ -230,21 +230,22 @@ void CPU::execute(u32 insn) {
         int rs_field = (insn >> 21) & 0x1F;
         int rt_field = (insn >> 16) & 0x1F;
         int rd_field = (insn >> 11) & 0x1F;
+        int func = insn & 0x3F;
         if (rs_field == 0x00) regs[rt_field] = cop0.mfc0(rd_field);
         else if (rs_field == 0x04) cop0.mtc0(rd_field, regs[rt_field]);
-        else if (rs_field == 0x10 && rd_field == 0x18) {
-            // ERET: return from exception. Clears EXL (bit 1) and llbit.
-            pc = cop0.regs.epc;
-            cop0.regs.status &= ~0x2u;
-            llbit = 0;
-            ll_addr = 0;
-        }
         else if (rs_field == 0x10) {
-            switch (rd_field) {
+            // C0 (TLB / ERET) — function is in bits 5-0
+            switch (func) {
             case 0x01: cop0.tlbr(); break;
             case 0x02: cop0.tlbwi(); break;
             case 0x06: cop0.tlbwr(); break;
             case 0x08: cop0.tlbp(); break;
+            case 0x18: // ERET
+                pc = cop0.regs.epc;
+                cop0.regs.status &= ~0x2u;
+                llbit = 0;
+                ll_addr = 0;
+                break;
             }
         }
         break;
@@ -300,8 +301,13 @@ void CPU::execute(u32 insn) {
         // the correct address without having to emulate fb_malloc().
         if ((pc - 4) == 0x80A21E78) {
             u32 phys = load_val & 0x1FFFFFFF;
-            if (phys && phys < RAM_SIZE)
+            if (phys && phys < RAM_SIZE && g_detected_fb_addr != phys) {
+                static bool first_capture = true;
+                printf("[FB] OS fb_addr LW intercept: load_val=0x%08X phys=0x%08X%s\n",
+                       load_val, phys, first_capture ? " (first capture)" : "");
                 g_detected_fb_addr = phys;
+                first_capture = false;
+            }
         }
         break;
     }

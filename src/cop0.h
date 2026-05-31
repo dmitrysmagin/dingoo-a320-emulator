@@ -3,9 +3,22 @@
 
 #include "types.h"
 
+struct TLBEntry {
+    u32 entry_hi;     // VPN2 + ASID
+    u32 entry_lo0;    // even page: PFN, C, D, V, G
+    u32 entry_lo1;    // odd page
+    u32 page_mask;    // page size mask
+};
+
+struct TLBResult {
+    bool hit;
+    u32 phys;
+    u32 exception_code; // EXC_TLBL or EXC_TLBS on miss/invalid/modified
+};
+
 struct COP0State {
     u32 index;      // $0
-    u32 random;     // $1
+    u32 random;     // $1 (pseudo-random, decrements each cycle)
     u32 entry_lo0;  // $2
     u32 entry_lo1;  // $3
     u32 context;    // $4
@@ -30,17 +43,32 @@ struct COP0State {
 
 struct COP0 {
     COP0State regs;
+    TLBEntry  m_tlb[32];
 
     void reset();
     u32  mfc0(int rd);
     void mtc0(int rd, u32 value);
 
-    // TLB stubs
+    // TLB operations
     void tlbp();
     void tlbr();
     void tlbwi();
     void tlbwr();
-    void tick() { regs.count++; }
+    TLBResult tlb_translate(u32 vaddr, bool write);
+
+    void tick() {
+        regs.count++;
+        // Random decrements, wraps from Wired..31
+        u32 wired = regs.wired;
+        if (wired < 32) {
+            u32 r = regs.random;
+            if (r == 0 || r < wired)
+                r = 31;
+            else
+                r = r - 1;
+            regs.random = r;
+        }
+    }
 };
 
 #endif // COP0_H

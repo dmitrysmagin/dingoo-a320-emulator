@@ -614,69 +614,113 @@ void Syscalls::impl_strlen() {
 }
 
 void Syscalls::impl__lcd_set_frame() {
-    // The game passes the END of the blit region, not the start.
-    // The render loop copies 320×240 RGB565 halfwords to the framebuffer returned by
-    // _lcd_get_frame(), then calls _lcd_set_frame(get_frame_result + 320*240*2).
-    // Subtract one framebuffer's worth of bytes to recover the actual display start.
-    // After displaying, the old front buffer becomes the new back (double-buffer swap).
-    //
-    // Framebuffer size = 320 × 240 × 2 bytes (RGB565).
     static constexpr u32 FB_SIZE = Display::WIDTH * Display::HEIGHT * 2;
+    static u32 s_call_count = 0;
+    s_call_count++;
 
     u32 end_ptr = arg(0) & 0x1FFFFFFF;
     if (end_ptr >= FB_SIZE && end_ptr < m_mem.size()) {
         u32 actual_start = end_ptr - FB_SIZE;
-
-        // Determine the old front buffer (which becomes the new back).
         u32 old_front = m_display.get_frame_addr();
         if (!old_front && g_detected_fb_addr)
-            old_front = g_detected_fb_addr + FB_SIZE;  // initial front = back + one frame
+            old_front = g_detected_fb_addr + FB_SIZE;
 
-        // Diagnostics: scan framebuffer to find first non-zero pixel position and count.
-        {
-            static u32 diag_count = 0;
-            diag_count++;
-            if (diag_count <= 10 || diag_count % 200 == 0) {
-                const u8* ram = m_mem.get_raw_ptr();
-                u32 phys = actual_start & 0x1FFFFFFF;
-                if (ram && phys + FB_SIZE <= m_mem.size()) {
-                    const u16* px = reinterpret_cast<const u16*>(&ram[phys]);
-                    u32 nonzero = 0, first_nz = UINT32_MAX, last_nz = 0;
-                    for (u32 i = 0; i < Display::WIDTH * Display::HEIGHT; i++) {
-                        if (px[i]) {
-                            nonzero++;
-                            if (i < first_nz) first_nz = i;
-                            last_nz = i;
-                        }
-                    }
-                    u32 first_x = (first_nz == UINT32_MAX) ? 0 : first_nz % Display::WIDTH;
-                    u32 first_y = (first_nz == UINT32_MAX) ? 0 : first_nz / Display::WIDTH;
-                    u32 last_x  = last_nz % Display::WIDTH;
-                    u32 last_y  = last_nz / Display::WIDTH;
-                    // Sample pixel values at the center of the non-zero region
-                    u16 sample1 = (first_nz < Display::WIDTH * Display::HEIGHT) ? px[first_nz] : 0;
-                    u16 mid = (first_nz + last_nz) / 2;
-                    u16 sample2 = (mid < Display::WIDTH * Display::HEIGHT) ? px[mid] : 0;
-                    printf("[LCD] flip #%u phys=0x%08X nonzero=%u first=(%u,%u)px=0x%04X mid_px=0x%04X last=(%u,%u)\n",
-                           diag_count, actual_start, nonzero,
-                           first_x, first_y, sample1, sample2,
-                           last_x, last_y);
-                }
+        if (s_call_count <= 5 || s_call_count % 100 == 0) {
+            const u8* ram = m_mem.get_raw_ptr();
+            u32 phys = actual_start & 0x1FFFFFFF;
+            if (ram && phys + FB_SIZE <= m_mem.size()) {
+                const u16* px = reinterpret_cast<const u16*>(&ram[phys]);
+                u32 nonzero = 0;
+                for (u32 i = 0; i < Display::WIDTH * Display::HEIGHT; i++)
+                    if (px[i]) nonzero++;
+                printf("[LCD] flip #%u phys=0x%08X nonzero=%u\n",
+                       s_call_count, actual_start, nonzero);
             }
         }
 
         m_display.set_frame_addr(actual_start);
         m_display.set_back_addr(old_front);
+    } else {
+        if (s_call_count <= 5)
+            printf("[LCD] skip flip #%u end_ptr=0x%08X (bad range)\n", s_call_count, end_ptr);
     }
-    m_display.flip(m_mem.get_raw_ptr(), m_mem.size());  // RGB565 framebuffer
+
+    // Dynamically detect CG buffer (8-bit indexed at ~phys 0x100000)
+    {
+        static bool cg_set = false;
+        if (!cg_set) {
+            const u8* ram = m_mem.get_raw_ptr();
+            u32 cg_phys = 0;
+            int best_score = 0;
+            u32 fb_phys = m_display.get_frame_addr() & 0x1FFFFFFF;
+            if (!fb_phys) fb_phys = g_detected_fb_addr;
+            u32 scan_start = 0x0F0000;
+            u32 scan_end = (fb_phys >= 0x120000) ? 0x120000 : (fb_phys > 0x10000 ? fb_phys - 0x10000 : 0);
+            for (u32 base = scan_start; base < scan_end; base += 0x10000) {
+                if (base + 153600 > m_mem.size()) break;
+                u8 hb_seen[256] = {0};
+                u32 total_nz = 0, hb_count = 0;
+                for (int i = 0; i < 153600 && base + i + 1 <= m_mem.size(); i += 2) {
+                    if (ram[base + i] | ram[base + i + 1]) {
+                        total_nz++;
+                        if (!hb_seen[ram[base + i + 1]]) {
+                            hb_seen[ram[base + i + 1]] = 1;
+                            hb_count++;
+                        }
+                    }
+                }
+                int score = (int)(total_nz / 768) + (int)(hb_count * 100);
+                if (score > best_score) {
+                    best_score = score;
+                    cg_phys = base;
+                }
+            }
+            if (cg_phys && best_score > 300) {
+                m_display.set_cg_addr(cg_phys);
+                printf("[CG] Compositing enabled: CG at phys 0x%08X (score=%d)\n", cg_phys, best_score);
+
+                // Search for an embedded palette in the game code+data section
+                bool pal_found = false;
+                const u8* ram = m_mem.get_raw_ptr();
+                for (u32 base = 0xA00000; base < 0xB50000 && !pal_found; base += 4) {
+                    if (base + 512 > m_mem.size()) break;
+                    const u16* pal = reinterpret_cast<const u16*>(&ram[base]);
+                    if (pal[0] != 0) continue;
+                    // Need non-zero entries in first 16 AND between 128-255
+                    bool has_lo = false, has_hi = false;
+                    for (int i = 1; i < 16; i++) if (pal[i]) { has_lo = true; break; }
+                    for (int i = 128; i < 256; i++) if (pal[i]) { has_hi = true; break; }
+                    if (!has_lo || !has_hi) continue;
+                    // Strict gradient: strictly increasing for most entries
+                    int increasing = 0;
+                    for (int i = 1; i < 256; i++)
+                        if (pal[i] > pal[i-1]) increasing++;
+                    if (increasing >= 200) {
+                        printf("[CG] Found palette at phys 0x%08X: [%04X %04X %04X %04X ... %04X]\n",
+                               base, pal[0], pal[1], pal[2], pal[3], pal[255]);
+                        memcpy(m_mem.get_lcd_palette(), pal, 512);
+                        pal_found = true;
+                    }
+                }
+
+                if (!pal_found) {
+                    u16* pal = m_mem.get_lcd_palette();
+                    for (int i = 0; i < 256; i++) {
+                        u8 v = (u8)i;
+                        pal[i] = ((u16)(v >> 3) << 11) | ((u16)(v >> 2) << 5) | (v >> 3);
+                    }
+                    printf("[CG] Using grayscale fallback palette\n");
+                }
+            }
+            cg_set = true;
+        }
+    }
+    m_display.set_lcd_palette(m_mem.get_lcd_palette());
+    m_display.flip(m_mem.get_raw_ptr(), m_mem.size());
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl__lcd_get_frame() {
-    // Returns the BACK buffer (= the one NOT currently displayed) as a KSEG1 address.
-    // Real OS: lcd_get_change_frame() = LCD_UNCACHED(old_lcd_frame_desc->DATA_PA).
-    // m_frame_back is set by impl__lcd_set_frame() on each frame swap.
-    // Falls back to g_detected_fb_addr on the very first call (before any set_frame).
     u32 phys = m_display.get_back_addr();
     if (!phys) phys = g_detected_fb_addr;
     g_cpu_regs[2] = phys ? (phys | 0xa0000000u) : 0;

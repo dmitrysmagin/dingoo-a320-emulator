@@ -51,7 +51,7 @@
 | **COP2 (MXU)** | **Required** (30 instructions) | See Section 2 |
 | **TLB** | Fully emulated (32 entries) | TLBP/TLBWI/TLBR/TLBWR all implemented. See Phase 7. |
 | **CACHE** | No-op | 0 CACHE instructions found anyway |
-| **ERET** | No-op | 0 found, but should trigger a minimal exception return |
+| **ERET** | Implemented | Restores EPC, clears EXL, clears LLbit |
 
 ### Instruction Decode & Execute Loop
 
@@ -930,29 +930,54 @@ uses two separate buffers — background and text overlay — composited by the 
 - [ ] Output correctness unverified — audio is the main consumer; MXU mixing and TLB-addressed PCM samples both need verification
 - Note: will need re-verification once Phase 7 (TLB) is complete
 
-### Phase 7: TLB Implementation — ❌ NOT STARTED
-The game manages its own virtual memory via TLB (285 TLBWI, 250 TLBR, 58 TLBP —
-see [`TLB.md`](../TLB.md)). The current no-op TLB stubs cause writes to KUSEG
-addresses to land at identity-mapped physical locations instead of the TLB-mapped
-destination, breaking compressed background rendering.
+### Phase 7: TLB Implementation — ✅ COMPLETE (code), ❌ NOT EXERCISED BY GAME
+**Critical finding: TLB instructions counted in [`TLB.md`](../TLB.md) are in the resource data section
+(file offsets ≥ 0x150000), not in the loaded RAWD code section (0x970–0x139C50).
+The game never executes TLB instructions during boot/prologue (confirmed via instrumentation).
+The background rendering bug has a different root cause (see Phase 9).**
 
-**Reference: Dingoo A320 OS (`ccpmp.bin` v1.22)**
-- TLB refill handler at `0x8001F330`, reached from XTLB vector `0x200`
-- OS boot sets up identity entries for DRAM, then page-table entries for loaded modules
-- `ccpmp` uses 30 TLBWI, 27 TLBR, 22 TLBP — simple 4KB page identity map for DRAM
-- Context register used for page-table walk in refill handler
+Despite this, the TLB was fully implemented per MIPS32 spec for correctness/future use:
 
-- [ ] **TLB data structure** — 32-entry array in COP0, each entry holding EntryHi, EntryLo0, EntryLo1, PageMask, and decoded fields (VPN2, PFN, C, D, V, G, mask)
-- [ ] **CP0 register tracking** — all TLB-related regs: Index, Random, Wired, EntryLo0/1, EntryHi, PageMask, Context, BadVAddr. Random auto-decrements each cycle (wraps Wired→31)
-- [ ] **TLBWI** — write EntryHi/EntryLo0/EntryLo1/PageMask to TLB[Index]
-- [ ] **TLBR** — read TLB[Index] back to EntryHi/EntryLo0/EntryLo1/PageMask
-- [ ] **TLBP** — probe all 32 entries for VPN2+ASID match; set Index on hit, Index[31]=1 on miss
-- [ ] **TLBWR** — write to TLB[Random] (excludes wired entries)
-- [ ] **Memory translation** — `Memory::vaddr_to_phys()` probes TLB for KUSEG and KSEG2/3 addresses; raises EXC_TLBL/EXC_TLBS on miss/invalid/modified
-- [ ] **Exception handling** — TLB refill exception vectors to `0x200`, TLB invalid/modified to `0x180`; sets Cause, EPC, BadVAddr, Context correctly; does NOT halt the emulator
-- [ ] **OS refill handler** — the handler at `0x8001F330` runs after TLB miss, fills TLB entry, ERETs back. The emulator must allow this handler code to execute (PC in `0x80000000–0x809FFFFF` currently returns JR $ra — this must be replaced for the refill range)
-- [ ] **Variable page sizes** — support PageMask for 4KB (mask=0), 16KB, 64KB, 256KB, 1MB, 4MB, 16MB — the game may use large pages for the resource cache
-- [ ] **Verification** — boot to dialogue, verify prologue backgrounds render correctly
+- [x] **TLB data structure** — 32-entry array in COP0 (cop0.h: `TLBEntry` struct)
+- [x] **CP0 register tracking** — Index, Random, Wired, EntryLo0/1, EntryHi, PageMask, Context, BadVAddr. Random auto-decrements each cycle (wraps Wired→31)
+- [x] **TLBWI** — write EntryHi/EntryLo0/EntryLo1/PageMask to TLB[Index]
+- [x] **TLBR** — read TLB[Index] back to EntryHi/EntryLo0/EntryLo1/PageMask
+- [x] **TLBP** — probe all 32 entries for VPN2+ASID match; set Index on hit, Index[31]=1 on miss
+- [x] **TLBWR** — write to TLB[Random] (excludes wired entries)
+- [x] **Memory translation** — `Memory::vaddr_to_phys()` probes TLB for KUSEG/KSEG2/3; TLB miss falls back to identity mapping (backward compat — no exception vectoring yet)
+- [x] **Variable page sizes** — PageMask decoded for 4KB–16MB pages (via `decode_page_mask`)
+- [ ] **Exception handling** — not wired (TLB miss → identity fallback, no vectors raised)
+- [ ] **OS refill handler** — not needed (game doesn't use TLB refill)
+- [ ] **Verification** — no change to background rendering (TLB not involved; see Phase 9)
+
+**Bug fix uncovered during implementation:**
+The COP0 C0 instruction decode in `cpu.cpp` used `rd_field` (bits 15-11) for TLB function codes
+instead of `func` (bits 5-0). This affected TLB operations (TLBR/TLBWI/TLBWR/TLBP) and ERET.
+All were unreachable at boot (game doesn't use them) but the ERET fix is critical for future
+exception handler support.
+
+### Phase 9: Background Rendering Investigation — 🔍 NEXT
+The CG backgrounds (prologue, title, event) are rendered as solid black — only text/UI overlays
+show up. Both IPU (no references in code) and TLB (instructions in resource data, not loaded code)
+hypotheses have been refuted. The root cause is likely one of:
+
+| Hypothesis | Status | Evidence |
+|------------|--------|----------|
+| **IPU not used** | ✅ Refuted | Zero references to IPU MMIO (`0xB306XXXX`) in both `ccpmp.bin` and `7days.app` |
+| **TLB stubs** | ✅ Refuted | 94 TLBWI in resource data (file offset ≥ 0x150000); confirmed zero TLB instructions execute during boot |
+| **Decompression format** | 🔍 Plausible | CG data is packed in `.spl`/`.sst`/`.sbp` formats; if the decompression algorithm misinterprets the format (e.g. wrong pixel order, palette, or skip encoding), output will be all-black transparent |
+| **Render buffer address** | 🔍 Plausible | The game writes decompressed data to a heap buffer; if `_lcd_set_frame` points to the wrong buffer or the composite scan picks the wrong FB, backgrounds are black |
+| **Palette not loaded** | 🔍 Plausible | CGs might use a separate palette resource that's never loaded or applied |
+| **Alpha channel bug** | 🔍 Plausible | Background could be blending with an all-zero alpha buffer, producing black |
+
+**Next steps:**
+1. Add `_lcd_set_frame` logging to trace which physical addresses are set and when
+2. Capture decompressed CG data for a known .spl file and compare with hex dump
+3. Trace render-buffer writes to see if the pixel data is correct but at the wrong address
+
+- [ ] **Investigate** — determine actual root cause of black backgrounds
+- [ ] **Fix** — implement solution
+- [ ] **Verify** — prologue CGs render correctly with dialogue overlay
 
 ### Phase 8: Polish — ⚠️ PARTIAL
 - [ ] Frame rate capping (60fps) — currently uncapped; emulator is ~5× slower than real hardware so irrelevant for now

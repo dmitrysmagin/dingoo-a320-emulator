@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <algorithm>
 
 int main(int argc, char* argv[]) {
     const char* app_path = nullptr;
@@ -137,6 +138,41 @@ int main(int argc, char* argv[]) {
     }
     printf("[INIT] Resource archive loaded: %zu entries\n", archive.count());
 
+    // Archive palette search
+    printf("\n=== ARCHIVE PALETTE SEARCH ===\n");
+    const char* pal_keywords[] = {"pal", "palette", "color", "clut", "cmap", "lut"};
+    for (size_t i = 0; i < archive.count(); i++) {
+        const ArchiveEntry& e = archive.entry(i);
+        std::string lower_name = e.name;
+        std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(), ::tolower);
+
+        // Check for palette-related keywords
+        for (const char* kw : pal_keywords) {
+            if (lower_name.find(kw) != std::string::npos) {
+                printf("[ARCHIVE] PALETTE_KEYWORD: %s (size=%u, offset=%u)\n", e.name.c_str(), e.size, e.offset);
+                // Dump first 32 bytes
+                const u8* data = archive.get_data(e);
+                printf("  HEX[0..31]: ");
+                for (u32 b = 0; b < 32 && b < e.size; b++) printf("%02X ", data[b]);
+                printf("\n");
+                break;
+            }
+        }
+
+        // Check for .spl files
+        if (lower_name.size() >= 4 && lower_name.substr(lower_name.size() - 4) == ".spl") {
+            printf("[ARCHIVE] SPL_FILE: %s (size=%u, offset=%u)\n", e.name.c_str(), e.size, e.offset);
+            const u8* data = archive.get_data(e);
+            printf("  HEX[0..31]: ");
+            for (u32 b = 0; b < 32 && b < e.size; b++) printf("%02X ", data[b]);
+            printf("\n");
+            if (e.size >= 500) {
+                printf("  >> LARGE SPL (size>=500): PALETTE CANDIDATE\n");
+            }
+        }
+    }
+    printf("=== END ARCHIVE PALETTE SEARCH ===\n\n");
+
     // Initialize syscalls
     Syscalls syscalls(mem, display);
     syscalls.set_archive(&archive);
@@ -147,6 +183,9 @@ int main(int argc, char* argv[]) {
     cpu.mem = &mem;
     cpu.syscalls = &syscalls;
     cpu.reset();
+
+    // Wire COP0 to Memory for TLB translation
+    mem.set_cop0(&cpu.cop0);
 
     // Set up initial state for dl_main
     cpu.pc = app.entry_point;

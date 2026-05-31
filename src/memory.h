@@ -5,6 +5,8 @@
 #include <vector>
 #include <string>
 
+struct COP0; // forward decl for TLB translation
+
 class Memory {
 public:
     Memory();
@@ -18,9 +20,12 @@ public:
     // Zero a region (BSS)
     void zero_region(u32 phys_addr, u32 size);
 
-    // Address translation
+    // Set COP0 for TLB-aware translation
+    void set_cop0(COP0* cop0) { m_cop0 = cop0; }
+
+    // Address translation (write flag needed for TLB D-bit check)
     bool is_mapped(u32 vaddr);
-    u32 vaddr_to_phys(u32 vaddr);
+    u32 vaddr_to_phys(u32 vaddr, bool write = false);
 
     // Memory access
     u8   read_u8(u32 vaddr);
@@ -52,11 +57,28 @@ public:
     }
     u32  page_count() const { return (u32)m_write_counts.size(); }
 
+    // LCD palette: 256 × u16 RGB565 at phys 0x13050200–0x130503FF
+    static constexpr u32 LCD_PAL_BASE = 0x13050200;
+    static constexpr u32 LCD_PAL_SIZE = 512;
+    u16* get_lcd_palette() { return m_lcd_palette; }
+    const u16* get_lcd_palette() const { return m_lcd_palette; }
+    bool lcd_palette_dirty() const { return m_lcd_pal_dirty; }
+    void clear_lcd_palette_dirty() { m_lcd_pal_dirty = false; }
+
     // Set the code section range (writes to this range are rejected)
     void set_code_region(u32 phys_start, u32 size) {
         m_code_start = phys_start;
         m_code_end = phys_start + size;
     }
+
+    // Write tracing: track writes in a specific phys range (for finding conversion loops)
+    void set_trace_range(u32 phys_start, u32 phys_end) {
+        m_trace_start = phys_start;
+        m_trace_end = phys_end;
+    }
+    void clear_trace_range() { m_trace_start = m_trace_end = 0; }
+    u32  trace_writes() const { return m_trace_write_count; }
+    void reset_trace_writes() { m_trace_write_count = 0; m_trace_nonzero = 0; }
 
 private:
     bool is_code_section(u32 phys) const {
@@ -67,7 +89,17 @@ private:
     u32 m_hw_base;
     u32 m_code_start = 0;
     u32 m_code_end = 0;
+    COP0* m_cop0 = nullptr;
     std::vector<u32> m_write_counts;  // one counter per 4KB page
+    bool m_tlb_exception;
+    u32  m_tlb_exception_code;
+    u32  m_tlb_exception_vaddr;
+    u32  m_trace_start = 0;
+    u32  m_trace_end = 0;
+    u32  m_trace_write_count = 0;
+    u32  m_trace_nonzero = 0;
+    u16  m_lcd_palette[256] = {};
+    bool m_lcd_pal_dirty = false;
 };
 
 #endif // MEMORY_H

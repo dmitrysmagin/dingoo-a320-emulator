@@ -1,15 +1,16 @@
 #include "memory.h"
+#include "cop0.h"
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <unordered_set>
 
 // Log unmapped accesses once per (vaddr, kind) so the log isn't flooded.
 // kind: 0=read, 1=write
 // When phys==0xFFFFFFFF the address was KUSEG/invalid — log the original vaddr too.
-extern u32 g_cpu_pc;  // current PC at point of access
+extern u32 g_cpu_pc;
 static void log_unmapped(u32 phys, u32 val, int width, int kind, u32 vaddr = 0) {
     static std::unordered_set<u64> seen;
-    // Deduplicate on (kind, width, vaddr) — use vaddr so KUSEG hits are identifiable.
     u32 key_addr = (vaddr != 0) ? vaddr : phys;
     u64 key = ((u64)kind << 40) | ((u64)width << 32) | (u64)key_addr;
     if (!seen.insert(key).second) return;
@@ -44,6 +45,9 @@ Memory::Memory()
     : m_mem(RAM_SIZE, 0)
     , m_hw_base(0x02000000)
     , m_write_counts(RAM_SIZE / 4096, 0)
+    , m_tlb_exception(false)
+    , m_tlb_exception_code(0)
+    , m_tlb_exception_vaddr(0)
 {
 }
 
@@ -89,61 +93,98 @@ void Memory::zero_region(u32 phys_addr, u32 size) {
 }
 
 bool Memory::is_mapped(u32 vaddr) {
-    // Only KSEG0/KSEG1 are mapped
-    if ((vaddr & KSEG_MASK) != KSEG0_BASE && (vaddr & KSEG_MASK) != KSEG1_BASE) {
-        return false;
+    // KSEG0/KSEG1 are always mapped
+    if ((vaddr & KSEG_MASK) == KSEG0_BASE || (vaddr & KSEG_MASK) == KSEG1_BASE) {
+        return (vaddr & KSEG0_KSEG1_MASK) < m_mem.size();
     }
-    u32 phys = vaddr & KSEG0_KSEG1_MASK;
-    return phys < m_mem.size();
+    // KUSEG/KSEG2/3: probe TLB
+    if (m_cop0) {
+        auto result = m_cop0->tlb_translate(vaddr, false);
+        if (result.hit) return result.phys < m_mem.size();
+    }
+    // Fallback identity for backward compat
+    return vaddr < m_mem.size();
 }
 
-u32 Memory::vaddr_to_phys(u32 vaddr) {
+u32 Memory::vaddr_to_phys(u32 vaddr, bool write) {
+    m_tlb_exception = false;
+    m_tlb_exception_code = 0;
+    m_tlb_exception_vaddr = 0;
+
+    // KSEG0/KSEG1: direct-map (bypass TLB)
     if ((vaddr & KSEG_MASK) == KSEG0_BASE || (vaddr & KSEG_MASK) == KSEG1_BASE) {
         return vaddr & KSEG0_KSEG1_MASK;
     }
-    // KUSEG (< 0x80000000): on JZ4740 the OS installs TLB identity entries for all of
-    // DRAM (0x00000000–0x07FFFFFF), so KUSEG vaddr == physical for that range.
-    // The game stores its render buffer at physical 0x00000000 and accesses it both via
-    // KSEG1 (writes, uncached) and KUSEG (reads by the blit function at 0x80A21860).
-    // Permit identity-mapped KUSEG for DRAM only; anything outside that range
-    // (MMIO, BootROM, etc.) remains unmapped.
-    if (vaddr < RAM_SIZE) {
+    // KUSEG (< 0x80000000) or KSEG2/3 (>= 0xC0000000): probe TLB
+    if (m_cop0) {
+        auto result = m_cop0->tlb_translate(vaddr, write);
+        if (result.hit) {
+            return result.phys;
+        }
+        // TLB miss — record exception state but fall through to identity fallback
+        m_tlb_exception = true;
+        m_tlb_exception_code = result.exception_code;
+        m_tlb_exception_vaddr = vaddr;
+    }
+    // Identity fallback for KUSEG DRAM (backward compat for addresses not in TLB)
+    if (vaddr < m_mem.size()) {
         return vaddr;
     }
-    // KSEG2/KSEG3 or out-of-range KUSEG — refuse.
     return 0xFFFFFFFF;
 }
 
 u8 Memory::read_u8(u32 vaddr) {
-    u32 phys = vaddr_to_phys(vaddr);
+    u32 phys = vaddr_to_phys(vaddr, false);
     if (phys == 0xFFFFFFFF || phys >= m_mem.size()) {
-        log_unmapped(phys, 0, 8, 0, vaddr);
+        if (phys >= LCD_PAL_BASE && phys < LCD_PAL_BASE + LCD_PAL_SIZE) {
+            u32 idx = (phys - LCD_PAL_BASE) / 2;
+            u32 byte_off = (phys - LCD_PAL_BASE) & 1;
+            return byte_off ? (m_lcd_palette[idx] >> 8) : (u8)(m_lcd_palette[idx] & 0xFF);
+        }
+        if (!m_tlb_exception) log_unmapped(phys, 0, 8, 0, vaddr);
         return 0;
     }
     return m_mem[phys];
 }
 
 u16 Memory::read_u16(u32 vaddr) {
-    u32 phys = vaddr_to_phys(vaddr);
+    u32 phys = vaddr_to_phys(vaddr, false);
     if (phys == 0xFFFFFFFF || phys + 1 >= m_mem.size()) {
-        log_unmapped(phys, 0, 16, 0, vaddr);
+        if (phys >= LCD_PAL_BASE && phys < LCD_PAL_BASE + LCD_PAL_SIZE) {
+            u32 idx = (phys - LCD_PAL_BASE) / 2;
+            return m_lcd_palette[idx];
+        }
+        if (!m_tlb_exception) log_unmapped(phys, 0, 16, 0, vaddr);
         return 0;
     }
     return (u16)m_mem[phys] | ((u16)m_mem[phys + 1] << 8);
 }
 
 u32 Memory::read_u32(u32 vaddr) {
-    u32 phys = vaddr_to_phys(vaddr);
+    u32 phys = vaddr_to_phys(vaddr, false);
     if (phys == 0xFFFFFFFF || phys + 3 >= m_mem.size()) {
-        log_unmapped(phys, 0, 32, 0, vaddr);
+        if (phys >= LCD_PAL_BASE && phys < LCD_PAL_BASE + LCD_PAL_SIZE) {
+            u32 base = (phys - LCD_PAL_BASE) / 2;
+            u32 lo = m_lcd_palette[base];
+            u32 hi = (base + 1 < 256) ? m_lcd_palette[base + 1] : 0;
+            return lo | (hi << 16);
+        }
+        if (!m_tlb_exception) log_unmapped(phys, 0, 32, 0, vaddr);
         return 0;
     }
     return (u32)m_mem[phys] | ((u32)m_mem[phys + 1] << 8) |
            ((u32)m_mem[phys + 2] << 16) | ((u32)m_mem[phys + 3] << 24);
 }
 
-// JZ4740 LCD controller register space: physical 0x13050000–0x130500FF
+// JZ4740 LCD controller register space: physical 0x13050000–0x130503FF
+// 0x000–0x0FF: control regs, 0x200–0x3FF: palette RAM (256 × u16)
 static void log_lcd_write(u32 phys, u32 val, int width) {
+    u32 off = phys - 0x13050000;
+    if (off >= 0x200 && off < 0x400) {
+        u32 idx = (off - 0x200) / 2;
+        printf("[LCD_PAL] write%d phys=0x%08X palette[%u] = 0x%08X\n", width, phys, idx, val);
+        return;
+    }
     static const struct { u32 off; const char* name; } regs[] = {
         {0x00, "LCD_CFG"}, {0x04, "LCD_VSYNC"}, {0x08, "LCD_HSYNC"},
         {0x0C, "LCD_VAT"},  {0x10, "LCD_DAH"},   {0x14, "LCD_DAV"},
@@ -153,14 +194,12 @@ static void log_lcd_write(u32 phys, u32 val, int width) {
         {0x4C, "LCD_CMD0"}, {0x50, "LCD_DA1"},   {0x54, "LCD_SA1"},
         {0x58, "LCD_FID1"}, {0x5C, "LCD_CMD1"},
     };
-    u32 off = phys - 0x13050000;
     const char* name = "LCD_???";
     for (auto& r : regs) if (r.off == off) { name = r.name; break; }
     printf("[LCD_REG] write%d phys=0x%08X %-12s = 0x%08X\n", width, phys, name, val);
 }
 
 // JZ4740 IPU register space: physical 0x13080000–0x130800FF
-// Intercept writes here so we can detect and eventually emulate the Image Processing Unit.
 static void log_ipu_write(u32 phys, u32 val, int width) {
     static const struct { u32 off; const char* name; } regs[] = {
         {0x00, "IPU_CTRL"}, {0x04, "IPU_STATUS"}, {0x08, "IPU_D_FMT"},
@@ -177,11 +216,22 @@ static void log_ipu_write(u32 phys, u32 val, int width) {
 }
 
 void Memory::write_u8(u32 vaddr, u8 val) {
-    u32 phys = vaddr_to_phys(vaddr);
+    u32 phys = vaddr_to_phys(vaddr, true);
     if (phys == 0xFFFFFFFF || phys >= m_mem.size()) {
-        if      (phys >= 0x13050000 && phys < 0x13050100) log_lcd_write(phys, val, 8);
-        else if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 8);
-        else log_unmapped(phys, val, 8, 1, vaddr);
+        if (!m_tlb_exception) {
+            if (phys >= LCD_PAL_BASE && phys < LCD_PAL_BASE + LCD_PAL_SIZE) {
+                u32 idx = (phys - LCD_PAL_BASE) / 2;
+                u32 byte_off = (phys - LCD_PAL_BASE) & 1;
+                u16 old = m_lcd_palette[idx];
+                if (byte_off == 0) m_lcd_palette[idx] = (old & 0xFF00) | val;
+                else               m_lcd_palette[idx] = (old & 0x00FF) | ((u16)val << 8);
+                m_lcd_pal_dirty = true;
+                return;
+            }
+            if      (phys >= 0x13050000 && phys < 0x13050400) log_lcd_write(phys, val, 8);
+            else if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 8);
+            else log_unmapped(phys, val, 8, 1, vaddr);
+        }
         return;
     }
     if (is_code_section(phys)) return;
@@ -190,11 +240,19 @@ void Memory::write_u8(u32 vaddr, u8 val) {
 }
 
 void Memory::write_u16(u32 vaddr, u16 val) {
-    u32 phys = vaddr_to_phys(vaddr);
+    u32 phys = vaddr_to_phys(vaddr, true);
     if (phys == 0xFFFFFFFF || phys + 1 >= m_mem.size()) {
-        if      (phys >= 0x13050000 && phys < 0x13050100) log_lcd_write(phys, val, 16);
-        else if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 16);
-        else log_unmapped(phys, val, 16, 1, vaddr);
+        if (!m_tlb_exception) {
+            if (phys >= LCD_PAL_BASE && phys < LCD_PAL_BASE + LCD_PAL_SIZE) {
+                u32 idx = (phys - LCD_PAL_BASE) / 2;
+                m_lcd_palette[idx] = val;
+                m_lcd_pal_dirty = true;
+                return;
+            }
+            if      (phys >= 0x13050000 && phys < 0x13050400) log_lcd_write(phys, val, 16);
+            else if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 16);
+            else log_unmapped(phys, val, 16, 1, vaddr);
+        }
         return;
     }
     if (is_code_section(phys)) return;
@@ -204,11 +262,20 @@ void Memory::write_u16(u32 vaddr, u16 val) {
 }
 
 void Memory::write_u32(u32 vaddr, u32 val) {
-    u32 phys = vaddr_to_phys(vaddr);
+    u32 phys = vaddr_to_phys(vaddr, true);
     if (phys == 0xFFFFFFFF || phys + 3 >= m_mem.size()) {
-        if      (phys >= 0x13050000 && phys < 0x13050100) log_lcd_write(phys, val, 32);
-        else if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 32);
-        else log_unmapped(phys, val, 32, 1, vaddr);
+        if (!m_tlb_exception) {
+            if (phys >= LCD_PAL_BASE && phys < LCD_PAL_BASE + LCD_PAL_SIZE) {
+                u32 base = (phys - LCD_PAL_BASE) / 2;
+                m_lcd_palette[base + 0] = (u16)(val & 0xFFFF);
+                if (base + 1 < 256) m_lcd_palette[base + 1] = (u16)(val >> 16);
+                m_lcd_pal_dirty = true;
+                return;
+            }
+            if      (phys >= 0x13050000 && phys < 0x13050400) log_lcd_write(phys, val, 32);
+            else if (phys >= 0x13080000 && phys < 0x13080100) log_ipu_write(phys, val, 32);
+            else log_unmapped(phys, val, 32, 1, vaddr);
+        }
         return;
     }
     if (is_code_section(phys)) return;
@@ -220,21 +287,21 @@ void Memory::write_u32(u32 vaddr, u32 val) {
 }
 
 std::string Memory::read_string(u32 vaddr, size_t max_len) {
-    std::string result;
-    u32 phys = vaddr_to_phys(vaddr);
+    u32 phys = vaddr_to_phys(vaddr, false);
     if (phys == 0xFFFFFFFF || phys >= m_mem.size()) {
         return "<invalid>";
     }
+    std::string s;
     for (size_t i = 0; i < max_len && (phys + i) < m_mem.size(); i++) {
         char c = (char)m_mem[phys + i];
         if (c == '\0') break;
-        result += c;
+        s += c;
     }
-    return result;
+    return s;
 }
 
 void Memory::read_block(u32 vaddr, u8* dest, u32 size) {
-    u32 phys = vaddr_to_phys(vaddr);
+    u32 phys = vaddr_to_phys(vaddr, false);
     if (phys == 0xFFFFFFFF || phys + size > m_mem.size()) {
         memset(dest, 0, size);
         return;
@@ -243,8 +310,17 @@ void Memory::read_block(u32 vaddr, u8* dest, u32 size) {
 }
 
 void Memory::write_block(u32 vaddr, const u8* src, u32 size) {
-    u32 phys = vaddr_to_phys(vaddr);
+    u32 phys = vaddr_to_phys(vaddr, true);
     if (phys == 0xFFFFFFFF || phys + size > m_mem.size()) {
+        // Check if this is a block write to the LCD palette
+        if (phys >= LCD_PAL_BASE && phys < LCD_PAL_BASE + LCD_PAL_SIZE && size <= LCD_PAL_SIZE) {
+            u32 start = (phys - LCD_PAL_BASE) / 2;
+            u32 count = size / 2;
+            for (u32 i = 0; i < count && start + i < 256; i++)
+                m_lcd_palette[start + i] = ((u16)src[i*2]) | ((u16)src[i*2+1] << 8);
+            m_lcd_pal_dirty = true;
+            return;
+        }
         log_unmapped(phys, 0, 32, 1, vaddr);
         return;
     }
