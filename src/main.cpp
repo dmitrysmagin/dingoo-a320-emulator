@@ -117,18 +117,6 @@ int main(int argc, char* argv[]) {
     mem.write_u32(stub_addr + 0x38, 0x34844FE0);  // ORI a0, a0, 0x4FE0 (delay: a0=0x80B44FE0)
     printf("[PATCH] BSS name stub at 0x%08X\n", stub_addr);
 
-    // Verify stub was written correctly
-    printf("[VERIFY] Stub code:");
-    for (int i = 0; i < 12; i++) {
-        printf(" %08X", mem.read_u32(stub_addr + i*4));
-    }
-    printf("\n");
-    printf("[VERIFY] BSS before CPU start =");
-    for (int i = 0; i < 6; i++) {
-        printf(" %04X", mem.read_u16(0x80B43F30 + i*2));
-    }
-    printf("\n");
-
     // Initialize display (SDL2)
     Display display;
     if (!display.init()) {

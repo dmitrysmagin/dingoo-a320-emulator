@@ -487,11 +487,8 @@ void Syscalls::impl_sprintf() {
 }
 
 void Syscalls::impl_fprintf() {
-    u32 file = arg(0);
-    u32 fmt_addr = arg(1);
-    std::string fmt = guest_string(fmt_addr);
-    printf("[FPRINTF] file=%d fmt=\"%s\"\n", file, fmt.c_str());
-    g_cpu_regs[2] = 0;
+    // Forward to our printf implementation (file argument ignored — no guest stderr/stdout)
+    impl_printf();
 }
 
 void Syscalls::impl_strncasecmp() {
@@ -708,12 +705,6 @@ void Syscalls::impl__kbd_get_status() {
     // Without this write, 0x80B49D08 is always 0 and the game never receives
     // any key events — dialogue is permanently frozen.
     m_mem.write_u32(0x80B49D08, keys);
-
-    static u32 kbd_call = 0;
-    kbd_call++;
-    if (kbd_call <= 20 || keys != 0)
-        printf("[KBD] _kbd_get_status #%u -> 0x%04X (0x80B49D08=0x%08X)\n",
-               kbd_call, keys, keys);
 }
 
 void Syscalls::impl_get_game_vol() {
@@ -783,12 +774,7 @@ void Syscalls::impl_fsys_fread() {
     u32 size   = arg(1);
     u32 nmemb  = arg(2);
     u32 handle = arg(3);
-    bool is_host = (handle < 64 && m_files[handle].in_use && m_files[handle].is_host);
-    u32 cur = is_host ? do_ftell(handle) : 0;
     u32 n = do_fread(buf, size, nmemb, handle);
-    if (is_host)
-        printf("[FSYS] fread handle=%u buf=0x%08X size=%u nmemb=%u at_offset=0x%08X -> read %u\n",
-               handle, buf, size, nmemb, cur, n);
     g_cpu_regs[2] = n;
 }
 
@@ -801,11 +787,7 @@ void Syscalls::impl_fsys_fseek() {
     u32 handle = arg(0);
     s32 offset = (s32)arg(1);
     u32 whence = arg(2);
-    bool is_host = (handle < 64 && m_files[handle].in_use && m_files[handle].is_host);
     u32 ret = do_fseek(handle, offset, whence);
-    if (is_host)
-        printf("[FSYS] fseek handle=%u offset=%d whence=%u -> pos=0x%08X\n",
-               handle, offset, whence, do_ftell(handle));
     g_cpu_regs[2] = ret;
 }
 
@@ -1118,7 +1100,6 @@ void Syscalls::impl__sys_judge_event() {
     u32 event_queue = 0x80BFECD8;
     u32 event_val = m_mem.read_u32(event_queue);
     if (event_val) {
-        printf("[EVENT] _sys_judge_event() -> 0x%08X task=%d\n", event_val, m_current_task);
         m_mem.write_u32(event_queue, 0);
         g_cpu_regs[2] = event_val;
     } else {
@@ -1325,15 +1306,12 @@ bool Syscalls::simulate_vsync() {
         auto_held = press_key;
         // Hold for 5 vsyncs so that _kbd_get_status (polled ~1/5 vsyncs) sees it
         auto_release_frame = vsync_count + 5;
-        if (vsync_count <= 300 || vsync_count % 200 == 0)
-            printf("[INPUT] Auto-press 0x%04X at vsync %u\n", press_key, vsync_count);
     }
 
     // Write pressed keys to the event queue for game code to read via _sys_judge_event
     if (pressed) {
         u32 event_queue = 0x80BFECD8;
         m_mem.write_u32(event_queue, pressed);
-        printf("[INPUT] Wrote key 0x%04X to event queue\n", pressed);
     }
 
     // Cooperative multitasking: if current task is not blocked, yield to others
