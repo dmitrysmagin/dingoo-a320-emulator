@@ -14,7 +14,7 @@ using s32 = int32_t;
 using s64 = int64_t;
 
 // Memory constants
-static constexpr u32 RAM_SIZE          = 128 * 1024 * 1024;  // 128 MB (extended for heap zone 2 above archive)
+static constexpr u32 RAM_SIZE          = 32 * 1024 * 1024;   // 32 MB — matches real Dingoo A320 hardware
 static constexpr u32 KSEG0_BASE        = 0x80000000;
 static constexpr u32 KSEG1_BASE        = 0xA0000000;
 static constexpr u32 KSEG_MASK         = 0xE0000000;

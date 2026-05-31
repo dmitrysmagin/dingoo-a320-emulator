@@ -80,19 +80,11 @@ int main(int argc, char* argv[]) {
     // Real Dingoo A320 has no read-only code protection, so neither should we.
     // (set_code_region not called = no protection)
 
-    // Load resource archive into guest memory
-    // The Dingoo loader places resources right after the program, aligned to 64KB:
-    // resource_base = (load_addr + prog_size + 0xFFFF) & ~0xFFFF
-    u32 resource_base = (app.load_addr + app.prog_size + 0xFFFF) & ~0xFFFF;
-    u32 resource_phys = resource_base & 0x1FFFFFFF;
-    printf("[INIT] Resource archive base: 0x%08X (phys 0x%08X)\n", resource_base, resource_phys);
-    if (!mem.load_from_file(app_path, RESOURCE_OFFSET, resource_phys, RESOURCE_SIZE)) {
-        fprintf(stderr, "Failed to load resource archive\n");
-        return 1;
-    }
-    printf("[INIT] Resource archive loaded: %u bytes at 0x%08X\n", RESOURCE_SIZE, resource_phys);
+    // Resource archive is NOT loaded into guest RAM: the real Dingoo A320 has only 32 MB DRAM
+    // and resources are streamed from NAND storage via filesystem APIs, not memory-mapped.
+    // The Archive class (host-side) serves all fsys_fopen/fsys_fread calls independently.
 
-    // Zero the stack area (was overwritten by resource archive)
+    // Zero the stack area
     // Stack starts at 0x80C00000, use 64KB window
     u32 stack_phys = 0x80C00000 & 0x1FFFFFFF;
     mem.zero_region(stack_phys - 0x1000, 0x11000);

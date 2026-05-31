@@ -13,7 +13,7 @@ extern u32 g_detected_fb_addr;  // physical, intercepted from OS at PC 0x80A21E7
 Syscalls::Syscalls(Memory& mem, Display& display)
     : m_mem(mem)
     , m_display(display)
-    , m_heap_top(0x00020000)  // phys: zone1 above exception vectors, zone2 at 0x04000000 (above archive)
+    , m_heap_top(0x00020000)  // phys: zone1 0x00020000–0x009FFFFC, zone2 0x00C10000–0x01FFFFFC
     , m_audio_open(false)
     , m_audio_write_count(0)
     , m_got_call_count(0)
@@ -228,12 +228,13 @@ u32 Syscalls::heap_alloc(u32 size) {
             return block.addr | 0x80000000u;  // return KSEG0 virt, same as fresh alloc
         }
     }
-    // Jump over game binary + resource archive to zone 2 if allocation won't fit in zone 1
-    if (m_heap_top + size > 0x009FFFFC && m_heap_top < 0x04000000)
-        m_heap_top = 0x04000000;
+    // Zone 1: 0x00020000–0x009FFFFC (below game binary at 0x00A00000)
+    // Zone 2: 0x00C10000–0x01FFFFFC (above stack area, within 32 MB)
+    if (m_heap_top + size > 0x009FFFFC && m_heap_top < 0x00C10000)
+        m_heap_top = 0x00C10000;
     u32 addr = m_heap_top;
     m_heap_top += size;
-    if (m_heap_top > 0x07FFFFFC) {
+    if (m_heap_top > 0x01FFFFFC) {
         printf("[HEAP] OOM: top=0x%08X size=%u\n", m_heap_top, size);
         return 0;
     }
