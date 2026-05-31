@@ -615,8 +615,6 @@ void Syscalls::impl_strlen() {
 
 void Syscalls::impl__lcd_set_frame() {
     static constexpr u32 FB_SIZE = Display::WIDTH * Display::HEIGHT * 2;
-    static u32 s_call_count = 0;
-    s_call_count++;
 
     u32 end_ptr = arg(0) & 0x1FFFFFFF;
     if (end_ptr >= FB_SIZE && end_ptr < m_mem.size()) {
@@ -625,26 +623,9 @@ void Syscalls::impl__lcd_set_frame() {
         if (!old_front && g_detected_fb_addr)
             old_front = g_detected_fb_addr + FB_SIZE;
 
-        if (s_call_count <= 5 || s_call_count % 100 == 0) {
-            const u8* ram = m_mem.get_raw_ptr();
-            u32 phys = actual_start & 0x1FFFFFFF;
-            if (ram && phys + FB_SIZE <= m_mem.size()) {
-                const u16* px = reinterpret_cast<const u16*>(&ram[phys]);
-                u32 nonzero = 0;
-                for (u32 i = 0; i < Display::WIDTH * Display::HEIGHT; i++)
-                    if (px[i]) nonzero++;
-                printf("[LCD] flip #%u phys=0x%08X nonzero=%u\n",
-                       s_call_count, actual_start, nonzero);
-            }
-        }
-
         m_display.set_frame_addr(actual_start);
         m_display.set_back_addr(old_front);
-    } else {
-        if (s_call_count <= 5)
-            printf("[LCD] skip flip #%u end_ptr=0x%08X (bad range)\n", s_call_count, end_ptr);
     }
-
 
     m_display.flip(m_mem.get_raw_ptr(), m_mem.size());
     g_cpu_regs[2] = 0;
@@ -657,7 +638,6 @@ void Syscalls::impl__lcd_get_frame() {
 }
 
 void Syscalls::impl_lcd_get_cframe() {
-    // Real OS: lcd_get_cframe() = jzfb.cframe = front buffer | 0x80000000 (KSEG0, cached).
     u32 phys = m_display.get_frame_addr();
     if (!phys) phys = g_detected_fb_addr;
     g_cpu_regs[2] = phys ? (phys | 0x80000000u) : 0;
