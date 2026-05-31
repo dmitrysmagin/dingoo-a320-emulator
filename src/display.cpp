@@ -9,7 +9,6 @@ Display::Display()
     , m_texture(nullptr)
     , m_frame_addr(0)
     , m_frame_back(0)
-    , m_cg_addr(0)
     , m_display_on(true)
     , m_dirty(false)
     , m_initialized(false)
@@ -93,7 +92,6 @@ void Display::flip(const u8* guest_ram, u32 ram_size) {
 
     constexpr u32 fb_bytes = WIDTH * HEIGHT * PIXEL_SIZE;
     u32 phys = m_frame_addr & 0x1FFFFFFF;
-
     if (phys + fb_bytes <= ram_size)
         memcpy(m_framebuffer, &guest_ram[phys], fb_bytes);
 

@@ -41,9 +41,6 @@ public:
     u32  get_frame_addr() const { return m_frame_addr; }
     u32  get_back_addr()  const { return m_frame_back; }
     void set_back_addr(u32 addr) { m_frame_back = addr; }
-    void set_cg_addr(u32 addr) { m_cg_addr = addr; }
-    u32  get_cg_addr() const { return m_cg_addr; }
-    void set_lcd_palette(const u16* pal) { m_lcd_palette = pal; }
 
     void flip(const u8* guest_ram = nullptr, u32 ram_size = 0);
     // flip() reading WIDTH pixels per row but advancing src_stride bytes between rows (RGB565)
@@ -79,13 +76,11 @@ private:
     u32 m_argb_cache[WIDTH * HEIGHT];   // last ARGB8888 frame written by flip_argb8888
     u32 m_frame_addr;   // physical address of the front (currently displayed) buffer
     u32 m_frame_back;   // physical address of the back (available for rendering) buffer
-    u32 m_cg_addr;      // physical address of the CG background buffer (0 = disabled)
     bool m_display_on;
     bool m_dirty;
     bool m_initialized;
     bool m_argb_valid;                  // true once m_argb_cache has been populated
     u32 m_dingoo_keys;
-    const u16* m_lcd_palette = nullptr;
 };
 
 #endif // DISPLAY_H
