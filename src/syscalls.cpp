@@ -594,6 +594,39 @@ void Syscalls::impl__lcd_set_frame() {
         if (!old_front && g_detected_fb_addr)
             old_front = g_detected_fb_addr + FB_SIZE;  // initial front = back + one frame
 
+        // Diagnostics: scan framebuffer to find first non-zero pixel position and count.
+        {
+            static u32 diag_count = 0;
+            diag_count++;
+            if (diag_count <= 10 || diag_count % 200 == 0) {
+                const u8* ram = m_mem.get_raw_ptr();
+                u32 phys = actual_start & 0x1FFFFFFF;
+                if (ram && phys + FB_SIZE <= m_mem.size()) {
+                    const u16* px = reinterpret_cast<const u16*>(&ram[phys]);
+                    u32 nonzero = 0, first_nz = UINT32_MAX, last_nz = 0;
+                    for (u32 i = 0; i < Display::WIDTH * Display::HEIGHT; i++) {
+                        if (px[i]) {
+                            nonzero++;
+                            if (i < first_nz) first_nz = i;
+                            last_nz = i;
+                        }
+                    }
+                    u32 first_x = (first_nz == UINT32_MAX) ? 0 : first_nz % Display::WIDTH;
+                    u32 first_y = (first_nz == UINT32_MAX) ? 0 : first_nz / Display::WIDTH;
+                    u32 last_x  = last_nz % Display::WIDTH;
+                    u32 last_y  = last_nz / Display::WIDTH;
+                    // Sample pixel values at the center of the non-zero region
+                    u16 sample1 = (first_nz < Display::WIDTH * Display::HEIGHT) ? px[first_nz] : 0;
+                    u16 mid = (first_nz + last_nz) / 2;
+                    u16 sample2 = (mid < Display::WIDTH * Display::HEIGHT) ? px[mid] : 0;
+                    printf("[LCD] flip #%u phys=0x%08X nonzero=%u first=(%u,%u)px=0x%04X mid_px=0x%04X last=(%u,%u)\n",
+                           diag_count, actual_start, nonzero,
+                           first_x, first_y, sample1, sample2,
+                           last_x, last_y);
+                }
+            }
+        }
+
         m_display.set_frame_addr(actual_start);
         m_display.set_back_addr(old_front);
     }
@@ -663,7 +696,24 @@ void Syscalls::impl_serial_putc() {
 }
 
 void Syscalls::impl__kbd_get_status() {
-    g_cpu_regs[2] = m_display.get_dingoo_keys();
+    u32 keys = m_display.get_dingoo_keys();
+    g_cpu_regs[2] = keys;
+
+    // The real Dingoo OS _kbd_get_status also writes the key state into a
+    // memory-mapped OS buffer at 0x80B49D08. The game's event dispatcher
+    // (at 0x80A000FC) reads that address immediately after calling this
+    // function and dispatches per-key events. Specifically:
+    //   andi $v0, $v0, 0x0040  → DKEY_A  → event code 2 (advance text / confirm)
+    //   andi $v0, $v0, 0x0800  → DKEY_R  → event code 2 (same)
+    // Without this write, 0x80B49D08 is always 0 and the game never receives
+    // any key events — dialogue is permanently frozen.
+    m_mem.write_u32(0x80B49D08, keys);
+
+    static u32 kbd_call = 0;
+    kbd_call++;
+    if (kbd_call <= 20 || keys != 0)
+        printf("[KBD] _kbd_get_status #%u -> 0x%04X (0x80B49D08=0x%08X)\n",
+               kbd_call, keys, keys);
 }
 
 void Syscalls::impl_get_game_vol() {
@@ -1253,21 +1303,11 @@ bool Syscalls::simulate_vsync() {
     u32 pressed = keys & ~prev_keys;
     prev_keys = keys;
 
-    // Auto-press sequence: each entry presses a key for exactly 1 vsync.
-    // vsync 200: START (dismiss title screen, reach save/continue menu)
-    // vsync 250: A    (select "New Game" from menu)
-    // vsync 350+: A every 100 vsyncs to keep advancing story dialogue
-    struct AutoPress { u32 frame; u32 key; };
-    static const AutoPress auto_presses[] = {
-        {200, DKEY_START}, {250, DKEY_A},
-        {350, DKEY_A}, {500, DKEY_A}, {600, DKEY_A}, {700, DKEY_A},
-        {800, DKEY_A}, {900, DKEY_A}, {1000, DKEY_A}, {1100, DKEY_A},
-        {1200, DKEY_A}, {1300, DKEY_A}, {1400, DKEY_A}, {1500, DKEY_A},
-        {1600, DKEY_A}, {1700, DKEY_A}, {1800, DKEY_A}, {1900, DKEY_A},
-        {2000, DKEY_A}, {2100, DKEY_A}, {2200, DKEY_A}, {2300, DKEY_A},
-        {2400, DKEY_A}, {2500, DKEY_A}, {2600, DKEY_A}, {2700, DKEY_A},
-        {2800, DKEY_A}, {2900, DKEY_A}, {3000, DKEY_A},
-    };
+    // Auto-press sequence:
+    //   vsync 1000      : START (dismiss "press start" / title logo screen)
+    //   vsync 1100      : A    (select first menu item = "New Game")
+    //   vsync 1200+     : A every 20 vsyncs to advance story dialogue
+    //   (hold 5 vsyncs each press so _kbd_get_status sees the transition)
     static u32 auto_release_frame = 0;
     static u32 auto_held = 0;
     // Release previous key
@@ -1275,14 +1315,18 @@ bool Syscalls::simulate_vsync() {
         m_display.set_key(auto_held, false);
         auto_held = 0;
     }
-    // Press next key
-    for (const auto& ap : auto_presses) {
-        if (vsync_count == ap.frame) {
-            m_display.set_key(ap.key, true);
-            auto_held = ap.key;
-            auto_release_frame = vsync_count + 1;
-            printf("[INPUT] Auto-press 0x%04X at vsync %u\n", ap.key, vsync_count);
-        }
+    // Determine which key (if any) to press this vsync
+    u32 press_key = 0;
+    if (vsync_count == 100) press_key = DKEY_START;
+    else if (vsync_count >= 150 && vsync_count % 10 == 0) press_key = DKEY_A;
+
+    if (press_key && !auto_held) {
+        m_display.set_key(press_key, true);
+        auto_held = press_key;
+        // Hold for 5 vsyncs so that _kbd_get_status (polled ~1/5 vsyncs) sees it
+        auto_release_frame = vsync_count + 5;
+        if (vsync_count <= 300 || vsync_count % 200 == 0)
+            printf("[INPUT] Auto-press 0x%04X at vsync %u\n", press_key, vsync_count);
     }
 
     // Write pressed keys to the event queue for game code to read via _sys_judge_event
