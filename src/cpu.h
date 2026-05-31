@@ -12,6 +12,7 @@ struct CPU {
     u32 pc;         // Program counter
     u32 hi, lo;     // HI/LO for multiply/divide
     u32 llbit;      // Load-linked bit
+    u32 ll_addr;    // Load-linked address (for SC match check)
 
     COP0 cop0;
     MXU  mxu;
@@ -20,6 +21,7 @@ struct CPU {
     Syscalls* syscalls;
 
     bool running;
+    bool nullify_delay;  // set by likely-branch when not taken; skips delay slot
     u64  insn_count;
 
     void reset();

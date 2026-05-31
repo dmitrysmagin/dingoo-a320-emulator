@@ -24,9 +24,11 @@ void CPU::reset() {
     pc = 0;
     hi = lo = 0;
     llbit = 0;
+    ll_addr = 0;
     cop0.reset();
     mxu.reset();
     running = true;
+    nullify_delay = false;
     insn_count = 0;
     m_trace_idx = 0;
     memset(m_trace_pc, 0, sizeof(m_trace_pc));
@@ -69,7 +71,7 @@ void CPU::exec_special(u32 insn) {
     case 0x06: if (rd) regs[rd] = regs[rt] >> (regs[rs] & 0x1F); break;
     case 0x07: if (rd) regs[rd] = (u32)((s32)regs[rt] >> (regs[rs] & 0x1F)); break;
     case 0x08: pc = regs[rs]; if (rs == 31 && regs[31] == 0) pc = APP_MAIN_ADDR; break;
-    case 0x09: regs[rd] = pc + 4; pc = regs[rs]; break;  // JALR
+    case 0x09: { u32 t = regs[rs]; regs[rd] = pc + 4; pc = t; break; }  // JALR (read rs first in case rs==rd)
     case 0x0A: if (rd && regs[rt] == 0) regs[rd] = regs[rs]; break;  // MOVZ
     case 0x0B: if (rd && regs[rt] != 0) regs[rd] = regs[rs]; break;  // MOVN
     case 0x0C: raise_exception(EXC_SYS); break;
@@ -83,9 +85,9 @@ void CPU::exec_special(u32 insn) {
     case 0x19: { u64 r = (u64)regs[rs] * (u64)regs[rt]; lo = (u32)r; hi = (u32)(r >> 32); } break;
     case 0x1A: if (regs[rt]) { lo = (u32)((s32)regs[rs] / (s32)regs[rt]); hi = (u32)((s32)regs[rs] % (s32)regs[rt]); } break;
     case 0x1B: if (regs[rt]) { lo = regs[rs] / regs[rt]; hi = regs[rs] % regs[rt]; } break;
-    case 0x20: if (rd) { s64 r = (s64)(s32)regs[rs] + (s64)(s32)regs[rt]; if (r > INT32_MAX || r < INT32_MIN) { raise_exception(EXC_OV); return; } regs[rd] = (u32)r; } break;
-    case 0x21: if (rd) regs[rd] = regs[rs] + regs[rt]; break;
-    case 0x22: if (rd) { s64 r = (s64)(s32)regs[rs] - (s64)(s32)regs[rt]; if (r > INT32_MAX || r < INT32_MIN) { raise_exception(EXC_OV); return; } regs[rd] = (u32)r; } break;
+    case 0x20: if (rd) regs[rd] = regs[rs] + regs[rt]; break;  // ADD (overflow trap disabled to match MAME default)
+    case 0x21: if (rd) regs[rd] = regs[rs] + regs[rt]; break;  // ADDU
+    case 0x22: if (rd) regs[rd] = regs[rs] - regs[rt]; break;  // SUB (overflow trap disabled)
     case 0x23: if (rd) regs[rd] = regs[rs] - regs[rt]; break;
     case 0x24: if (rd) regs[rd] = regs[rs] & regs[rt]; break;
     case 0x25: if (rd) regs[rd] = regs[rs] | regs[rt]; break;
@@ -102,7 +104,7 @@ void CPU::exec_special(u32 insn) {
 void CPU::exec_special2(u32 insn) {
     int func = insn & 0x3F;
     switch (func) {
-    case 0x00: case 0x02: {
+    case 0x02: {  // MUL (MIPS32r1 SPECIAL2 func 0x02)
         int rs = (insn >> 21) & 0x1F;
         int rt = (insn >> 16) & 0x1F;
         int rd = (insn >> 11) & 0x1F;
@@ -173,8 +175,12 @@ void CPU::execute(u32 insn) {
         switch (rt_field) {
         case 0x00: if ((s32)regs[rs] < 0) pc = pc + (offset << 2); break;  // BLTZ
         case 0x01: if ((s32)regs[rs] >= 0) pc = pc + (offset << 2); break;  // BGEZ
+        case 0x02: if ((s32)regs[rs] < 0) pc = pc + (offset << 2); else nullify_delay = true; break;  // BLTZL
+        case 0x03: if ((s32)regs[rs] >= 0) pc = pc + (offset << 2); else nullify_delay = true; break;  // BGEZL
         case 0x10: regs[31] = pc + 4; if ((s32)regs[rs] < 0) pc = pc + (offset << 2); break;  // BLTZAL
         case 0x11: regs[31] = pc + 4; if ((s32)regs[rs] >= 0) pc = pc + (offset << 2); break;  // BGEZAL
+        case 0x12: regs[31] = pc + 4; if ((s32)regs[rs] < 0) pc = pc + (offset << 2); else nullify_delay = true; break;  // BLTZALL
+        case 0x13: regs[31] = pc + 4; if ((s32)regs[rs] >= 0) pc = pc + (offset << 2); else nullify_delay = true; break;  // BGEZALL
         }
         break;
     }
@@ -193,7 +199,7 @@ void CPU::execute(u32 insn) {
     case 0x05: if (regs[rs] != regs[rt]) pc = pc + (imm << 2); break;  // BNE
     case 0x06: if ((s32)regs[rs] <= 0) pc = pc + (imm << 2); break;  // BLEZ
     case 0x07: if ((s32)regs[rs] > 0) pc = pc + (imm << 2); break;  // BGTZ
-    case 0x08: if (rt) { s64 r = (s64)(s32)regs[rs] + imm; if (r > INT32_MAX || r < INT32_MIN) { raise_exception(EXC_OV); return; } regs[rt] = (u32)r; } break;
+    case 0x08: if (rt) regs[rt] = regs[rs] + (u32)imm; break;  // ADDI (overflow trap disabled)
     case 0x09: if (rt) regs[rt] = regs[rs] + (u32)imm; break;
     case 0x0A: if (rt) regs[rt] = (s32)regs[rs] < imm ? 1 : 0; break;
     case 0x0B: if (rt) regs[rt] = regs[rs] < (u32)imm ? 1 : 0; break;
@@ -208,9 +214,11 @@ void CPU::execute(u32 insn) {
         if (rs_field == 0x00) regs[rt_field] = cop0.mfc0(rd_field);
         else if (rs_field == 0x04) cop0.mtc0(rd_field, regs[rt_field]);
         else if (rs_field == 0x10 && rd_field == 0x18) {
-            // ERET
+            // ERET: return from exception. Clears EXL (bit 1) and llbit.
             pc = cop0.regs.epc;
-            cop0.regs.status |= 0x2;
+            cop0.regs.status &= ~0x2u;
+            llbit = 0;
+            ll_addr = 0;
         }
         else if (rs_field == 0x10) {
             switch (rd_field) {
@@ -241,10 +249,10 @@ void CPU::execute(u32 insn) {
         printf("[CPU] COP3 not implemented at PC=0x%08X\n", pc - 4);
         raise_exception(EXC_RI);
         break;
-    case 0x14: if (regs[rs] == regs[rt]) pc = pc + (imm << 2); break;  // BEQL
-    case 0x15: if (regs[rs] != regs[rt]) pc = pc + (imm << 2); break;  // BNEL
-    case 0x16: if ((s32)regs[rs] <= 0) pc = pc + (imm << 2); break;  // BLEZL
-    case 0x17: if ((s32)regs[rs] > 0) pc = pc + (imm << 2); break;  // BGTZL
+    case 0x14: if (regs[rs] == regs[rt]) pc = pc + (imm << 2); else nullify_delay = true; break;  // BEQL
+    case 0x15: if (regs[rs] != regs[rt]) pc = pc + (imm << 2); else nullify_delay = true; break;  // BNEL
+    case 0x16: if ((s32)regs[rs] <= 0) pc = pc + (imm << 2); else nullify_delay = true; break;  // BLEZL
+    case 0x17: if ((s32)regs[rs] > 0) pc = pc + (imm << 2); else nullify_delay = true; break;  // BGTZL
     case 0x1C: exec_special2(insn); break;
     case 0x1F: exec_special3(insn); break;
 
@@ -280,19 +288,14 @@ void CPU::execute(u32 insn) {
     }
     case 0x24: if (rt) regs[rt] = mem->read_u8(regs[rs] + imm); break;
     case 0x25: if (rt) regs[rt] = mem->read_u16(regs[rs] + imm); break;
-    case 0x26: {  // LWR (little-endian MIPS: loads low bytes from aligned word into rt)
+    case 0x26: {  // LWR (little-endian): matches MAME lwr_le
         u32 addr = regs[rs] + imm;
-        u32 aligned = addr & ~3;
         u32 byte_off = addr & 3;
-        u32 val = mem->read_u32(aligned);
+        u32 val = mem->read_u32(addr & ~3);
         if (rt) {
-            u32 loaded_bits = (byte_off + 1u) * 8u;
-            if (loaded_bits >= 32u) {
-                regs[rt] = val;
-            } else {
-                u32 mask = (1u << loaded_bits) - 1u;
-                regs[rt] = (regs[rt] & ~mask) | (val & mask);
-            }
+            u32 shift = byte_off * 8u;
+            u32 mask = 0xFFFFFFFFu >> shift;
+            regs[rt] = (regs[rt] & ~mask) | (val >> shift);
         }
         break;
     }
@@ -343,6 +346,7 @@ void CPU::execute(u32 insn) {
         u32 addr = regs[rs] + imm;
         if (rt) regs[rt] = mem->read_u32(addr);
         llbit = 1;
+        ll_addr = addr;
         break;
     }
     case 0x31: {  // LWC1
@@ -360,8 +364,12 @@ void CPU::execute(u32 insn) {
     }
     case 0x34: {  // SC
         u32 addr = regs[rs] + imm;
-        if (llbit) { mem->write_u32(addr, regs[rt]); if (rt) regs[rt] = 1; }
-        else { if (rt) regs[rt] = 0; }
+        if (llbit && ll_addr == addr) {
+            mem->write_u32(addr, regs[rt]);
+            if (rt) regs[rt] = 1;
+        } else {
+            if (rt) regs[rt] = 0;
+        }
         llbit = 0;
         break;
     }
@@ -433,6 +441,20 @@ void CPU::execute_one() {
     g_cpu_lo = lo;
 
     execute(insn);
+
+    // Likely-branch not taken: skip the delay-slot instruction entirely.
+    // pc is still at next_pc (branch not taken), so advance past the delay slot.
+    if (nullify_delay) {
+        nullify_delay = false;
+        pc = next_pc + 4;
+        memcpy(g_cpu_regs, regs, sizeof(regs));
+        g_cpu_pc = pc;
+        g_cpu_hi = hi;
+        g_cpu_lo = lo;
+        cop0.tick();
+        insn_count++;
+        return;
+    }
 
     // Detect JR/JALR to invalid address immediately
     if ((pc & 0x80000000) == 0 && pc >= 0x4000) {
