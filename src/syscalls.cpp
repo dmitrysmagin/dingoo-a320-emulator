@@ -29,6 +29,7 @@ Syscalls::Syscalls(Memory& mem, Display& display)
         m_tasks[i].active = false;
         m_tasks[i].wake_tick = 0;
         m_tasks[i].block_sem = 0;
+        m_tasks[i].sem_err_ptr = 0;
     }
     for (int i = 0; i < 64; i++) {
         m_files[i].in_use = false;
@@ -933,10 +934,27 @@ void Syscalls::impl_OSTimeGet() {
 }
 
 void Syscalls::impl_OSSemCreate() {
+    // OS_EVENT layout (OS_LOWEST_PRIO=254, OS_EVENT_PENDING_WATCH=1, OS_EVENT_NAME_SIZE=16):
+    //   +0  OSEventType  u8   (3 = OS_EVENT_TYPE_SEM)
+    //   +4  OSEventPtr   u32  (NULL for a live sem)
+    //   +8  OSEventCnt   u16
+    //   +10 OSEventGrp   u16
+    //   +12 OSEventTbl   u16[16]
+    //   +44 OSPendRA     u32
+    //   +48 OSPendSP     u32
+    //   +52 OSEventName  u8[16]
+    //   total: 68 bytes
     u32 cnt = arg(0);
-    u32 ecb = heap_alloc(16);
-    m_mem.write_u32(ecb + 4, cnt);
-    m_mem.write_u8(ecb + 8, 1);
+    u32 ecb = heap_alloc(68);
+    m_mem.write_u8 (ecb + 0,  3);          // OSEventType = OS_EVENT_TYPE_SEM
+    m_mem.write_u32(ecb + 4,  0);          // OSEventPtr  = NULL
+    m_mem.write_u16(ecb + 8,  (u16)cnt);   // OSEventCnt
+    m_mem.write_u16(ecb + 10, 0);          // OSEventGrp
+    for (int i = 0; i < 16; i++) m_mem.write_u16(ecb + 12 + i * 2, 0);
+    m_mem.write_u32(ecb + 44, 0);          // OSPendRA
+    m_mem.write_u32(ecb + 48, 0);          // OSPendSP
+    m_mem.write_u8 (ecb + 52, '?');        // OSEventName[0]
+    m_mem.write_u8 (ecb + 53, 0);          // OSEventName[1]
     g_cpu_regs[2] = ecb;
     m_semaphores.push_back(ecb);
     printf("[OSSemCreate] ecb=0x%08X cnt=%u\n", ecb, cnt);
@@ -951,10 +969,19 @@ void Syscalls::impl_OSTaskCreate() {
     printf("[OSTaskCreate] entry=0x%08X arg=0x%08X stack=0x%08X prio=%u (task_count=%d)\n",
            entry, task_arg, stack_top, prio, m_task_count);
 
-    // Allow multiple tasks with same priority (round-robin scheduling)
-    // Check if priority already exists - only warn but allow it
+    // Real OSTaskCreate validates prio <= OS_LOWEST_PRIO (=254) and returns
+    // OS_PRIO_INVALID = 38 otherwise.
+    if (prio > 254) {
+        printf("[OSTaskCreate] FAILED: prio %u > OS_LOWEST_PRIO\n", prio);
+        g_cpu_regs[2] = 38; /* OS_PRIO_INVALID */
+        return;
+    }
+
+    // Real µC/OS-II rejects duplicate priorities with OS_PRIO_EXIST=40.
+    // This emulator historically allowed them (round-robin); keep that for
+    // compatibility but warn loudly so we notice if the guest hits it.
     for (int i = 0; i < m_task_count; i++) {
-        if (m_tasks[i].task_prio == (u8)prio) {
+        if (m_tasks[i].active && m_tasks[i].task_prio == (u8)prio) {
             printf("[OSTaskCreate] WARNING: duplicate priority %u for task %d (allowing)\n", (u8)prio, i);
             break;
         }
@@ -969,6 +996,7 @@ void Syscalls::impl_OSTaskCreate() {
         t.task_prio = (u8)prio;
         t.wake_tick = 0;
         t.block_sem = 0;
+        t.sem_err_ptr = 0;
         t.regs[4] = task_arg;
         u32 sp = stack_top & ~0xF;
         sp &= ~0xF;
@@ -994,50 +1022,71 @@ void Syscalls::impl_OSTaskCreate() {
 
 void Syscalls::impl_OSSemPend() {
     u32 sem_ptr = arg(0);
-    (void)arg(1);          // timeout (0 = wait forever) — not used; we block until signal
-    u32 err_ptr = arg(2);  // $a2 = error code pointer
+    u32 timeout = arg(1);  // 0 = wait forever
+    u32 err_ptr = arg(2);
 
-    u32 cnt = m_mem.read_u32(sem_ptr + 4);
+    u16 cnt = m_mem.read_u16(sem_ptr + 8);  // OSEventCnt at +8 (16-bit)
 
     if (cnt > 0) {
-        m_mem.write_u32(sem_ptr + 4, cnt - 1);
-        g_cpu_regs[2] = 0;
-        if (err_ptr) m_mem.write_u8(err_ptr, 0);  // OS_ERR_NONE
+        m_mem.write_u16(sem_ptr + 8, (u16)(cnt - 1));
+        if (err_ptr) m_mem.write_u8(err_ptr, 0);  // OS_NO_ERR
         return;
     }
 
-    // Block current task on this semaphore
+    // Block current task on this semaphore.
+    // *err is written when the task resumes (by OSSemPost or by timeout in simulate_vsync).
     save_current_task();
     m_tasks[m_current_task].blocked = true;
     m_tasks[m_current_task].block_sem = sem_ptr;
+    m_tasks[m_current_task].sem_err_ptr = err_ptr;
+    if (timeout > 0) {
+        m_tasks[m_current_task].wake_tick = m_os_ticks + timeout;
+    } else {
+        m_tasks[m_current_task].wake_tick = 0;  // wait forever
+    }
 
     int next = find_ready_task();
     if (next >= 0) {
         switch_to_task(next);
-        g_cpu_regs[2] = 0;
-        if (err_ptr) m_mem.write_u8(err_ptr, 0);
     } else {
-        // No ready tasks - return to caller with timeout error
+        // No other ready task - unblock and return OS_TIMEOUT to caller.
         m_tasks[m_current_task].blocked = false;
         m_tasks[m_current_task].block_sem = 0;
-        if (err_ptr) m_mem.write_u8(err_ptr, 2);  // OS_ERR_TIMEOUT
+        m_tasks[m_current_task].sem_err_ptr = 0;
+        m_tasks[m_current_task].wake_tick = 0;
+        if (err_ptr) m_mem.write_u8(err_ptr, 10);  // OS_TIMEOUT
     }
 }
 
 void Syscalls::impl_OSSemPost() {
     u32 sem_ptr = arg(0);
-    u32 cnt = m_mem.read_u32(sem_ptr + 4);
-    m_mem.write_u32(sem_ptr + 4, cnt + 1);
-    g_cpu_regs[2] = 0;
 
-    // Unblock a task waiting on this semaphore
+    // Find a waiter first (highest priority = lowest task_prio).
+    int waiter = -1;
+    u8 best_prio = 0xFF;
     for (int i = 0; i < m_task_count; i++) {
-        if (m_tasks[i].blocked && m_tasks[i].block_sem == sem_ptr) {
-            m_tasks[i].blocked = false;
-            m_tasks[i].block_sem = 0;
-            break;
+        if (m_tasks[i].blocked && m_tasks[i].block_sem == sem_ptr
+            && m_tasks[i].task_prio < best_prio) {
+            best_prio = m_tasks[i].task_prio;
+            waiter = i;
         }
     }
+
+    if (waiter >= 0) {
+        // Hand the resource to the waiter; do NOT increment count.
+        m_tasks[waiter].blocked = false;
+        m_tasks[waiter].block_sem = 0;
+        m_tasks[waiter].wake_tick = 0;
+        if (m_tasks[waiter].sem_err_ptr)
+            m_mem.write_u8(m_tasks[waiter].sem_err_ptr, 0);  // OS_NO_ERR
+        m_tasks[waiter].sem_err_ptr = 0;
+    } else {
+        // No waiter: increment count, saturating at 65535.
+        u16 cnt = m_mem.read_u16(sem_ptr + 8);
+        if (cnt < 65535u) m_mem.write_u16(sem_ptr + 8, (u16)(cnt + 1));
+        else { g_cpu_regs[2] = 51 /* OS_SEM_OVF */; return; }
+    }
+    g_cpu_regs[2] = 0;  // OS_NO_ERR
 }
 
 void Syscalls::impl_OSTimeDly() {
@@ -1060,7 +1109,61 @@ void Syscalls::impl_OSTimeDly() {
 }
 
 void Syscalls::impl_OSSemDel() {
-    g_cpu_regs[2] = 0;
+    // OS_EVENT *OSSemDel(OS_EVENT *pevent, INT8U opt, INT8U *err)
+    // opt: 0 = OS_DEL_NO_PEND, 1 = OS_DEL_ALWAYS
+    u32 sem_ptr = arg(0);
+    u32 opt     = arg(1);
+    u32 err_ptr = arg(2);
+
+    if (!sem_ptr) {
+        if (err_ptr) m_mem.write_u8(err_ptr, 4); /* OS_ERR_PEVENT_NULL */
+        g_cpu_regs[2] = sem_ptr;
+        return;
+    }
+    if (m_mem.read_u8(sem_ptr + 0) != 3) {
+        if (err_ptr) m_mem.write_u8(err_ptr, 9); /* OS_ERR_EVENT_TYPE */
+        g_cpu_regs[2] = sem_ptr;
+        return;
+    }
+
+    // Count tasks waiting on this sem.
+    bool tasks_waiting = false;
+    for (int i = 0; i < m_task_count; i++) {
+        if (m_tasks[i].blocked && m_tasks[i].block_sem == sem_ptr) {
+            tasks_waiting = true;
+            break;
+        }
+    }
+
+    if (opt == 0 /* OS_DEL_NO_PEND */ && tasks_waiting) {
+        if (err_ptr) m_mem.write_u8(err_ptr, 8); /* OS_ERR_TASK_WAITING */
+        g_cpu_regs[2] = sem_ptr;
+        return;
+    }
+
+    // OS_DEL_ALWAYS (or NO_PEND with no waiters): wake every waiter with OS_ERR (event deleted).
+    for (int i = 0; i < m_task_count; i++) {
+        if (m_tasks[i].blocked && m_tasks[i].block_sem == sem_ptr) {
+            if (m_tasks[i].sem_err_ptr)
+                m_mem.write_u8(m_tasks[i].sem_err_ptr, 10); /* OS_TIMEOUT (best-effort) */
+            m_tasks[i].sem_err_ptr = 0;
+            m_tasks[i].block_sem = 0;
+            m_tasks[i].wake_tick = 0;
+            m_tasks[i].blocked = false;
+        }
+    }
+
+    // Mark ECB as unused.
+    m_mem.write_u8(sem_ptr + 0, 0); /* OS_EVENT_TYPE_UNUSED */
+    m_mem.write_u16(sem_ptr + 8, 0);
+
+    // Remove from our tracking list.
+    for (auto it = m_semaphores.begin(); it != m_semaphores.end(); ++it) {
+        if (*it == sem_ptr) { m_semaphores.erase(it); break; }
+    }
+
+    if (err_ptr) m_mem.write_u8(err_ptr, 0); /* OS_NO_ERR */
+    g_cpu_regs[2] = 0;  /* NULL = success */
 }
 
 void Syscalls::set_idle_regs(const u32 regs[32]) {
@@ -1068,24 +1171,55 @@ void Syscalls::set_idle_regs(const u32 regs[32]) {
 }
 
 void Syscalls::impl_OSTaskDel() {
-    int deleted_task = m_current_task;
+    // OSTaskDel(prio): 255 = OS_PRIO_SELF
+    u32 prio = arg(0);
+    int deleted_task = -1;
+
+    if (prio == 255) {
+        deleted_task = m_current_task;
+    } else if (prio == 254) {
+        // OS_TASK_IDLE_PRIO — real impl returns OS_TASK_DEL_IDLE
+        g_cpu_regs[2] = 1; /* OS_TASK_DEL_IDLE */
+        return;
+    } else {
+        for (int i = 0; i < m_task_count; i++) {
+            if (m_tasks[i].active && m_tasks[i].task_prio == (u8)prio) {
+                deleted_task = i;
+                break;
+            }
+        }
+        if (deleted_task < 0) {
+            g_cpu_regs[2] = 2; /* OS_TASK_NOT_EXIST */
+            return;
+        }
+    }
+
     if (deleted_task >= 0) {
         m_mem.write_u8(m_tasks[deleted_task].task_arg + 0x18C, 1);
         m_tasks[deleted_task].active = false;
         m_tasks[deleted_task].blocked = false;
         m_tasks[deleted_task].wake_tick = 0;
         m_tasks[deleted_task].block_sem = 0;
+        m_tasks[deleted_task].sem_err_ptr = 0;
     }
-    m_current_task = -1;
 
-    // Find the next ready task
+    bool deleted_self = (deleted_task == m_current_task);
+    g_cpu_regs[2] = 0; /* OS_NO_ERR */
+
+    if (!deleted_self) {
+        printf("[OSTaskDel] Deleted task %d (prio=%u) (caller keeps running)\n",
+               deleted_task, prio);
+        return;
+    }
+
+    m_current_task = -1;
     int next = find_ready_task();
     if (next >= 0) {
         switch_to_task(next);
-        printf("[OSTaskDel] Deleted task %d, switched to task %d\n",
+        printf("[OSTaskDel] Deleted self (task %d), switched to task %d\n",
                deleted_task, next);
     } else {
-        printf("[OSTaskDel] Deleted task %d, resumed idle\n", deleted_task);
+        printf("[OSTaskDel] Deleted self (task %d), resumed idle\n", deleted_task);
         memcpy(g_cpu_regs, m_idle_regs, sizeof(g_cpu_regs));
         g_cpu_pc = m_idle_pc;
         m_task_switched = true;
@@ -1266,9 +1400,16 @@ bool Syscalls::simulate_vsync() {
     // Advance µC/OS-II tick counter (approx 1 tick per frame = 16.6ms)
     m_os_ticks += 1;
 
-    // Wake tasks whose OSTimeDly has expired
+    // Wake tasks whose OSTimeDly or OSSemPend timeout has expired.
     for (int i = 0; i < m_task_count; i++) {
         if (m_tasks[i].blocked && m_tasks[i].wake_tick > 0 && m_os_ticks >= m_tasks[i].wake_tick) {
+            if (m_tasks[i].block_sem) {
+                // OSSemPend timeout: signal OS_TIMEOUT to the caller.
+                if (m_tasks[i].sem_err_ptr)
+                    m_mem.write_u8(m_tasks[i].sem_err_ptr, 10);  // OS_TIMEOUT
+                m_tasks[i].sem_err_ptr = 0;
+                m_tasks[i].block_sem = 0;
+            }
             m_tasks[i].blocked = false;
             m_tasks[i].wake_tick = 0;
         }

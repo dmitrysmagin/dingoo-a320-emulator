@@ -164,6 +164,7 @@ private:
         u8  task_prio; // µC/OS-II task priority
         u32 wake_tick; // >0 = OSTimeDly blocks until this tick count
         u32 block_sem; // semaphore ECB addr task is blocked on (0 = not sem-blocked)
+        u32 sem_err_ptr; // *err to write on sem wake (0 = OS_NO_ERR, 10 = OS_TIMEOUT)
     };
 
     // External PC tracking - the GOT dispatch caller (execute_one) saves/restores
