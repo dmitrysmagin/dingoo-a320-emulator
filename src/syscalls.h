@@ -170,6 +170,14 @@ private:
     void release_fb(u32 phys);
     void argb8888_to_rgb565(const u8* src, u8* dst, u32 pixel_count);
 
+    // Dingoo key code table (input.md reference: A=0x01..RIGHT=0x0C)
+    static u32 bitmask_to_keycode(u32 bitmask);
+
+    // Event queue physical address (used by _sys_judge_event)
+    static constexpr u32 EVENT_QUEUE_ADDR = 0x80BFECD8;
+    static constexpr u32 EVENT_TYPE_DOWN  = 0x01;
+    static constexpr u32 EVENT_TYPE_UP    = 0x02;
+
     // µC/OS-II cooperative task scheduler
     static constexpr int MAX_TASKS = 8;
     struct Task {

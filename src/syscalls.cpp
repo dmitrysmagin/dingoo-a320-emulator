@@ -791,19 +791,41 @@ void Syscalls::impl_serial_putc() {
     g_cpu_regs[2] = 0;
 }
 
+u32 Syscalls::bitmask_to_keycode(u32 bitmask) {
+    // Dingoo A320 SDK key codes (input.md §Key codes)
+    switch (bitmask) {
+        case DKEY_A:      return 0x01;
+        case DKEY_B:      return 0x02;
+        case DKEY_X:      return 0x03;
+        case DKEY_Y:      return 0x04;
+        case DKEY_L:      return 0x05;
+        case DKEY_R:      return 0x06;
+        case DKEY_START:  return 0x07;
+        case DKEY_SELECT: return 0x08;
+        case DKEY_UP:     return 0x09;
+        case DKEY_DOWN:   return 0x0A;
+        case DKEY_LEFT:   return 0x0B;
+        case DKEY_RIGHT:  return 0x0C;
+        default:          return 0;
+    }
+}
+
 void Syscalls::impl__kbd_get_status() {
     u32 keys = m_display.get_dingoo_keys();
     g_cpu_regs[2] = keys;
 
+    if (keys)
+        printf("[INPUT] _kbd_get_status -> 0x%04X\n", keys);
+
     // The real Dingoo OS _kbd_get_status also writes the key state into a
-    // memory-mapped OS buffer at 0x80B49D08. The game's event dispatcher
+    // memory-mapped OS buffer. The game's event dispatcher
     // (at 0x80A000FC) reads that address immediately after calling this
     // function and dispatches per-key events. Specifically:
-    //   andi $v0, $v0, 0x0040  → DKEY_A  → event code 2 (advance text / confirm)
-    //   andi $v0, $v0, 0x0800  → DKEY_R  → event code 2 (same)
-    // Without this write, 0x80B49D08 is always 0 and the game never receives
-    // any key events — dialogue is permanently frozen.
-    m_mem.write_u32(0x80B49D08, keys);
+    // The game reads the key state from 0x80B39D08 (computed as
+    // LUI 0x80B4 + signed offset 0x9D08 = 0x80B40000 - 0x62F8 = 0x80B39D08).
+    // The event dispatcher at 0x80A000FC polls this address and dispatches
+    // per-key events. Without this write, the game never receives any key events.
+    m_mem.write_u32(0x80B39D08, keys);
 }
 
 void Syscalls::impl_get_game_vol() {
@@ -811,19 +833,22 @@ void Syscalls::impl_get_game_vol() {
 }
 
 void Syscalls::impl__kbd_get_key() {
+    // Return the Dingoo SDK key code (0x01-0x0C) for the highest-priority
+    // pressed key, or 0 if no key is held.
     u32 keys = m_display.get_dingoo_keys();
-    if (keys & DKEY_UP)       { g_cpu_regs[2] = DKEY_UP; return; }
-    if (keys & DKEY_DOWN)     { g_cpu_regs[2] = DKEY_DOWN; return; }
-    if (keys & DKEY_LEFT)     { g_cpu_regs[2] = DKEY_LEFT; return; }
-    if (keys & DKEY_RIGHT)    { g_cpu_regs[2] = DKEY_RIGHT; return; }
-    if (keys & DKEY_A)        { g_cpu_regs[2] = DKEY_A; return; }
-    if (keys & DKEY_B)        { g_cpu_regs[2] = DKEY_B; return; }
-    if (keys & DKEY_X)        { g_cpu_regs[2] = DKEY_X; return; }
-    if (keys & DKEY_Y)        { g_cpu_regs[2] = DKEY_Y; return; }
-    if (keys & DKEY_L)        { g_cpu_regs[2] = DKEY_L; return; }
-    if (keys & DKEY_R)        { g_cpu_regs[2] = DKEY_R; return; }
-    if (keys & DKEY_START)    { g_cpu_regs[2] = DKEY_START; return; }
-    if (keys & DKEY_SELECT)   { g_cpu_regs[2] = DKEY_SELECT; return; }
+    static const u32 priority[] = {
+        DKEY_UP, DKEY_DOWN, DKEY_LEFT, DKEY_RIGHT,
+        DKEY_A, DKEY_B, DKEY_X, DKEY_Y,
+        DKEY_L, DKEY_R, DKEY_START, DKEY_SELECT,
+    };
+    for (u32 mask : priority) {
+        if (keys & mask) {
+            u32 code = bitmask_to_keycode(mask);
+            printf("[INPUT] _kbd_get_key -> 0x%02X (code=%u)\n", code, code);
+            g_cpu_regs[2] = code;
+            return;
+        }
+    }
     g_cpu_regs[2] = 0;
 }
 
@@ -1401,10 +1426,12 @@ void Syscalls::impl_GetTickCount() {
 }
 
 void Syscalls::impl__sys_judge_event() {
-    u32 event_queue = 0x80BFECD8;
-    u32 event_val = m_mem.read_u32(event_queue);
+    u32 a0 = arg(0);
+    u32 event_val = m_mem.read_u32(EVENT_QUEUE_ADDR);
     if (event_val) {
-        m_mem.write_u32(event_queue, 0);
+        m_mem.write_u32(EVENT_QUEUE_ADDR, 0);
+        printf("[INPUT] _sys_judge_event(a0=0x%08X) -> 0x%04X (type=%u code=%u)\n",
+               a0, event_val, event_val >> 8, event_val & 0xFF);
         g_cpu_regs[2] = event_val;
     } else {
         g_cpu_regs[2] = 0;
@@ -1593,6 +1620,7 @@ bool Syscalls::simulate_vsync() {
     u32 keys = m_display.get_dingoo_keys();
     static u32 prev_keys = 0;
     u32 pressed = keys & ~prev_keys;
+    u32 released = prev_keys & ~keys;
     prev_keys = keys;
 
     // Auto-press sequence:
@@ -1619,10 +1647,23 @@ bool Syscalls::simulate_vsync() {
         auto_release_frame = vsync_count + 5;
     }
 
-    // Write pressed keys to the event queue for game code to read via _sys_judge_event
+    // Write key events to the event queue in (type << 8) | key_code format
     if (pressed) {
-        u32 event_queue = 0x80BFECD8;
-        m_mem.write_u32(event_queue, pressed);
+        u32 bit = pressed & ~(pressed - 1); // lowest set bit
+        u8 code = (u8)bitmask_to_keycode(bit);
+        if (code) {
+            u32 ev = (EVENT_TYPE_DOWN << 8) | code;
+            printf("[INPUT] event queue <- 0x%04X (down, code=%u)\n", ev, code);
+            m_mem.write_u32(EVENT_QUEUE_ADDR, ev);
+        }
+    } else if (released) {
+        u32 bit = released & ~(released - 1);
+        u8 code = (u8)bitmask_to_keycode(bit);
+        if (code) {
+            u32 ev = (EVENT_TYPE_UP << 8) | code;
+            printf("[INPUT] event queue <- 0x%04X (up, code=%u)\n", ev, code);
+            m_mem.write_u32(EVENT_QUEUE_ADDR, ev);
+        }
     }
 
     // Cooperative multitasking: if current task is not blocked, yield to others
