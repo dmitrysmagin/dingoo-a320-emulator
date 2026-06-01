@@ -1478,6 +1478,11 @@ void Syscalls::impl_GetTickCount() {
 void Syscalls::impl__sys_judge_event() {
     u32 a0 = arg(0);
 
+    // The real _sys_judge_event (VA 0x801364B0) is a fast, non-blocking routine.
+    // It reads the touch-screen registers (0x8057F16A/C/170) — always inactive on
+    // the Dingoo A320 (no touchscreen) — reads the global key-state at 0x80242B40,
+    // translates via a runtime table, and returns immediately.
+
     // Check memory-based event queue first (startup sentinel 0x8BFC4D89)
     u32 event_val = m_mem.read_u32(EVENT_QUEUE_ADDR);
     if (event_val) {
@@ -1487,7 +1492,7 @@ void Syscalls::impl__sys_judge_event() {
         return;
     }
 
-    // Dequeue SDL input events
+    // Dequeue edge events (key-down / key-up) first
     if (m_display.has_input_event()) {
         event_val = m_display.pop_input_event();
         u8 type = event_val >> 8;
@@ -1496,6 +1501,23 @@ void Syscalls::impl__sys_judge_event() {
                a0, event_val, type, code);
         g_cpu_regs[2] = event_val;
         return;
+    }
+
+    // No edge events — check for held keys via the shared key-state memory
+    // (0x80242B40 = KERN_KEY_SCAN_VAL, written every frame by the main loop).
+    // The real function reads this location to detect held keys.
+    u32 keys = m_mem.read_u32(0x80242B40 & 0x1FFFFFFF);
+    if (keys == 0) keys = m_display.get_dingoo_keys();  // fallback
+    if (keys) {
+        // Find lowest-set-bit key and report it as held (type 3)
+        u32 single = keys & (~keys + 1);  // isolate lowest bit
+        u32 code = bitmask_to_keycode(single);
+        if (code) {
+            event_val = (3u << 8) | code;  // type 3 = held
+            printf("[INPUT] _sys_judge_event held -> 0x%04X (code=%u)\n", event_val, code);
+            g_cpu_regs[2] = event_val;
+            return;
+        }
     }
 
     g_cpu_regs[2] = 0;
@@ -1822,7 +1844,6 @@ bool Syscalls::simulate_vsync() {
     for (int i = 0; i < m_task_count; i++) {
         if (m_tasks[i].blocked && m_tasks[i].wake_tick > 0 && m_os_ticks >= m_tasks[i].wake_tick) {
             if (m_tasks[i].block_sem) {
-                // OSSemPend timeout: signal OS_TIMEOUT to the caller.
                 m_tasks[i].regs[2] = 10;  // OS_TIMEOUT in v0
                 if (m_tasks[i].sem_err_ptr)
                     m_mem.write_u8(m_tasks[i].sem_err_ptr, 10);  // OS_TIMEOUT
@@ -1833,10 +1854,6 @@ bool Syscalls::simulate_vsync() {
             m_tasks[i].wake_tick = 0;
         }
     }
-
-    // Key input is handled by _kbd_get_status (reads m_display.get_dingoo_keys()
-    // directly from the GOT dispatch) — no auto-press or synthetic event queue
-    // injection here. The player presses keys on the SDL window.
 
     // Cooperative multitasking: yield to another ready task if available.
     // The game uses tasks as inline-synchronized call chains (not independent
