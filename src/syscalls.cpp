@@ -21,6 +21,7 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     , m_current_task(-1)
     , m_task_count(0)
     , m_os_ticks(0)
+    , m_start_tick(SDL_GetTicks())
     , m_scheduler_started(false)
     , m_task_switched(false)
     , m_idle_pc(0)
@@ -1116,12 +1117,16 @@ void Syscalls::switch_to_task(int task_idx) {
 }
 
 int Syscalls::find_ready_task() {
-    // Find a task that is active and not blocked
+    // Find the highest-priority (lowest task_prio value) ready task
+    int best = -1;
+    u8 best_prio = 255;
     for (int i = 0; i < m_task_count; i++) {
-        if (m_tasks[i].active && !m_tasks[i].blocked)
-            return i;
+        if (m_tasks[i].active && !m_tasks[i].blocked && m_tasks[i].task_prio < best_prio) {
+            best = i;
+            best_prio = m_tasks[i].task_prio;
+        }
     }
-    return -1;
+    return best;
 }
 
 void Syscalls::impl_OSTimeGet() {
@@ -1173,12 +1178,11 @@ void Syscalls::impl_OSTaskCreate() {
     }
 
     // Real µC/OS-II rejects duplicate priorities with OS_PRIO_EXIST=40.
-    // This emulator historically allowed them (round-robin); keep that for
-    // compatibility but warn loudly so we notice if the guest hits it.
     for (int i = 0; i < m_task_count; i++) {
         if (m_tasks[i].active && m_tasks[i].task_prio == (u8)prio) {
-            printf("[OSTaskCreate] WARNING: duplicate priority %u for task %d (allowing)\n", (u8)prio, i);
-            break;
+            printf("[OSTaskCreate] FAILED: duplicate priority %u for task %d -> OS_PRIO_EXIST\n", (u8)prio, i);
+            g_cpu_regs[2] = 40; /* OS_PRIO_EXIST */
+            return;
         }
     }
 
@@ -1245,11 +1249,15 @@ void Syscalls::impl_OSSemPend() {
         switch_to_task(next);
     } else {
         // No other ready task - unblock and return OS_TIMEOUT to caller.
+        // The game uses OSSemPend synchronously within the game_main call
+        // chain (tasks are called inline, not as independent contexts), so
+        // there's never a background task to switch to.
         m_tasks[m_current_task].blocked = false;
         m_tasks[m_current_task].block_sem = 0;
         m_tasks[m_current_task].sem_err_ptr = 0;
         m_tasks[m_current_task].wake_tick = 0;
         if (err_ptr) m_mem.write_u8(err_ptr, 10);  // OS_TIMEOUT
+        g_cpu_regs[2] = 10;  // return OS_TIMEOUT in v0
     }
 }
 
@@ -1272,6 +1280,7 @@ void Syscalls::impl_OSSemPost() {
         m_tasks[waiter].blocked = false;
         m_tasks[waiter].block_sem = 0;
         m_tasks[waiter].wake_tick = 0;
+        m_tasks[waiter].regs[2] = 0;  // OS_NO_ERR in v0
         if (m_tasks[waiter].sem_err_ptr)
             m_mem.write_u8(m_tasks[waiter].sem_err_ptr, 0);  // OS_NO_ERR
         m_tasks[waiter].sem_err_ptr = 0;
@@ -1600,8 +1609,14 @@ void Syscalls::impl_get_current_language() {
 bool Syscalls::simulate_vsync() {
     bool switched = false;
 
-    // Auto-start the scheduler if OSStart has already run (task code is executing)
-    if (m_current_task < 0 && m_task_count > 0) {
+    // Auto-start the scheduler: register tasks but keep inline execution.
+    // The game calls task functions (like the audio task at 0x80A06400)
+    // directly from game_main through vtable pointers — µC/OS-II task
+    // switching is never used. OSTaskCreate + Pend/Post are used purely
+    // as synchronization primitives within the inline call chain.
+    // We set m_current_task so Pend/Post bookkeeping works, but do NOT
+    // switch context — game_main continues as the active execution context.
+    if (m_current_task < 0 && m_task_count > 0 && !m_scheduler_started) {
         int highest = -1;
         u8 best_prio = 255;
         for (int i = 0; i < m_task_count; i++) {
@@ -1611,15 +1626,22 @@ bool Syscalls::simulate_vsync() {
             }
         }
         if (highest >= 0) {
-            memcpy(m_tasks[highest].regs, g_cpu_regs, sizeof(g_cpu_regs));
-            m_tasks[highest].hi = g_cpu_hi;
-            m_tasks[highest].lo = g_cpu_lo;
-            m_current_task = highest;
-            printf("[SCHEDULER] Auto-start: task %d (prio %u) running\n", highest, best_prio);
+            // Save the current (game_main) context as the idle context.
+            memcpy(m_idle_regs, g_cpu_regs, sizeof(g_cpu_regs));
+            m_idle_pc = g_cpu_pc;
+            m_idle_hi = g_cpu_hi;
+            m_idle_lo = g_cpu_lo;
+
+            m_scheduler_started = true;
+            m_current_task = highest;  // for Pend/Post bookkeeping
+            printf("[SCHEDULER] Tasks registered: task %d (prio %u) inline\n",
+                   highest, best_prio);
         }
     }
 
-    // Advance µC/OS-II tick counter (approx 1 tick per frame = 16.6ms)
+    // µC/OS-II tick counter (one tick per vsync ≈ 60 Hz).
+    // The game uses OSTimeGet for animation timing, so ticks must advance
+    // at display-frame rate even when the emulator runs faster than real-time.
     m_os_ticks += 1;
 
     // Wake tasks whose OSTimeDly or OSSemPend timeout has expired.
@@ -1627,6 +1649,7 @@ bool Syscalls::simulate_vsync() {
         if (m_tasks[i].blocked && m_tasks[i].wake_tick > 0 && m_os_ticks >= m_tasks[i].wake_tick) {
             if (m_tasks[i].block_sem) {
                 // OSSemPend timeout: signal OS_TIMEOUT to the caller.
+                m_tasks[i].regs[2] = 10;  // OS_TIMEOUT in v0
                 if (m_tasks[i].sem_err_ptr)
                     m_mem.write_u8(m_tasks[i].sem_err_ptr, 10);  // OS_TIMEOUT
                 m_tasks[i].sem_err_ptr = 0;
@@ -1637,65 +1660,18 @@ bool Syscalls::simulate_vsync() {
         }
     }
 
-    // Detect key events and inject into the event queue
-    static u32 vsync_count = 0;
-    vsync_count++;
+    // Key input is handled by _kbd_get_status (reads m_display.get_dingoo_keys()
+    // directly from the GOT dispatch) — no auto-press or synthetic event queue
+    // injection here. The player presses keys on the SDL window.
 
-    // Check for key events
-    u32 keys = m_display.get_dingoo_keys();
-    static u32 prev_keys = 0;
-    u32 pressed = keys & ~prev_keys;
-    u32 released = prev_keys & ~keys;
-    prev_keys = keys;
-
-    // Auto-press sequence:
-    //   vsync 1000      : START (dismiss "press start" / title logo screen)
-    //   vsync 1100      : A    (select first menu item = "New Game")
-    //   vsync 1200+     : A every 20 vsyncs to advance story dialogue
-    //   (hold 5 vsyncs each press so _kbd_get_status sees the transition)
-    static u32 auto_release_frame = 0;
-    static u32 auto_held = 0;
-    // Release previous key
-    if (auto_held && vsync_count == auto_release_frame) {
-        m_display.set_key(auto_held, false);
-        auto_held = 0;
-    }
-    // Determine which key (if any) to press this vsync
-    u32 press_key = 0;
-    if (vsync_count == 100) press_key = DKEY_START;
-    else if (vsync_count >= 150 && vsync_count % 10 == 0) press_key = DKEY_A;
-
-    if (press_key && !auto_held) {
-        m_display.set_key(press_key, true);
-        auto_held = press_key;
-        // Hold for 5 vsyncs so that _kbd_get_status (polled ~1/5 vsyncs) sees it
-        auto_release_frame = vsync_count + 5;
-    }
-
-    // Write key events to the event queue in (type << 8) | key_code format
-    if (pressed) {
-        u32 bit = pressed & ~(pressed - 1); // lowest set bit
-        u8 code = (u8)bitmask_to_keycode(bit);
-        if (code) {
-            u32 ev = (EVENT_TYPE_DOWN << 8) | code;
-            printf("[INPUT] event queue <- 0x%04X (down, code=%u)\n", ev, code);
-            m_mem.write_u32(EVENT_QUEUE_ADDR, ev);
-        }
-    } else if (released) {
-        u32 bit = released & ~(released - 1);
-        u8 code = (u8)bitmask_to_keycode(bit);
-        if (code) {
-            u32 ev = (EVENT_TYPE_UP << 8) | code;
-            printf("[INPUT] event queue <- 0x%04X (up, code=%u)\n", ev, code);
-            m_mem.write_u32(EVENT_QUEUE_ADDR, ev);
-        }
-    }
-
-    // Cooperative multitasking: if current task is not blocked, yield to others
+    // Cooperative multitasking: yield to another ready task if available.
+    // The game uses tasks as inline-synchronized call chains (not independent
+    // contexts), so there's typically nothing to switch to. This mostly keeps
+    // current-task bookkeeping consistent.
     if (m_current_task >= 0 && m_current_task < m_task_count) {
         Task& current = m_tasks[m_current_task];
         if (current.blocked) {
-            // Current task is blocked (on semaphore or delay) — try to find a ready task
+            // Current task blocked — try to find a ready task
             save_current_task();
             int next = find_ready_task();
             if (next >= 0) {
@@ -1703,14 +1679,12 @@ bool Syscalls::simulate_vsync() {
                 switched = true;
             }
         } else {
-            // Current task is still running — preempt and yield to another ready task
-            for (int i = 0; i < m_task_count; i++) {
-                if (i != m_current_task && m_tasks[i].active && !m_tasks[i].blocked) {
-                    save_current_task();  // saves g_cpu_pc into tasks[current].pc (no $ra corruption)
-                    switch_to_task(i);
-                    switched = true;
-                    break;
-                }
+            // Current task still running — yield to higher-priority task if any
+            save_current_task();
+            int next = find_ready_task();
+            if (next >= 0 && next != m_current_task) {
+                switch_to_task(next);
+                switched = true;
             }
         }
     } else {
@@ -1725,7 +1699,9 @@ bool Syscalls::simulate_vsync() {
     m_display.present_blank();
 
     // Periodic GOT call dump every 1000 frames
-    if (vsync_count % 1000 == 0) {
+    static u32 dump_count = 0;
+    dump_count++;
+    if (dump_count % 1000 == 0) {
         for (int i = 0; i < 72; i++) {
             if (m_got_call_counts[i] > 0) {
                 printf("[GOT] %3d: %-25s %u\n", i, got_name(i), m_got_call_counts[i]);

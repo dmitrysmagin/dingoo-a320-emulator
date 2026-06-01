@@ -197,9 +197,11 @@ private:
     // the guest PC via g_cpu_pc when tasks switch.
     Task m_tasks[MAX_TASKS];
     u32 m_idle_regs[32];
+    u32 m_idle_hi, m_idle_lo;
     int m_current_task;
     int m_task_count;
     u32 m_os_ticks;
+    u32 m_start_tick;
     bool m_scheduler_started;
     bool m_task_switched;
     u32 m_idle_pc;

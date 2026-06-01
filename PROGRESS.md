@@ -37,16 +37,29 @@ Boot the Dingoo game **"7days"** (`7days.app`, SPK archive) to playable gameplay
 - F12 manual screenshot; Escape to quit
 
 ### Scheduling & Tasks
-- Dual µC/OS-II task scheduling via preemptive time-slicing in `simulate_vsync()`
-- Both tasks get CPU time each vsync; same-priority tasks round-robin
-- `OSTaskCreate` / `OSSemCreate` / `OSSemPend` / `OSSemPost` all functional
+- µC/OS-II tasks are **registration-only**: `OSTaskCreate` stores the entry/prio/stack for
+  Pend/Post bookkeeping, but the task function is never dispatched as an independent context.
+  The game calls the audio task at `0x80A06400` **inline** from `game_main` through a vtable
+  pointer — the scheduler is never invoked for context switching.
+- `OSSemPend` / `OSSemPost` synchronise the inline audio pipeline. When Pend blocks (count =
+  0) with no other ready task, it returns `OS_TIMEOUT` immediately (no background task to
+  switch to); the caller handles the error and retries.
+- `simulate_vsync()` auto-start registers the first created task (sets `m_current_task` for
+  Pend bookkeeping) but does **not** switch registers or PC — game_main continues inline.
+- Duplicate priority rejection (real µC/OS-II behaviour — `OS_PRIO_EXIST = 40`). The game
+  retries with `prio = 17` on failure.
+- `find_ready_task` uses priority ordering (lowest `task_prio` value = highest urgency).
+- Cooperative yield in `simulate_vsync` checks for a higher-priority ready task; typically
+  finds none since all processing is inline.
+- `m_start_tick` initialised in constructor for potential real-time tick use (currently
+  unused — ticks are frame-based, `m_os_ticks += 1` per vsync).
 
 ### Input
 - Full SDL keyboard → Dingoo bitmask mapping (Z=A, X=B, A=X, S=Y, Q=L, W=R, Enter=START, Tab=SELECT)
 - `_kbd_get_status` writes key bitmask to both `$v0` register **and** guest RAM at `0x80B49D08`
   (the second write was the root cause fix for text never advancing)
 - Event queue at `0x80BFECD8`; `_sys_judge_event` reads and clears it each call
-- Auto-press schedule: START at vsync 100, A every 10 vsyncs from vsync 150 onwards (held 5 vsyncs each)
+- No synthetic auto-press or event injection — all keys come from real SDL window input
 - `SDL_VIDEODRIVER=offscreen` + software renderer fallback for headless/CI testing
 
 ### Audio
@@ -72,8 +85,8 @@ Boot the Dingoo game **"7days"** (`7days.app`, SPK archive) to playable gameplay
 | LWL/LWR | `cpu.cpp` | Fixed little-endian formulas and UB at shift=0 |
 | `impl_sprintf` | `syscalls.cpp` | Was no-op; now performs format substitutions |
 | Task PC field | `syscalls.cpp` | Dedicated `pc` field in `Task` struct — eliminates `$ra` corruption on preemption |
-| Duplicate task priority | `syscalls.cpp` | Changed FAIL → WARNING + allow; enables round-robin scheduling |
-| Scheduler lazy start | `syscalls.cpp` | `simulate_vsync()` auto-starts on first call |
+| Duplicate task priority | `syscalls.cpp` | Reject with `OS_PRIO_EXIST` (matching real µC/OS-II); game retries with `prio=17` |
+| Scheduler lazy start | `syscalls.cpp` | `simulate_vsync()` registers first task for Pend bookkeeping but does NOT switch context |
 | Code section protection | `main.cpp` | Removed — game's idle/task stacks overlap RAWD/BSS boundary |
 | Screenshot bit expansion | `display.cpp` | SDL `ConvertSurfaceFormat` replaces manual loop; white → (255,255,255) not (248,252,248) |
 | SDL software renderer fallback | `display.cpp` | Allows `SDL_VIDEODRIVER=offscreen` for headless tests |
@@ -92,6 +105,7 @@ Boot the Dingoo game **"7days"** (`7days.app`, SPK archive) to playable gameplay
 - Dialogue text overlay advances properly through the prologue
 - Format mirror fix ensures `_lcd_set_frame` correctly interprets the pixel format
 - No crashes, no unknown opcodes across the entire run
+- Synthetic auto-press removed — all key input comes from real SDL window interactions
 
 ### Open Problem: Prologue CG Backgrounds
 Three large resource reads occur at startup (before/during prologue):
@@ -114,7 +128,7 @@ while text overlay works, the root cause is likely in the decompression or write
 ### Performance
 - ~64M guest instructions/second on modern x86
 - 2-minute run: ~9,990 rendered frames, ~52,000 CPU frames at 2M insns/frame
-- Audio task: ~22M `waveout_write` calls, ~22M each `OSSemPend`/`OSSemPost` — scheduler healthy
+- Audio handled inline: `waveout_write` ~58K calls per 300-frame test run
 
 ### Run Command
 ```
@@ -129,7 +143,6 @@ SDL_VIDEODRIVER=offscreen timeout 60 ./emulator.exe ../7days.app
 | **Prologue CG backgrounds** | Compressed `.spl`/`.sst` images; TLB or decompression issue suspected |
 | **Save files** | `slot1-3.sav` / `config.sdt` not present; game uses defaults, no persistence |
 | **Frame rate cap** | Emulator runs uncapped; no 60fps limiter |
-| **OSTimeDly accuracy** | Returns immediately (no-op); simulate_vsync provides approximate tick cadence |
 | **MXU correctness** | All ops handled without unknown-opcode errors, but output values unverified |
 
 ## Next Steps

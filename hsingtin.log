@@ -1,0 +1,711 @@
+=== 7days Dingoo A320 Emulator (Phase 2) ===
+
+[APP] File size: 15402572 bytes (0xEB064C)
+[APP] IMPT: offset=0xA0 size=0x888
+[APP] EXPT: offset=0x930 size=0x40
+[APP] RAWD: offset=0x970 size=0x125788 entry=0x80AC6040 origin=0x80A00000 prog_size=0x12FC40
+[APP] Imports: 72 entries
+[APP] Exports: 2 entries
+[APP] RAWD loaded: 1202056 bytes
+[APP] Resource section: offset=0x150000 size=0xD6064C
+[MEM] Loaded 1202056 bytes at phys 0x00A00000
+[INIT] Zeroing BSS: 0x80B25788-0x80B2FC40 (42168 bytes)
+[INIT] Game name: 'hsingtin'
+[INIT] Found AppMain at 0x80AC613C from exports
+[INIT] GOT base: 0x80AC5E00 (72 entries)
+[PATCH] SLTI at 0x80ADE0DC = 0x0009DA21 (not 7days, not patching)
+[INIT] Zeroed stack area: phys 0x00BFF000-0x00C10000
+[INIT] Pre-populated event queue 0x80BFECD8 = 0x8BFC4D89 (hardware-ready)
+[PATCH] BSS stub at 0x80BFF000 -> AppMain 0x80AC613C
+[DISPLAY] SDL2 initialized: 960x720 (scale 3)
+[ARCHIVE] Loaded 686 entries from SPK archive
+[INIT] Resource archive loaded: 686 entries
+
+=== ARCHIVE PALETTE SEARCH ===
+[ARCHIVE] PALETTE_KEYWORD: .\lv2\pal.s3dpal (size=82688, offset=11019371)
+  HEX[0..31]: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+=== END ARCHIVE PALETTE SEARCH ===
+
+[INIT] Entry point: 0x80AC6040 (dl_main)
+[INIT] Stack: 0x80C00000
+[INIT] RAM size: 32 MB
+[INIT] Display: 320x240 (scale 3)
+
+=== Starting emulation ===
+
+[OSSemCreate] ecb=0x8007A3C0 cnt=1
+[OSSemCreate] ecb=0x8007A408 cnt=1
+[AUDIO] waveout_open: 44100Hz 7ch 16bit -> device=2 (got 44100Hz 7ch)
+[OSTaskCreate] entry=0x80A3CF80 arg=0x8007A2D0 stack=0x80B2F9AC prio=16 (task_count=0)
+[OSTaskCreate] Created task 0: entry=0x80A3CF80 prio=16
+[SCHEDULER] Auto-start: task 0 (prio 16) running
+[fopenW] 'hsingtin' mode='rb' -> handle 0 (app binary)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x8BFC4D89 (type=77 code=137)
+[OSSemCreate] ecb=0x8007A450 cnt=1
+[OSSemCreate] ecb=0x8007AA90 cnt=1
+[AUDIO] waveout_open: 44100Hz 7ch 16bit -> device=2 (got 44100Hz 7ch)
+[OSTaskCreate] entry=0x80A3CF80 arg=0x8007A2D0 stack=0x80B2F9AC prio=16 (task_count=1)
+[OSTaskCreate] WARNING: duplicate priority 16 for task 0 (allowing)
+[OSTaskCreate] Created task 1: entry=0x80A3CF80 prio=16
+[fopenW] 'hsingtin' mode='rb' -> handle 1 (app binary)
+[FSEEK] handle=1 offset=0x00000000 (0) whence=END
+[FSEEK] handle=1 offset=0x00150000 (1376256) whence=SET
+[FREAD] handle=1 off=0x00150000 size=2*1=2 -> 1 items  dest=0x8004890C  magic=AE020000
+[FREAD] handle=1 off=0x00150002 size=46648*1=46648 -> 1 items  dest=0x806905B8  magic=2E5C6175
+[FSEEK] handle=1 offset=0x004D258A (5055882) whence=SET
+[FREAD] handle=1 off=0x004D258A size=2140*1=2140 -> 1 items  dest=0x8069BBF0  magic=59000000
+[FSEEK] handle=1 offset=0x00A3867B (10716795) whence=SET
+[FREAD] handle=1 off=0x00A3867B size=8308*1=8308 -> 1 items  dest=0x8069C9A8  magic=ED910000
+[FSEEK] handle=1 offset=0x008DF7AF (9303983) whence=SET
+[FREAD] handle=1 off=0x008DF7AF size=77320*1=77320 -> 1 items  dest=0x806A0C00  magic=FE91FFFF
+[FSEEK] handle=1 offset=0x00A3E547 (10741063) whence=SET
+[FREAD] handle=1 off=0x00A3E547 size=612*1=612 -> 1 items  dest=0x806C6980  magic=90910500
+[FSEEK] handle=1 offset=0x00A1D7AA (10606506) whence=SET
+[FREAD] handle=1 off=0x00A1D7AA size=545*1=545 -> 1 items  dest=0x806C6FB8  magic=82910400
+[FSEEK] handle=1 offset=0x00A1D9CB (10607051) whence=SET
+[FREAD] handle=1 off=0x00A1D9CB size=517*1=517 -> 1 items  dest=0x806C7570  magic=74910400
+[FSEEK] handle=1 offset=0x00A3E7AB (10741675) whence=SET
+[FREAD] handle=1 off=0x00A3E7AB size=588*1=588 -> 1 items  dest=0x806C7AE8  magic=84910000
+[FSEEK] handle=1 offset=0x0086985E (8820830) whence=SET
+[FREAD] handle=1 off=0x0086985E size=4076*1=4076 -> 1 items  dest=0x806C80F0  magic=E7910400
+[FSEEK] handle=1 offset=0x0088103F (8917055) whence=SET
+[FREAD] handle=1 off=0x0088103F size=77324*1=77324 -> 1 items  dest=0x806CA238  magic=FF91FFFF
+[FSEEK] handle=1 offset=0x00A1F25E (10613342) whence=SET
+[FREAD] handle=1 off=0x00A1F25E size=3190*1=3190 -> 1 items  dest=0x806EFFC0  magic=F6910000
+[FSEEK] handle=1 offset=0x0087F371 (8909681) whence=SET
+[FREAD] handle=1 off=0x0087F371 size=1346*1=1346 -> 1 items  dest=0x806F1A20  magic=E2910000
+[FSEEK] handle=1 offset=0x0087F8B3 (8911027) whence=SET
+[FREAD] handle=1 off=0x0087F8B3 size=1226*1=1226 -> 1 items  dest=0x806F2618  magic=A6910000
+[FSEEK] handle=1 offset=0x0088043F (8913983) whence=SET
+[FREAD] handle=1 off=0x0088043F size=1596*1=1596 -> 1 items  dest=0x806F3120  magic=F0910000
+[FSEEK] handle=1 offset=0x00880A7B (8915579) whence=SET
+[FREAD] handle=1 off=0x00880A7B size=1476*1=1476 -> 1 items  dest=0x806F3F08  magic=B4910000
+[FSEEK] handle=1 offset=0x008DB788 (9287560) whence=SET
+[FREAD] handle=1 off=0x008DB788 size=956*1=956 -> 1 items  dest=0x806F4C00  magic=C7910000
+[FSEEK] handle=1 offset=0x008DBB44 (9288516) whence=SET
+[FREAD] handle=1 off=0x008DBB44 size=864*1=864 -> 1 items  dest=0x806F54E8  magic=9A910000
+[FSEEK] handle=1 offset=0x00A1C608 (10601992) whence=SET
+[FREAD] handle=1 off=0x00A1C608 size=1676*1=1676 -> 1 items  dest=0x806F5D18  magic=F8910400
+[FSEEK] handle=1 offset=0x00A1CC94 (10603668) whence=SET
+[FREAD] handle=1 off=0x00A1CC94 size=1560*1=1560 -> 1 items  dest=0x806F6BA0  magic=BD910300
+[FSEEK] handle=1 offset=0x00A1E88C (10610828) whence=SET
+[FREAD] handle=1 off=0x00A1E88C size=1321*1=1321 -> 1 items  dest=0x806F7940  magic=ED910000
+[FSEEK] handle=1 offset=0x00A1EDB5 (10612149) whence=SET
+[FREAD] handle=1 off=0x00A1EDB5 size=1193*1=1193 -> 1 items  dest=0x806F8508  magic=AE910000
+[FSEEK] handle=1 offset=0x00868EE0 (8818400) whence=SET
+[FREAD] handle=1 off=0x00868EE0 size=1241*1=1241 -> 1 items  dest=0x806F8FD0  magic=E7910000
+[FSEEK] handle=1 offset=0x008693B9 (8819641) whence=SET
+[FREAD] handle=1 off=0x008693B9 size=1189*1=1189 -> 1 items  dest=0x806F9AF8  magic=CD910000
+[FSEEK] handle=1 offset=0x0086A84A (8824906) whence=SET
+[FREAD] handle=1 off=0x0086A84A size=1202*1=1202 -> 1 items  dest=0x806FA5B8  magic=DA910600
+[FSEEK] handle=1 offset=0x008F3667 (9385575) whence=SET
+[FREAD] handle=1 off=0x008F3667 size=77324*1=77324 -> 1 items  dest=0x806FB090  magic=FF91FFFF
+[FSEEK] handle=1 offset=0x00906473 (9462899) whence=SET
+[FREAD] handle=1 off=0x00906473 size=77320*1=77320 -> 1 items  dest=0x80720E18  magic=FE91FFFF
+[FSEEK] handle=1 offset=0x0091927B (9540219) whence=SET
+[FREAD] handle=1 off=0x0091927B size=77320*1=77320 -> 1 items  dest=0x80746B98  magic=FE91FFFF
+[FSEEK] handle=1 offset=0x0092C083 (9617539) whence=SET
+[FREAD] handle=1 off=0x0092C083 size=77324*1=77324 -> 1 items  dest=0x8076C918  magic=FF91FFFF
+[FSEEK] handle=1 offset=0x0093EE8F (9694863) whence=SET
+[FREAD] handle=1 off=0x0093EE8F size=77320*1=77320 -> 1 items  dest=0x807926A0  magic=FE91FFFF
+[FSEEK] handle=1 offset=0x00951C97 (9772183) whence=SET
+[FREAD] handle=1 off=0x00951C97 size=77324*1=77324 -> 1 items  dest=0x807B8420  magic=FF91FFFF
+[FSEEK] handle=1 offset=0x00964AA3 (9849507) whence=SET
+[FREAD] handle=1 off=0x00964AA3 size=77320*1=77320 -> 1 items  dest=0x807DE1A8  magic=FE91FFFF
+[FSEEK] handle=1 offset=0x009778AB (9926827) whence=SET
+[FREAD] handle=1 off=0x009778AB size=77324*1=77324 -> 1 items  dest=0x80803F28  magic=FF91FFFF
+[FSEEK] handle=1 offset=0x0098A6B7 (10004151) whence=SET
+[FREAD] handle=1 off=0x0098A6B7 size=77320*1=77320 -> 1 items  dest=0x80829CB0  magic=FD91FFFF
+[FSEEK] handle=1 offset=0x00A3A6EF (10725103) whence=SET
+[FREAD] handle=1 off=0x00A3A6EF size=17*1=17 -> 1 items  dest=0x8084FA30  magic=0191FFFF
+[FSEEK] handle=1 offset=0x008735F9 (8861177) whence=SET
+[FREAD] handle=1 off=0x008735F9 size=2716*1=2716 -> 1 items  dest=0x8084FCD0  magic=FD910000
+[FSEEK] handle=1 offset=0x00874095 (8863893) whence=SET
+[FREAD] handle=1 off=0x00874095 size=45788*1=45788 -> 1 items  dest=0x808513F8  magic=FF910000
+[FSEEK] handle=1 offset=0x0086E060 (8839264) whence=SET
+[FREAD] handle=1 off=0x0086E060 size=17*1=17 -> 1 items  dest=0x8084FA30  magic=0191FFFF
+[FSEEK] handle=1 offset=0x0086B334 (8827700) whence=SET
+[FREAD] handle=1 off=0x0086B334 size=1936*1=1936 -> 1 items  dest=0x80867DA8  magic=D191FFFF
+[FSEEK] handle=1 offset=0x008F31EB (9384427) whence=SET
+[FREAD] handle=1 off=0x008F31EB size=1148*1=1148 -> 1 items  dest=0x80868E38  magic=0491FFFF
+[FSEEK] handle=1 offset=0x009A367B (10106491) whence=SET
+[FREAD] handle=1 off=0x009A367B size=1784*1=1784 -> 1 items  dest=0x80869898  magic=DE910000
+[FSEEK] handle=1 offset=0x00A305FB (10683899) whence=SET
+[FREAD] handle=1 off=0x00A305FB size=1366*1=1366 -> 1 items  dest=0x8086A7F8  magic=FD910500
+[FSEEK] handle=1 offset=0x00A2E323 (10674979) whence=SET
+[FREAD] handle=1 off=0x00A2E323 size=2069*1=2069 -> 1 items  dest=0x8086B418  magic=F1910000
+[FSEEK] handle=1 offset=0x00A35781 (10704769) whence=SET
+[FREAD] handle=1 off=0x00A35781 size=548*1=548 -> 1 items  dest=0x8086C5B8  magic=1191FFFF
+[FSEEK] handle=1 offset=0x0099D4BF (10081471) whence=SET
+[FREAD] handle=1 off=0x0099D4BF size=24200*1=24200 -> 1 items  dest=0x8086CB70  magic=FE910100
+[FSEEK] handle=1 offset=0x008DB576 (9287030) whence=SET
+[FREAD] handle=1 off=0x008DB576 size=265*1=265 -> 1 items  dest=0x808789F0  magic=44910900
+[FSEEK] handle=1 offset=0x008DB67F (9287295) whence=SET
+[FREAD] handle=1 off=0x008DB67F size=265*1=265 -> 1 items  dest=0x80878E20  magic=44910100
+[FSEEK] handle=1 offset=0x008DBEA4 (9289380) whence=SET
+[FREAD] handle=1 off=0x008DBEA4 size=35*1=35 -> 1 items  dest=0x808791A8  magic=0791FFFF
+[FSEEK] handle=1 offset=0x00A374BD (10712253) whence=SET
+[FREAD] handle=1 off=0x00A374BD size=4542*1=4542 -> 1 items  dest=0x80879440  magic=35910000
+[FSEEK] handle=1 offset=0x00872895 (8857749) whence=SET
+[FREAD] handle=1 off=0x00872895 size=24*1=24 -> 1 items  dest=0x8087B930  magic=0491FFFF
+[FSEEK] handle=1 offset=0x008DBEDA (9289434) whence=SET
+[FREAD] handle=1 off=0x008DBEDA size=19*1=19 -> 1 items  dest=0x8087B930  magic=0291FFFF
+[FSEEK] handle=1 offset=0x00A2942F (10654767) whence=SET
+[FREAD] handle=1 off=0x00A2942F size=4577*1=4577 -> 1 items  dest=0x8087BE58  magic=03910000
+[FSEEK] handle=1 offset=0x00A2A610 (10659344) whence=SET
+[FREAD] handle=1 off=0x00A2A610 size=1539*1=1539 -> 1 items  dest=0x8087E388  magic=04910000
+[FSEEK] handle=1 offset=0x00A2AC13 (10660883) whence=SET
+[FREAD] handle=1 off=0x00A2AC13 size=1539*1=1539 -> 1 items  dest=0x8087F100  magic=04910000
+[FSEEK] handle=1 offset=0x00A1927F (10588799) whence=SET
+[FREAD] handle=1 off=0x00A1927F size=452*1=452 -> 1 items  dest=0x8087FE78  magic=44910000
+[FSEEK] handle=1 offset=0x00A19443 (10589251) whence=SET
+[FREAD] handle=1 off=0x00A19443 size=1736*1=1736 -> 1 items  dest=0x80880370  magic=FD910000
+[FSEEK] handle=1 offset=0x00A2074F (10618703) whence=SET
+[FREAD] handle=1 off=0x00A2074F size=15947*1=15947 -> 1 items  dest=0x80881340  magic=FF910100
+[FSEEK] handle=1 offset=0x00A2459A (10634650) whence=SET
+[FREAD] handle=1 off=0x00A2459A size=15943*1=15943 -> 1 items  dest=0x80889148  magic=FE910100
+[FSEEK] handle=1 offset=0x00893E4B (8994379) whence=SET
+[FREAD] handle=1 off=0x00893E4B size=77324*1=77324 -> 1 items  dest=0x80890F48  magic=FF91FFFF
+[FSEEK] handle=1 offset=0x008A6C57 (9071703) whence=SET
+[FREAD] handle=1 off=0x008A6C57 size=8605*1=8605 -> 1 items  dest=0x808B6CD0  magic=FE91FFFF
+[FSEEK] handle=1 offset=0x008AAD95 (9088405) whence=SET
+[FREAD] handle=1 off=0x008AAD95 size=7255*1=7255 -> 1 items  dest=0x808BB180  magic=FF91FFFF
+[FSEEK] handle=1 offset=0x008AE443 (9102403) whence=SET
+[FREAD] handle=1 off=0x008AE443 size=4860*1=4860 -> 1 items  dest=0x808BEB98  magic=FE91FFFF
+[FSEEK] handle=1 offset=0x008B083F (9111615) whence=SET
+[FREAD] handle=1 off=0x008B083F size=6200*1=6200 -> 1 items  dest=0x808C1300  magic=FF91FFFF
+[FSEEK] handle=1 offset=0x008B36AF (9123503) whence=SET
+[FREAD] handle=1 off=0x008B36AF size=9836*1=9836 -> 1 items  dest=0x808C44D8  magic=FF91FFFF
+[FSEEK] handle=1 offset=0x008B8187 (9142663) whence=SET
+[FREAD] handle=1 off=0x008B8187 size=9924*1=9924 -> 1 items  dest=0x808C9320  magic=FF91FFFF
+[FSEEK] handle=1 offset=0x008BCD0F (9161999) whence=SET
+[FREAD] handle=1 off=0x008BCD0F size=27034*1=27034 -> 1 items  dest=0x808CE218  magic=FF91FFFF
+[FSEEK] handle=1 offset=0x008C9E43 (9215555) whence=SET
+[FREAD] handle=1 off=0x008C9E43 size=2680*1=2680 -> 1 items  dest=0x808DB7B8  magic=FF91FFFF
+[FSEEK] handle=1 offset=0x008CB133 (9220403) whence=SET
+[FREAD] handle=1 off=0x008CB133 size=2876*1=2876 -> 1 items  dest=0x808DCE10  magic=FF91FFFF
+[FSEEK] handle=1 offset=0x008CBC6F (9223279) whence=SET
+[FREAD] handle=1 off=0x008CBC6F size=5776*1=5776 -> 1 items  dest=0x808DE5F8  magic=0191FFFF
+[FSEEK] handle=1 offset=0x008CD2FF (9229055) whence=SET
+[FREAD] handle=1 off=0x008CD2FF size=24717*1=24717 -> 1 items  dest=0x808E1488  magic=1B91FFFF
+[FSEEK] handle=1 offset=0x00A2F898 (10680472) whence=SET
+[FREAD] handle=1 off=0x00A2F898 size=3427*1=3427 -> 1 items  dest=0x808ED710  magic=FE910000
+[FSEEK] handle=1 offset=0x009A3347 (10105671) whence=SET
+[FREAD] handle=1 off=0x009A3347 size=820*1=820 -> 1 items  dest=0x808EF348  magic=5B910000
+[FSEEK] handle=1 offset=0x008DBF13 (9289491) whence=SET
+[FREAD] handle=1 off=0x008DBF13 size=596*1=596 -> 1 items  dest=0x808EFB20  magic=47910000
+[FSEEK] handle=1 offset=0x008728AD (8857773) whence=SET
+[FREAD] handle=1 off=0x008728AD size=1296*1=1296 -> 1 items  dest=0x808F0138  magic=72910000
+[FSEEK] handle=1 offset=0x00A37249 (10711625) whence=SET
+[FREAD] handle=1 off=0x00A37249 size=628*1=628 -> 1 items  dest=0x808F0CC8  magic=3D910000
+[FSEEK] handle=1 offset=0x00A20188 (10617224) whence=SET
+[FREAD] handle=1 off=0x00A20188 size=1479*1=1479 -> 1 items  dest=0x808F1320  magic=DB910000
+[FSEEK] handle=1 offset=0x008689A3 (8817059) whence=SET
+[FREAD] handle=1 off=0x008689A3 size=1341*1=1341 -> 1 items  dest=0x808F2138  magic=70910000
+[FSEEK] handle=1 offset=0x00A1D2AC (10605228) whence=SET
+[FREAD] handle=1 off=0x00A1D2AC size=1278*1=1278 -> 1 items  dest=0x808F2D20  magic=7E910600
+[FSEEK] handle=1 offset=0x0086E5D9 (8840665) whence=SET
+[FREAD] handle=1 off=0x0086E5D9 size=17026*1=17026 -> 1 items  dest=0x808F3890  magic=FB910000
+[FSEEK] handle=1 offset=0x0087285B (8857691) whence=SET
+[FREAD] handle=1 off=0x0087285B size=29*1=29 -> 1 items  dest=0x808FBF08  magic=0591FFFF
+[FSEEK] handle=1 offset=0x008DC167 (9290087) whence=SET
+[FREAD] handle=1 off=0x008DC167 size=13896*1=13896 -> 1 items  dest=0x808FC1C0  magic=FE910500
+[FSEEK] handle=1 offset=0x00A29007 (10653703) whence=SET
+[FREAD] handle=1 off=0x00A29007 size=1064*1=1064 -> 1 items  dest=0x80902FC0  magic=B0910000
+[FSEEK] handle=1 offset=0x00A2F3DA (10679258) whence=SET
+[FREAD] handle=1 off=0x00A2F3DA size=1214*1=1214 -> 1 items  dest=0x80903978  magic=C3910000
+[FSEEK] handle=1 offset=0x0086E071 (8839281) whence=SET
+[FREAD] handle=1 off=0x0086E071 size=1384*1=1384 -> 1 items  dest=0x80904460  magic=DD910900
+[FSEEK] handle=1 offset=0x00A1E22E (10609198) whence=SET
+[FREAD] handle=1 off=0x00A1E22E size=1630*1=1630 -> 1 items  dest=0x809050A0  magic=FD910000
+[FSEEK] handle=1 offset=0x00A1DBD0 (10607568) whence=SET
+[FREAD] handle=1 off=0x00A1DBD0 size=1630*1=1630 -> 1 items  dest=0x80905ED0  magic=FE910000
+[FSEEK] handle=1 offset=0x009A3D73 (10108275) whence=SET
+[FREAD] handle=1 off=0x009A3D73 size=480524*1=480524 -> 1 items  dest=0x80906E48  magic=FF91FFFF
+[FSEEK] handle=1 offset=0x00A359A5 (10705317) whence=SET
+[FREAD] handle=1 off=0x00A359A5 size=5624*1=5624 -> 1 items  dest=0x809F19D0  magic=FE910000
+[FSEEK] handle=1 offset=0x00A19B0B (10590987) whence=SET
+[FREAD] handle=1 off=0x00A19B0B size=2245*1=2245 -> 1 items  dest=0x809F4730  magic=FE910500
+[FSEEK] handle=1 offset=0x00A1A3D0 (10593232) whence=SET
+[FREAD] handle=1 off=0x00A1A3D0 size=2920*1=2920 -> 1 items  dest=0x809F5A30  magic=FE910500
+[FSEEK] handle=1 offset=0x00A1AF38 (10596152) whence=SET
+[FREAD] handle=1 off=0x00A1AF38 size=2920*1=2920 -> 1 items  dest=0x809F7270  magic=FD910000
+[FSEEK] handle=1 offset=0x00A1BAA0 (10599072) whence=SET
+[FREAD] handle=1 off=0x00A1BAA0 size=2920*1=2920 -> 1 items  dest=0x809F8AB0  magic=FE910000
+[FSEEK] handle=1 offset=0x003096B8 (3184312) whence=SET
+[FREAD] handle=1 off=0x003096B8 size=4*1=4 -> 1 items  dest=0x8069BC18  magic=0C000000
+[FSEEK] handle=1 offset=0x003096BC (3184316) whence=SET
+[FREAD] handle=1 off=0x003096BC size=2*1=2 -> 1 items  dest=0x8069BC10  magic=28000000
+[FSEEK] handle=1 offset=0x003096BE (3184318) whence=SET
+[FREAD] handle=1 off=0x003096BE size=360*1=360 -> 1 items  dest=0x809FA180  magic=00000000
+[FSEEK] handle=1 offset=0x004CE1B6 (5038518) whence=SET
+[FREAD] handle=1 off=0x004CE1B6 size=17364*1=17364 -> 1 items  dest=0x809FB1A0  magic=89000000
+[FSEEK] handle=1 offset=0x008A8DF4 (9080308) whence=SET
+[FREAD] handle=1 off=0x008A8DF4 size=8097*1=8097 -> 1 items  dest=0x80C1D300  magic=00120000
+[FSEEK] handle=1 offset=0x008AC9EC (9095660) whence=SET
+[FREAD] handle=1 off=0x008AC9EC size=6743*1=6743 -> 1 items  dest=0x80C21448  magic=00120000
+[FSEEK] handle=1 offset=0x008AF73F (9107263) whence=SET
+[FREAD] handle=1 off=0x008AF73F size=4352*1=4352 -> 1 items  dest=0x80C24AF0  magic=00120000
+[FSEEK] handle=1 offset=0x008B2077 (9117815) whence=SET
+[FREAD] handle=1 off=0x008B2077 size=5688*1=5688 -> 1 items  dest=0x80C26EE8  magic=00120000
+[FSEEK] handle=1 offset=0x008B5D1B (9133339) whence=SET
+[FREAD] handle=1 off=0x008B5D1B size=9324*1=9324 -> 1 items  dest=0x80C29E58  magic=00120000
+[FSEEK] handle=1 offset=0x008BA84B (9152587) whence=SET
+[FREAD] handle=1 off=0x008BA84B size=9412*1=9412 -> 1 items  dest=0x80C2E930  magic=00120000
+[FSEEK] handle=1 offset=0x008C36A9 (9189033) whence=SET
+[FREAD] handle=1 off=0x008C36A9 size=26522*1=26522 -> 1 items  dest=0x80C334B8  magic=00120000
+[FSEEK] handle=1 offset=0x008CA8BB (9218235) whence=SET
+[FREAD] handle=1 off=0x008CA8BB size=2168*1=2168 -> 1 items  dest=0x80C40710  magic=00120000
+[FSEEK] handle=1 offset=0x008D338C (9253772) whence=SET
+[FREAD] handle=1 off=0x008D338C size=24661*1=24661 -> 1 items  dest=0x80C41C98  magic=00120000
+[FSEEK] handle=1 offset=0x001F3371 (2044785) whence=SET
+[FREAD] handle=1 off=0x001F3371 size=187645*1=187645 -> 1 items  dest=0x80906E48  magic=88000080
+[FSEEK] handle=1 offset=0x0030C552 (3196242) whence=SET
+[FREAD] handle=1 off=0x0030C552 size=17*1=17 -> 1 items  dest=0x8069EC00  magic=0191FFFF
+[FSEEK] handle=1 offset=0x004D6D2B (5074219) whence=SET
+[FREAD] handle=1 off=0x004D6D2B size=8308*1=8308 -> 1 items  dest=0x806B3C08  magic=ED910000
+[INPUT] _kbd_get_status -> 0x0400
+[INPUT] event queue <- 0x0107 (down, code=7)
+[INPUT] event queue <- 0x0207 (up, code=7)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0207 (type=2 code=7)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0101 (type=1 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0040
+[INPUT] event queue <- 0x0201 (up, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0201 (type=2 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0040
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] event queue <- 0x0201 (up, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0201 (type=2 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0101 (type=1 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0040
+[INPUT] event queue <- 0x0201 (up, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0201 (type=2 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0101 (type=1 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0040
+[INPUT] event queue <- 0x0201 (up, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0201 (type=2 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0040
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] event queue <- 0x0201 (up, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0201 (type=2 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0101 (type=1 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0040
+[INPUT] event queue <- 0x0201 (up, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0201 (type=2 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0101 (type=1 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0040
+[INPUT] event queue <- 0x0201 (up, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0201 (type=2 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0040
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] event queue <- 0x0201 (up, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0201 (type=2 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0101 (type=1 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0040
+[INPUT] event queue <- 0x0201 (up, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0201 (type=2 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0101 (type=1 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0040
+[INPUT] event queue <- 0x0201 (up, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0201 (type=2 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0040
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] event queue <- 0x0201 (up, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0201 (type=2 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0101 (type=1 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0040
+[INPUT] event queue <- 0x0201 (up, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0201 (type=2 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0101 (type=1 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0040
+[INPUT] event queue <- 0x0201 (up, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0201 (type=2 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0040
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] event queue <- 0x0201 (up, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0201 (type=2 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0101 (type=1 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0040
+[INPUT] event queue <- 0x0201 (up, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0201 (type=2 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0101 (type=1 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0040
+[INPUT] event queue <- 0x0201 (up, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0201 (type=2 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0040
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] event queue <- 0x0201 (up, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0201 (type=2 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0101 (type=1 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0040
+[INPUT] event queue <- 0x0107 (down, code=7)
+[INPUT] event queue <- 0x0207 (up, code=7)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0207 (type=2 code=7)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] event queue <- 0x0107 (down, code=7)
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] event queue <- 0x0207 (up, code=7)
+[INPUT] event queue <- 0x0107 (down, code=7)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0107 (type=1 code=7)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0440
+[INPUT] event queue <- 0x0201 (up, code=1)
+[INPUT] event queue <- 0x0107 (down, code=7)
+[INPUT] event queue <- 0x0207 (up, code=7)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0207 (type=2 code=7)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] _kbd_get_status -> 0x0040
+[INPUT] event queue <- 0x0101 (down, code=1)
+[INPUT] event queue <- 0x0107 (down, code=7)
+[INPUT] event queue <- 0x0207 (up, code=7)
+[INPUT] event queue <- 0x0107 (down, code=7)
+[INPUT] event queue <- 0x0201 (up, code=1)
+[INPUT] _sys_judge_event(a0=0x00000000) -> 0x0201 (type=2 code=1)
+[INPUT]   => wrote event data to phys 0x00000005
+[INPUT] event queue <- 0x0207 (up, code=7)
+[INPUT] event queue <- 0x0101 (down, code=1)
+[DISPLAY] Quit requested
+
+=== Emulation Summary ===
+Total frames: 351
+Total instructions: 702000000
+Total syscalls dispatched: 132936
+Frames rendered: 55
+Total time: 16.312 seconds
+Instructions/second: 43035802
+Final PC: 0x80A3D0B0
+
+GOT call counts:
+  [ 5] malloc                         1323
+  [ 7] free                           693
+  [17] _lcd_set_frame                 55
+  [18] _lcd_get_frame                 56
+  [29] _kbd_get_status                56
+  [33] fsys_fread                     108
+  [35] fsys_fseek                     108
+  [36] fsys_ftell                     1
+  [49] waveout_open                   2
+  [50] waveout_close                  1
+  [55] waveout_write                  43405
+  [58] OSTimeGet                      114
+  [59] OSTimeDly                      55
+  [60] OSSemPend                      43446
+  [61] OSSemPost                      43442
+  [62] OSSemCreate                    4
+  [63] OSTaskCreate                   2
+  [64] OSSemDel                       2
+  [67] _sys_judge_event               57
+  [68] fsys_fopenW                    2
+  [70] __to_locale_ansi               2
+  [71] get_current_language           2
+
+=== Last 256 instructions (most recent last) ===
+  [000] 0x80A4CF2C: 0x8CE40020  insn_count=0
+  [001] 0x80A4CF30: 0x00083080  insn_count=0
+  [002] 0x80A4CF34: 0x00C42021  insn_count=0
+  [003] 0x80A4CF38: 0x8C820000  insn_count=0
+  [004] 0x80A4CF3C: 0x8CE30058  insn_count=0
+  [005] 0x80A4CF40: 0x00000000  insn_count=0
+  [006] 0x80A4CF44: 0x00431025  insn_count=0
+  [007] 0x80A4CF48: 0xAC820000  insn_count=0
+  [008] 0x80A4CF4C: 0x8CE20020  insn_count=0
+  [009] 0x80A4CF50: 0x00000000  insn_count=0
+  [010] 0x80A4CF54: 0x00C23021  insn_count=0
+  [011] 0x80A4CF58: 0x8CE20010  insn_count=0
+  [012] 0x80A4CF5C: 0x00000000  insn_count=0
+  [013] 0x80A4CF60: 0x8C420054  insn_count=0
+  [014] 0x80A4CF64: 0x00052840  insn_count=0
+  [015] 0x80A4CF68: 0x00A22821  insn_count=0
+  [016] 0x80A4CF6C: 0x94A20000  insn_count=0
+  [017] 0x80A4CF70: 0x00000000  insn_count=0
+  [018] 0x80A4CF74: 0xA4C20000  insn_count=0
+  [019] 0x80A4CF78: 0x8CE2004C  insn_count=0
+  [020] 0x80A4CF7C: 0x00000000  insn_count=0
+  [021] 0x80A4CF80: 0x01224821  insn_count=0
+  [022] 0x80A4CF84: 0x25080001  insn_count=0
+  [023] 0x80A4CF88: 0x010A102A  insn_count=0
+  [024] 0x80A4CF8C: 0x1440FFE3  insn_count=0
+  [025] 0x80A4CF1C: 0x8CE20028  insn_count=0
+  [026] 0x80A4CF20: 0x00000000  insn_count=0
+  [027] 0x80A4CF24: 0x00431021  insn_count=0
+  [028] 0x80A4CF28: 0x90450000  insn_count=0
+  [029] 0x80A4CF2C: 0x8CE40020  insn_count=0
+  [030] 0x80A4CF30: 0x00083080  insn_count=0
+  [031] 0x80A4CF34: 0x00C42021  insn_count=0
+  [032] 0x80A4CF38: 0x8C820000  insn_count=0
+  [033] 0x80A4CF3C: 0x8CE30058  insn_count=0
+  [034] 0x80A4CF40: 0x00000000  insn_count=0
+  [035] 0x80A4CF44: 0x00431025  insn_count=0
+  [036] 0x80A4CF48: 0xAC820000  insn_count=0
+  [037] 0x80A4CF4C: 0x8CE20020  insn_count=0
+  [038] 0x80A4CF50: 0x00000000  insn_count=0
+  [039] 0x80A4CF54: 0x00C23021  insn_count=0
+  [040] 0x80A4CF58: 0x8CE20010  insn_count=0
+  [041] 0x80A4CF5C: 0x00000000  insn_count=0
+  [042] 0x80A4CF60: 0x8C420054  insn_count=0
+  [043] 0x80A4CF64: 0x00052840  insn_count=0
+  [044] 0x80A4CF68: 0x00A22821  insn_count=0
+  [045] 0x80A4CF6C: 0x94A20000  insn_count=0
+  [046] 0x80A4CF70: 0x00000000  insn_count=0
+  [047] 0x80A4CF74: 0xA4C20000  insn_count=0
+  [048] 0x80A4CF78: 0x8CE2004C  insn_count=0
+  [049] 0x80A4CF7C: 0x00000000  insn_count=0
+  [050] 0x80A4CF80: 0x01224821  insn_count=0
+  [051] 0x80A4CF84: 0x25080001  insn_count=0
+  [052] 0x80A4CF88: 0x010A102A  insn_count=0
+  [053] 0x80A4CF8C: 0x1440FFE3  insn_count=0
+  [054] 0x80A4CF1C: 0x8CE20028  insn_count=0
+  [055] 0x80A4CF20: 0x00000000  insn_count=0
+  [056] 0x80A4CF24: 0x00431021  insn_count=0
+  [057] 0x80A4CF28: 0x90450000  insn_count=0
+  [058] 0x80A4CF2C: 0x8CE40020  insn_count=0
+  [059] 0x80A4CF30: 0x00083080  insn_count=0
+  [060] 0x80A4CF34: 0x00C42021  insn_count=0
+  [061] 0x80A4CF38: 0x8C820000  insn_count=0
+  [062] 0x80A4CF3C: 0x8CE30058  insn_count=0
+  [063] 0x80A4CF40: 0x00000000  insn_count=0
+  [064] 0x80A4CF44: 0x00431025  insn_count=0
+  [065] 0x80A4CF48: 0xAC820000  insn_count=0
+  [066] 0x80A4CF4C: 0x8CE20020  insn_count=0
+  [067] 0x80A4CF50: 0x00000000  insn_count=0
+  [068] 0x80A4CF54: 0x00C23021  insn_count=0
+  [069] 0x80A4CF58: 0x8CE20010  insn_count=0
+  [070] 0x80A4CF5C: 0x00000000  insn_count=0
+  [071] 0x80A4CF60: 0x8C420054  insn_count=0
+  [072] 0x80A4CF64: 0x00052840  insn_count=0
+  [073] 0x80A4CF68: 0x00A22821  insn_count=0
+  [074] 0x80A4CF6C: 0x94A20000  insn_count=0
+  [075] 0x80A4CF70: 0x00000000  insn_count=0
+  [076] 0x80A4CF74: 0xA4C20000  insn_count=0
+  [077] 0x80A4CF78: 0x8CE2004C  insn_count=0
+  [078] 0x80A4CF7C: 0x00000000  insn_count=0
+  [079] 0x80A4CF80: 0x01224821  insn_count=0
+  [080] 0x80A4CF84: 0x25080001  insn_count=0
+  [081] 0x80A4CF88: 0x010A102A  insn_count=0
+  [082] 0x80A4CF8C: 0x1440FFE3  insn_count=0
+  [083] 0x80A4CF1C: 0x8CE20028  insn_count=0
+  [084] 0x80A4CF20: 0x00000000  insn_count=0
+  [085] 0x80A4CF24: 0x00431021  insn_count=0
+  [086] 0x80A4CF28: 0x90450000  insn_count=0
+  [087] 0x80A4CF2C: 0x8CE40020  insn_count=0
+  [088] 0x80A4CF30: 0x00083080  insn_count=0
+  [089] 0x80A4CF34: 0x00C42021  insn_count=0
+  [090] 0x80A4CF38: 0x8C820000  insn_count=0
+  [091] 0x80A4CF3C: 0x8CE30058  insn_count=0
+  [092] 0x80A4CF40: 0x00000000  insn_count=0
+  [093] 0x80A4CF44: 0x00431025  insn_count=0
+  [094] 0x80A4CF48: 0xAC820000  insn_count=0
+  [095] 0x80A4CF4C: 0x8CE20020  insn_count=0
+  [096] 0x80A4CF50: 0x00000000  insn_count=0
+  [097] 0x80A4CF54: 0x00C23021  insn_count=0
+  [098] 0x80A4CF58: 0x8CE20010  insn_count=0
+  [099] 0x80A4CF5C: 0x00000000  insn_count=0
+  [100] 0x80A4CF60: 0x8C420054  insn_count=0
+  [101] 0x80A4CF64: 0x00052840  insn_count=0
+  [102] 0x80A4CF68: 0x00A22821  insn_count=0
+  [103] 0x80A4CF6C: 0x94A20000  insn_count=0
+  [104] 0x80A4CF70: 0x00000000  insn_count=0
+  [105] 0x80A4CF74: 0xA4C20000  insn_count=0
+  [106] 0x80A4CF78: 0x8CE2004C  insn_count=0
+  [107] 0x80A4CF7C: 0x00000000  insn_count=0
+  [108] 0x80A4CF80: 0x01224821  insn_count=0
+  [109] 0x80A4CF84: 0x25080001  insn_count=0
+  [110] 0x80A4CF88: 0x010A102A  insn_count=0
+  [111] 0x80A4CF8C: 0x1440FFE3  insn_count=0
+  [112] 0x80A4CF1C: 0x8CE20028  insn_count=0
+  [113] 0x80A4CF20: 0x00000000  insn_count=0
+  [114] 0x80A4CF24: 0x00431021  insn_count=0
+  [115] 0x80A4CF28: 0x90450000  insn_count=0
+  [116] 0x80A4CF2C: 0x8CE40020  insn_count=0
+  [117] 0x80A4CF30: 0x00083080  insn_count=0
+  [118] 0x80A4CF34: 0x00C42021  insn_count=0
+  [119] 0x80A4CF38: 0x8C820000  insn_count=0
+  [120] 0x80A4CF3C: 0x8CE30058  insn_count=0
+  [121] 0x80A4CF40: 0x00000000  insn_count=0
+  [122] 0x80A4CF44: 0x00431025  insn_count=0
+  [123] 0x80A4CF48: 0xAC820000  insn_count=0
+  [124] 0x80A4CF4C: 0x8CE20020  insn_count=0
+  [125] 0x80A4CF50: 0x00000000  insn_count=0
+  [126] 0x80A4CF54: 0x00C23021  insn_count=0
+  [127] 0x80A4CF58: 0x8CE20010  insn_count=0
+  [128] 0x80A4CF5C: 0x00000000  insn_count=0
+  [129] 0x80A4CF60: 0x8C420054  insn_count=0
+  [130] 0x80A4CF64: 0x00052840  insn_count=0
+  [131] 0x80A4CF68: 0x00A22821  insn_count=0
+  [132] 0x80A4CF6C: 0x94A20000  insn_count=0
+  [133] 0x80A4CF70: 0x00000000  insn_count=0
+  [134] 0x80A4CF74: 0xA4C20000  insn_count=0
+  [135] 0x80A4CF78: 0x8CE2004C  insn_count=0
+  [136] 0x80A4CF7C: 0x00000000  insn_count=0
+  [137] 0x80A4CF80: 0x01224821  insn_count=0
+  [138] 0x80A4CF84: 0x25080001  insn_count=0
+  [139] 0x80A4CF88: 0x010A102A  insn_count=0
+  [140] 0x80A4CF8C: 0x1440FFE3  insn_count=0
+  [141] 0x80A4CF1C: 0x8CE20028  insn_count=0
+  [142] 0x80A4CF20: 0x00000000  insn_count=0
+  [143] 0x80A4CF24: 0x00431021  insn_count=0
+  [144] 0x80A4CF28: 0x90450000  insn_count=0
+  [145] 0x80A4CF2C: 0x8CE40020  insn_count=0
+  [146] 0x80A4CF30: 0x00083080  insn_count=0
+  [147] 0x80A4CF34: 0x00C42021  insn_count=0
+  [148] 0x80A4CF38: 0x8C820000  insn_count=0
+  [149] 0x80A4CF3C: 0x8CE30058  insn_count=0
+  [150] 0x80A4CF40: 0x00000000  insn_count=0
+  [151] 0x80A4CF44: 0x00431025  insn_count=0
+  [152] 0x80A4CF48: 0xAC820000  insn_count=0
+  [153] 0x80A4CF4C: 0x8CE20020  insn_count=0
+  [154] 0x80A4CF50: 0x00000000  insn_count=0
+  [155] 0x80A4CF54: 0x00C23021  insn_count=0
+  [156] 0x80A4CF58: 0x8CE20010  insn_count=0
+  [157] 0x80A4CF5C: 0x00000000  insn_count=0
+  [158] 0x80A4CF60: 0x8C420054  insn_count=0
+  [159] 0x80A4CF64: 0x00052840  insn_count=0
+  [160] 0x80A4CF68: 0x00A22821  insn_count=0
+  [161] 0x80A4CF6C: 0x94A20000  insn_count=0
+  [162] 0x80A4CF70: 0x00000000  insn_count=0
+  [163] 0x80A4CF74: 0xA4C20000  insn_count=0
+  [164] 0x80A4CF78: 0x8CE2004C  insn_count=0
+  [165] 0x80A4CF7C: 0x00000000  insn_count=0
+  [166] 0x80A4CF80: 0x01224821  insn_count=0
+  [167] 0x80A4CF84: 0x25080001  insn_count=0
+  [168] 0x80A4CF88: 0x010A102A  insn_count=0
+  [169] 0x80A4CF8C: 0x1440FFE3  insn_count=0
+  [170] 0x80A4CF1C: 0x8CE20028  insn_count=0
+  [171] 0x80A4CF20: 0x00000000  insn_count=0
+  [172] 0x80A4CF24: 0x00431021  insn_count=0
+  [173] 0x80A4CF28: 0x90450000  insn_count=0
+  [174] 0x80A4CF2C: 0x8CE40020  insn_count=0
+  [175] 0x80A4CF30: 0x00083080  insn_count=0
+  [176] 0x80A4CF34: 0x00C42021  insn_count=0
+  [177] 0x80A4CF38: 0x8C820000  insn_count=0
+  [178] 0x80A4CF3C: 0x8CE30058  insn_count=0
+  [179] 0x80A4CF40: 0x00000000  insn_count=0
+  [180] 0x80A4CF44: 0x00431025  insn_count=0
+  [181] 0x80A4CF48: 0xAC820000  insn_count=0
+  [182] 0x80A4CF4C: 0x8CE20020  insn_count=0
+  [183] 0x80A4CF50: 0x00000000  insn_count=0
+  [184] 0x80A4CF54: 0x00C23021  insn_count=0
+  [185] 0x80A4CF58: 0x8CE20010  insn_count=0
+  [186] 0x80A4CF5C: 0x00000000  insn_count=0
+  [187] 0x80A4CF60: 0x8C420054  insn_count=0
+  [188] 0x80A4CF64: 0x00052840  insn_count=0
+  [189] 0x80A4CF68: 0x00A22821  insn_count=0
+  [190] 0x80A4CF6C: 0x94A20000  insn_count=0
+  [191] 0x80A4CF70: 0x00000000  insn_count=0
+  [192] 0x80A4CF74: 0xA4C20000  insn_count=0
+  [193] 0x80A4CF78: 0x8CE2004C  insn_count=0
+  [194] 0x80A4CF7C: 0x00000000  insn_count=0
+  [195] 0x80A4CF80: 0x01224821  insn_count=0
+  [196] 0x80A4CF84: 0x25080001  insn_count=0
+  [197] 0x80A4CF88: 0x010A102A  insn_count=0
+  [198] 0x80A4CF8C: 0x1440FFE3  insn_count=0
+  [199] 0x80A4CF1C: 0x8CE20028  insn_count=0
+  [200] 0x80A4CF20: 0x00000000  insn_count=0
+  [201] 0x80A4CF24: 0x00431021  insn_count=0
+  [202] 0x80A4CF28: 0x90450000  insn_count=0
+  [203] 0x80A4CF2C: 0x8CE40020  insn_count=0
+  [204] 0x80A4CF30: 0x00083080  insn_count=0
+  [205] 0x80A4CF34: 0x00C42021  insn_count=0
+  [206] 0x80A4CF38: 0x8C820000  insn_count=0
+  [207] 0x80A4CF3C: 0x8CE30058  insn_count=0
+  [208] 0x80A4CF40: 0x00000000  insn_count=0
+  [209] 0x80A4CF44: 0x00431025  insn_count=0
+  [210] 0x80A4CF48: 0xAC820000  insn_count=0
+  [211] 0x80A4CF4C: 0x8CE20020  insn_count=0
+  [212] 0x80A4CF50: 0x00000000  insn_count=0
+  [213] 0x80A4CF54: 0x00C23021  insn_count=0
+  [214] 0x80A4CF58: 0x8CE20010  insn_count=0
+  [215] 0x80A4CF5C: 0x00000000  insn_count=0
+  [216] 0x80A4CF60: 0x8C420054  insn_count=0
+  [217] 0x80A4CF64: 0x00052840  insn_count=0
+  [218] 0x80A4CF68: 0x00A22821  insn_count=0
+  [219] 0x80A4CF6C: 0x94A20000  insn_count=0
+  [220] 0x80A4CF70: 0x00000000  insn_count=0
+  [221] 0x80A4CF74: 0xA4C20000  insn_count=0
+  [222] 0x80A4CF78: 0x8CE2004C  insn_count=0
+  [223] 0x80A4CF7C: 0x00000000  insn_count=0
+  [224] 0x80A4CF80: 0x01224821  insn_count=0
+  [225] 0x80A4CF84: 0x25080001  insn_count=0
+  [226] 0x80A4CF88: 0x010A102A  insn_count=0
+  [227] 0x80A4CF8C: 0x1440FFE3  insn_count=0
+  [228] 0x80A4CF1C: 0x8CE20028  insn_count=0
+  [229] 0x80A4CF20: 0x00000000  insn_count=0
+  [230] 0x80A4CF24: 0x00431021  insn_count=0
+  [231] 0x80A4CF28: 0x90450000  insn_count=0
+  [232] 0x80A4CF2C: 0x8CE40020  insn_count=0
+  [233] 0x80A4CF30: 0x00083080  insn_count=0
+  [234] 0x80A4CF34: 0x00C42021  insn_count=0
+  [235] 0x80A4CF38: 0x8C820000  insn_count=0
+  [236] 0x80A4CF3C: 0x8CE30058  insn_count=0
+  [237] 0x80A4CF40: 0x00000000  insn_count=0
+  [238] 0x80A4CF44: 0x00431025  insn_count=0
+  [239] 0x80A4CF48: 0xAC820000  insn_count=0
+  [240] 0x80A4CF4C: 0x8CE20020  insn_count=0
+  [241] 0x80A4CF50: 0x00000000  insn_count=0
+  [242] 0x80A4CF54: 0x00C23021  insn_count=0
+  [243] 0x80A4CF58: 0x8CE20010  insn_count=0
+  [244] 0x80A4CF5C: 0x00000000  insn_count=0
+  [245] 0x80A4CF60: 0x8C420054  insn_count=0
+  [246] 0x80A4CF64: 0x00052840  insn_count=0
+  [247] 0x80A4CF68: 0x00A22821  insn_count=0
+  [248] 0x80A4CF6C: 0x94A20000  insn_count=0
+  [249] 0x80A4CF70: 0x00000000  insn_count=0
+  [250] 0x80A4CF74: 0xA4C20000  insn_count=0
+  [251] 0x80A4CF78: 0x8CE2004C  insn_count=0
+  [252] 0x80A4CF7C: 0x00000000  insn_count=0
+  [253] 0x80A4CF80: 0x01224821  insn_count=0
+  [254] 0x80A4CF84: 0x25080001  insn_count=0
+  [255] 0x80A4CF88: 0x010A102A  insn_count=0
+
+Registers:
+  $ 0: 00000000  $ 1: 00000000  $ 2: FFFFC43C  $ 3: 00000000
+  $ 4: 8007B1AC  $ 5: 000216A6  $ 6: 00000001  $ 7: 0005B9FA
+  $ 8: 000000FF  $ 9: 8007A2D4  $10: 8007B528  $11: 80C5ED88
+  $12: 00000000  $13: 00000000  $14: 00000000  $15: 00000000
+  $16: 8007A2D0  $17: 8007A2D0  $18: 00000000  $19: 00000000
+  $20: 00000000  $21: 00000000  $22: 00000000  $23: 00000000
+  $24: 00000000  $25: 00000000  $26: 00000000  $27: 00000000
+  $28: 00000000  $29: 80B2F978  $30: 80B2F9A0  $31: 80A3CFF8
+  HI: FFFFFFFF  LO: FFFFC43C
