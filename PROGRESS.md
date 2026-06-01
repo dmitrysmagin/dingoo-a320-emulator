@@ -130,6 +130,13 @@ while text overlay works, the root cause is likely in the decompression or write
 - 2-minute run: ~9,990 rendered frames, ~52,000 CPU frames at 2M insns/frame
 - Audio handled inline: `waveout_write` ~58K calls per 300-frame test run
 
+### API Coverage
+- All 14 `.app` files in the repo scanned against the 77-entry GOT table
+- **13 of 14 apps** have all imports mapped to known GOT entries (0 unknowns)
+- **Yi-Chi King Fighter** is the outlier — 38 imports not in the GOT table (µC/GUI, alternate LCD/input naming, kernel extras)
+- 27 GOT entries are stubs (return constants); none are called during 7days' 300-frame boot window
+- Full report: [`unimplemented.md`](unimplemented.md)
+
 ### Run Command
 ```
 cd emulator
@@ -177,3 +184,5 @@ SDL_VIDEODRIVER=offscreen timeout 60 ./emulator.exe ../7days.app
 | `emulator/src/mxu.cpp` | MXU/COP2 instruction implementations |
 | `emulator/src/archive.cpp` | SPK archive parser (3,216 entries) |
 | `7days.app` | Game binary + resource archive (RESOURCE_OFFSET = 0x150000) |
+| `emulator/src/app_parser.cpp` | CCDL file parser (4-header format: CCDL/IMPT/EXPT/RAWD) |
+| `emulator/unimplemented.md` | API coverage gaps (missing + stubbed GOT entries) |

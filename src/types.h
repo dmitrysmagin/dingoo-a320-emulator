@@ -24,13 +24,8 @@ static constexpr u32 PHYS_MASK         = 0x00FFFFFF;
 // Load addresses from binary analysis
 static constexpr u32 RAWD_LOAD_ADDR    = 0x80A00000;
 static constexpr u32 RAWD_LOAD_PHYS    = 0x00A00000;
-static constexpr u32 BSS_START_ADDR    = 0x80B41CE0;
-static constexpr u32 BSS_END_ADDR      = 0x80B44270;
-static constexpr u32 DL_MAIN_ADDR      = 0x80AD6A20;
-static constexpr u32 APP_MAIN_ADDR     = 0x80AD6B1C;
-static constexpr u32 GOT_BASE          = 0x80AD67E0;
 static constexpr u32 GOT_ENTRY_SIZE    = 8;
-static constexpr u32 GOT_COUNT         = 72;
+static constexpr u32 MAX_GOT_ENTRIES   = 96;
 
 // Stack
 static constexpr u32 STACK_TOP         = 0x80C10000;

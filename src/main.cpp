@@ -87,7 +87,7 @@ int main(int argc, char* argv[]) {
         }
     }
     printf("[INIT] GOT base: 0x%08X (%u entries)\n", got_base, (u32)app.imports.size());
-    mem.set_got_range(got_base);
+    mem.set_got_range(got_base, (u32)app.imports.size());
 
     // Patch: fix SLTI bug at 0x80ADE0DC - compares $zero instead of $s0,
     // causing the event loop to never exit. Change 0x2A0200B0 to 0x2A1000B0.
@@ -165,8 +165,6 @@ int main(int argc, char* argv[]) {
     }
     printf("[INIT] Resource archive loaded: %zu entries\n", archive.count());
 
-
-
     // Initialize syscalls
     Syscalls syscalls(mem, display);
     syscalls.set_archive(&archive);
@@ -201,6 +199,7 @@ int main(int argc, char* argv[]) {
     syscalls.set_idle_pc(cpu.pc);
 
     printf("\n=== Starting emulation ===\n\n");
+    fflush(stdout);
 
     srand((u32)time(NULL));
 
@@ -212,7 +211,6 @@ int main(int argc, char* argv[]) {
 
     if (max_frames)
         printf("[INIT] Frame limit: %u CPU frames\n", max_frames);
-
     while (cpu.running && (max_frames == 0 || frame < max_frames)) {
         // Process SDL events (quit, keyboard)
         if (display.pump_events()) {
@@ -253,6 +251,7 @@ int main(int argc, char* argv[]) {
                 int g = key_gots[gi];
                 printf("  GOT[%2d] %-20s %u\n", g, syscalls.got_name(g), syscalls.got_call_counts(g));
             }
+            fflush(stdout);
         }
 
         if (!cpu.running) {
@@ -260,6 +259,7 @@ int main(int argc, char* argv[]) {
                    cpu.pc, cpu.insn_count, frame);
         }
     }
+    fflush(stdout);
 
     clock_t total = clock() - start;
     printf("\n=== Emulation Summary ===\n");
@@ -274,7 +274,7 @@ int main(int argc, char* argv[]) {
     printf("Final PC: 0x%08X\n", cpu.pc);
 
     printf("\nGOT call counts:\n");
-    for (int i = 0; i < 72; i++) {
+    for (int i = 0; i < (int)app.imports.size(); i++) {
         if (syscalls.got_call_counts(i) > 0)
             printf("  [%2d] %-30s %u\n", i, syscalls.got_name(i), syscalls.got_call_counts(i));
     }
@@ -288,6 +288,7 @@ int main(int argc, char* argv[]) {
     }
     printf("  HI: %08X  LO: %08X\n", cpu.hi, cpu.lo);
 
+    fflush(stdout);
     syscalls.shutdown_audio();
     display.shutdown();
     return 0;

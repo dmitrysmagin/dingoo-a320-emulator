@@ -108,6 +108,12 @@ private:
     void impl___to_unicode_le();
     void impl___to_locale_ansi();
     void impl_get_current_language();
+    // 72-76: resource / dl (only brick.app has these)
+    void impl_get_dl_handle();
+    void impl_dl_res_open();
+    void impl_dl_res_get_size();
+    void impl_dl_res_get_data();
+    void impl_dl_res_close();
 
     std::string format_string(const std::string& fmt, int first_arg);
 
@@ -155,7 +161,7 @@ private:
     SDL_mutex* m_audio_mutex;
     std::queue<s16> m_audio_queue;
     u32 m_got_call_count;
-    u32 m_got_call_counts[72];
+    u32 m_got_call_counts[MAX_GOT_ENTRIES];
     std::vector<u32> m_semaphores;
 
     // Frame buffer pool for format conversion (ARGB8888→RGB565)
@@ -169,6 +175,16 @@ private:
     u32 allocate_fb(u32 size);
     void release_fb(u32 phys);
     void argb8888_to_rgb565(const u8* src, u8* dst, u32 pixel_count);
+
+    // dl_res handle tracking (for brick.app etc.)
+    static constexpr int MAX_DL_RES = 32;
+    struct DlResHandle {
+        bool in_use;
+        const ArchiveEntry* entry;
+    };
+    DlResHandle m_dl_res[MAX_DL_RES];
+    int alloc_dl_res_handle();
+    void free_dl_res_handle(int idx);
 
     // Dingoo key code table (input.md reference: A=0x01..RIGHT=0x0C)
     static u32 bitmask_to_keycode(u32 bitmask);

@@ -55,6 +55,9 @@ Syscalls::Syscalls(Memory& mem, Display& display)
         *(u32*)(raw + 0x00508FC0) = 2;
         *(u32*)(raw + 0x006A1DDC) = 0;
     }
+    for (int i = 0; i < MAX_DL_RES; i++) {
+        m_dl_res[i].in_use = false;
+    }
     m_archive = nullptr;
     m_audio_open = false;
     m_audio_mutex = SDL_CreateMutex();
@@ -175,14 +178,19 @@ const char* Syscalls::got_name(int index) const {
         "__to_unicode_le",       // 69: 0x80AD6A08
         "__to_locale_ansi",      // 70: 0x80AD6A10
         "get_current_language",  // 71: 0x80AD6A18
+        "get_dl_handle",         // 72
+        "dl_res_open",           // 73
+        "dl_res_get_size",       // 74
+        "dl_res_get_data",       // 75
+        "dl_res_close",          // 76
     };
-    if (index >= 0 && index < 72) return names[index];
+    if (index >= 0 && index < 77) return names[index];
     return "unknown";
 }
 
 void Syscalls::dispatch(int got_index, u32 /*return_addr*/) {
     m_got_call_count++;
-    if (got_index >= 0 && got_index < 72) m_got_call_counts[got_index]++;
+    if (got_index >= 0 && got_index < MAX_GOT_ENTRIES) m_got_call_counts[got_index]++;
     switch (got_index) {
     case  0: impl_abort(); break;
     case  1: impl_printf(); break;
@@ -256,6 +264,11 @@ void Syscalls::dispatch(int got_index, u32 /*return_addr*/) {
     case 69: impl___to_unicode_le(); break;
     case 70: impl___to_locale_ansi(); break;
     case 71: impl_get_current_language(); break;
+    case 72: impl_get_dl_handle(); break;
+    case 73: impl_dl_res_open(); break;
+    case 74: impl_dl_res_get_size(); break;
+    case 75: impl_dl_res_get_data(); break;
+    case 76: impl_dl_res_close(); break;
     default:
         printf("[SYSCALL] Unknown GOT index %d\n", got_index);
         break;
@@ -406,14 +419,14 @@ u32 Syscalls::do_fseek(u32 file_handle, s32 offset, u32 whence) {
         u32 file_size = m_files[idx].archive_entry->size;
         if (whence == 0) m_files[idx].offset = (u32)offset;
         else if (whence == 1) m_files[idx].offset += (u32)offset;
-        else if (whence == 2) m_files[idx].offset = file_size + (u32)offset;
+        else if (whence == 2) return file_size + (u32)offset;  // Dingoo SDK: SEEK_END returns size, does NOT change position
         if (m_files[idx].offset > file_size) m_files[idx].offset = file_size;
-        return 0;
+        return m_files[idx].offset;  // Dingoo SDK returns new position, not 0
     } else {
         if (whence == 0) m_files[idx].offset = (u32)offset;
         else if (whence == 1) m_files[idx].offset += (u32)offset;
-        else if (whence == 2) m_files[idx].offset = (u32)m_files[idx].embedded_data.size() + (u32)offset;
-        return 0;
+        else if (whence == 2) return (u32)m_files[idx].embedded_data.size() + (u32)offset;  // SEEK_END: does NOT change position
+        return m_files[idx].offset;  // Dingoo SDK returns new position
     }
 }
 
@@ -1535,9 +1548,23 @@ void Syscalls::impl_fsys_fopenW() {
         }
     }
 
-    // Look up in archive first
+    // Look up in archive first — try multiple path variants
     if (m_archive) {
         const ArchiveEntry* entry = m_archive->find(search_path);
+        // Try stripping .\  prefix (PC format: archive has bare names)
+        if (!entry && search_path.size() > 2 && search_path[0] == '.' &&
+            (search_path[1] == '\\' || search_path[1] == '/'))
+            entry = m_archive->find(search_path.substr(2));
+        // Try stripping res\ prefix
+        if (!entry && search_path.size() > 4 &&
+            (search_path.substr(0, 4) == "res\\" || search_path.substr(0, 4) == "res/"))
+            entry = m_archive->find(search_path.substr(4));
+        // Try bare filename (after last slash/backslash)
+        if (!entry) {
+            size_t slash = search_path.find_last_of("/\\");
+            if (slash != std::string::npos)
+                entry = m_archive->find(search_path.substr(slash + 1));
+        }
         if (entry) {
             int idx = alloc_file_handle();
             if (idx < 0) { g_cpu_regs[2] = 0; return; }
@@ -1598,6 +1625,117 @@ void Syscalls::impl___to_locale_ansi() {
 
 void Syscalls::impl_get_current_language() {
     g_cpu_regs[2] = 1; // Chinese (0=English)
+}
+
+// === dl_res resource API (brick.app only) ===
+
+int Syscalls::alloc_dl_res_handle() {
+    for (int i = 0; i < MAX_DL_RES; i++) {
+        if (!m_dl_res[i].in_use) {
+            m_dl_res[i].in_use = true;
+            return i;
+        }
+    }
+    return -1;
+}
+
+void Syscalls::free_dl_res_handle(int idx) {
+    if (idx >= 0 && idx < MAX_DL_RES) {
+        m_dl_res[idx].in_use = false;
+    }
+}
+
+void Syscalls::impl_get_dl_handle() {
+    // Return a dummy dl handle (0 = error/no-op in most games)
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_dl_res_open() {
+    // a0 = resource name (ANSI string)
+    u32 name_addr = arg(0);
+    if (name_addr == 0 || !m_archive) {
+        g_cpu_regs[2] = 0;
+        return;
+    }
+    std::string name = m_mem.read_string(name_addr);
+    if (name.empty()) { g_cpu_regs[2] = 0; return; }
+
+    // Try exact match, then bare filename
+    const ArchiveEntry* entry = m_archive->find(name);
+    if (!entry) {
+        // Try stripping .\ and res\ prefixes, then bare filename
+        if (name.size() > 2 && name[0] == '.' && (name[1] == '\\' || name[1] == '/'))
+            entry = m_archive->find(name.substr(2));
+        if (!entry && name.size() > 4 &&
+            (name.substr(0, 4) == "res\\" || name.substr(0, 4) == "res/"))
+            entry = m_archive->find(name.substr(4));
+        if (!entry) {
+            size_t slash = name.find_last_of("/\\");
+            if (slash != std::string::npos)
+                entry = m_archive->find(name.substr(slash + 1));
+        }
+    }
+    if (!entry) {
+        printf("[dl_res_open] '%s' -> NOT FOUND\n", name.c_str());
+        g_cpu_regs[2] = 0;
+        return;
+    }
+
+    int h = alloc_dl_res_handle();
+    if (h < 0) {
+        printf("[dl_res_open] '%s' -> out of handles\n", name.c_str());
+        g_cpu_regs[2] = 0;
+        return;
+    }
+    m_dl_res[h].entry = entry;
+    g_cpu_regs[2] = (u32)(h + 1);
+    printf("[dl_res_open] '%s' -> handle %d (size=%u)\n",
+           name.c_str(), h + 1, entry->size);
+}
+
+void Syscalls::impl_dl_res_get_size() {
+    // a0 = handle (1-based, as returned by dl_res_open)
+    u32 handle = arg(0);
+    if (handle == 0) { g_cpu_regs[2] = 0; return; }
+    int idx = (int)handle - 1;
+    if (idx < 0 || idx >= MAX_DL_RES || !m_dl_res[idx].in_use || !m_dl_res[idx].entry) {
+        g_cpu_regs[2] = 0;
+        return;
+    }
+    g_cpu_regs[2] = m_dl_res[idx].entry->size;
+}
+
+void Syscalls::impl_dl_res_get_data() {
+    // a0 = handle (1-based), a1 = buf, a2 = offset, a3 = size
+    u32 handle = arg(0);
+    u32 buf = arg(1);
+    u32 offset = arg(2);
+    u32 size = arg(3);
+    if (handle == 0 || buf == 0 || size == 0) {
+        g_cpu_regs[2] = (u32)-1;
+        return;
+    }
+    int idx = (int)handle - 1;
+    if (idx < 0 || idx >= MAX_DL_RES || !m_dl_res[idx].in_use || !m_dl_res[idx].entry) {
+        g_cpu_regs[2] = (u32)-1;
+        return;
+    }
+    const ArchiveEntry& entry = *m_dl_res[idx].entry;
+    if (offset >= entry.size) { g_cpu_regs[2] = 0; return; }
+    u32 actual = std::min(size, entry.size - offset);
+    m_mem.write_block(buf, m_archive->get_data(entry) + offset, actual);
+    g_cpu_regs[2] = actual;
+}
+
+void Syscalls::impl_dl_res_close() {
+    // a0 = handle (1-based)
+    u32 handle = arg(0);
+    if (handle == 0) { g_cpu_regs[2] = 0; return; }
+    int idx = (int)handle - 1;
+    if (idx >= 0 && idx < MAX_DL_RES) {
+        free_dl_res_handle(idx);
+    }
+    g_cpu_regs[2] = 0;
 }
 
 // === VSYNC simulation ===
@@ -1698,7 +1836,7 @@ bool Syscalls::simulate_vsync() {
     static u32 dump_count = 0;
     dump_count++;
     if (dump_count % 1000 == 0) {
-        for (int i = 0; i < 72; i++) {
+        for (int i = 0; i < MAX_GOT_ENTRIES; i++) {
             if (m_got_call_counts[i] > 0) {
                 printf("[GOT] %3d: %-25s %u\n", i, got_name(i), m_got_call_counts[i]);
             }

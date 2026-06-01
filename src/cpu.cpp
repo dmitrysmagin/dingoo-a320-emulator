@@ -66,7 +66,7 @@ void CPU::exec_special(u32 insn) {
     case 0x04: if (rd) regs[rd] = regs[rt] << (regs[rs] & 0x1F); break;
     case 0x06: if (rd) regs[rd] = regs[rt] >> (regs[rs] & 0x1F); break;
     case 0x07: if (rd) regs[rd] = (u32)((s32)regs[rt] >> (regs[rs] & 0x1F)); break;
-    case 0x08: pc = regs[rs]; if (rs == 31 && regs[31] == 0) pc = APP_MAIN_ADDR; break;
+    case 0x08: pc = regs[rs]; if (rs == 31 && regs[31] == 0) pc = 0x80AD6B1C; break;
     case 0x09: { u32 t = regs[rs]; regs[rd] = pc + 4; pc = t; break; }  // JALR (read rs first in case rs==rd)
     case 0x0A: if (rd && regs[rt] == 0) regs[rd] = regs[rs]; break;  // MOVZ
     case 0x0B: if (rd && regs[rt] != 0) regs[rd] = regs[rs]; break;  // MOVN
@@ -510,7 +510,7 @@ void CPU::execute_one() {
     // GOT trampoline check
     if (mem->is_got_address(pc)) {
         int idx = mem->got_index(pc);
-        if (idx >= 0 && (u32)idx < GOT_COUNT) {
+        if (idx >= 0 && (u32)idx < MAX_GOT_ENTRIES) {
             u32 return_addr = regs[31];
             syscalls->clear_task_switched();
             syscalls->dispatch(idx, return_addr);
