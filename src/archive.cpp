@@ -15,24 +15,28 @@ Archive::Archive() : m_loaded(false) {}
 
 Archive::~Archive() {}
 
-bool Archive::load(const std::string& app_path) {
+bool Archive::load(const std::string& app_path, u32 resource_size) {
     FILE* f = fopen(app_path.c_str(), "rb");
     if (!f) return false;
 
     fseek(f, 0, SEEK_END);
     u32 total_size = ftell(f);
-    if (RESOURCE_OFFSET + RESOURCE_SIZE > total_size) {
+    if (RESOURCE_OFFSET + resource_size > total_size) {
+        // Resource offset might differ — try computing from file size
+        resource_size = total_size > RESOURCE_OFFSET ? total_size - RESOURCE_OFFSET : 0;
+    }
+    if (resource_size == 0) {
         fclose(f);
         return false;
     }
 
     // Read the entire resource section
-    m_resource_data.resize(RESOURCE_SIZE);
+    m_resource_data.resize(resource_size);
     fseek(f, RESOURCE_OFFSET, SEEK_SET);
-    size_t read_bytes = fread(m_resource_data.data(), 1, RESOURCE_SIZE, f);
+    size_t read_bytes = fread(m_resource_data.data(), 1, resource_size, f);
     fclose(f);
 
-    if (read_bytes != RESOURCE_SIZE)
+    if (read_bytes != resource_size)
         return false;
 
     // Parse SPK directory
@@ -74,7 +78,7 @@ bool Archive::load(const std::string& app_path) {
             memcpy(&next_off, &m_resource_data[2 + (i + 1) * 68 + 64], 4);
             m_entries[i].size = next_off - data_off;
         } else {
-            m_entries[i].size = RESOURCE_SIZE - data_off;
+            m_entries[i].size = resource_size - data_off;
         }
 
         // Store in hash table by various path forms

@@ -6,8 +6,6 @@
 #include <string>
 #include <unordered_map>
 
-constexpr u32 RESOURCE_SIZE = 0x323E7EB;
-
 struct ArchiveEntry {
     std::string name;  // full path like ".\common\hv_guzi_w.stx"
     u32 offset;        // offset within the resource section
@@ -19,7 +17,7 @@ public:
     Archive();
     ~Archive();
 
-    bool load(const std::string& app_path);
+    bool load(const std::string& app_path, u32 resource_size);
 
     // Find file by path (matches both "path" and ".\path" forms)
     const ArchiveEntry* find(const std::string& path) const;

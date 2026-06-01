@@ -345,10 +345,11 @@ void Memory::write_block(u32 vaddr, const u8* src, u32 size) {
 }
 
 bool Memory::is_got_address(u32 vaddr) {
-    return vaddr >= GOT_BASE && vaddr < GOT_BASE + (GOT_COUNT * GOT_ENTRY_SIZE);
+    if (m_got_base == 0) return false;
+    return vaddr >= m_got_base && vaddr < m_got_base + (GOT_COUNT * GOT_ENTRY_SIZE);
 }
 
 int Memory::got_index(u32 vaddr) {
     if (!is_got_address(vaddr)) return -1;
-    return (int)((vaddr - GOT_BASE) / GOT_ENTRY_SIZE);
+    return (int)((vaddr - m_got_base) / GOT_ENTRY_SIZE);
 }

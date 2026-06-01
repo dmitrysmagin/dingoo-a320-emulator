@@ -43,6 +43,7 @@ public:
     void write_block(u32 vaddr, const u8* src, u32 size);
 
     // Check if address is in GOT trampoline region
+    void set_got_range(u32 base) { m_got_base = base; }
     bool is_got_address(u32 vaddr);
     int  got_index(u32 vaddr);
 
@@ -85,6 +86,7 @@ private:
         return m_code_start && phys >= m_code_start && phys < m_code_end;
     }
 
+    u32 m_got_base = GOT_BASE;
     std::vector<u8> m_mem;
     u32 m_hw_base;
     u32 m_code_start = 0;

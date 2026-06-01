@@ -58,26 +58,56 @@ int main(int argc, char* argv[]) {
     printf("[INIT] Zeroing BSS: 0x%08X-0x%08X (%u bytes)\n", rawd_end_vaddr, prog_end_vaddr, bss_size);
     mem.zero_region(bss_start_phys, bss_size);
 
+    // Extract game name from app_path (basename without extension)
+    std::string app_path_str = app_path;
+    std::string game_name;
+    {
+        size_t slash = app_path_str.find_last_of("/\\");
+        std::string basename = (slash != std::string::npos) ? app_path_str.substr(slash + 1) : app_path_str;
+        size_t dot = basename.find_last_of('.');
+        game_name = (dot != std::string::npos) ? basename.substr(0, dot) : basename;
+        printf("[INIT] Game name: '%s'\n", game_name.c_str());
+    }
+
+    // Look up AppMain from export table
+    u32 app_main_addr = 0x80AD6B1C; // fallback to known 7days value
+    for (const auto& exp : app.exports) {
+        if (exp.name == "AppMain" || exp.name == "app_main") {
+            app_main_addr = exp.address;
+            printf("[INIT] Found AppMain at 0x%08X from exports\n", app_main_addr);
+            break;
+        }
+    }
+
+    // Determine GOT base from imports (minimum trampoline address)
+    u32 got_base = 0x80AD67E0; // fallback to 7days default
+    for (const auto& imp : app.imports) {
+        if (imp.address >= 0x80000000 && (got_base == 0 || imp.address < got_base)) {
+            got_base = imp.address;
+        }
+    }
+    printf("[INIT] GOT base: 0x%08X (%u entries)\n", got_base, (u32)app.imports.size());
+    mem.set_got_range(got_base);
+
     // Patch: fix SLTI bug at 0x80ADE0DC - compares $zero instead of $s0,
     // causing the event loop to never exit. Change 0x2A0200B0 to 0x2A1000B0.
-    u32 patch_vaddr = 0x80ADE0DC;
-    u32 current = mem.read_u32(patch_vaddr);
-    if (current == 0x2A0200B0) {
-        mem.write_u32(patch_vaddr, 0x2A1000B0);
-        printf("[PATCH] Fixed SLTI at 0x%08X: 0x%08X -> 0x2A1000B0\n", patch_vaddr, current);
-    } else {
-        printf("[PATCH] SLTI at 0x%08X = 0x%08X (unexpected, not patching)\n", patch_vaddr, current);
+    {
+        u32 patch_vaddr = 0x80ADE0DC;
+        u32 current = mem.read_u32(patch_vaddr);
+        if (current == 0x2A0200B0) {
+            mem.write_u32(patch_vaddr, 0x2A1000B0);
+            printf("[PATCH] Fixed SLTI at 0x%08X: 0x%08X -> 0x2A1000B0\n", patch_vaddr, current);
+        } else {
+            printf("[PATCH] SLTI at 0x%08X = 0x%08X (not 7days, not patching)\n", patch_vaddr, current);
+        }
     }
 
     // Write game name as wide string at 0x80B44FE0 (for AppMain/game_main argument)
-    // "7days\0" in UTF-16LE: 0x0037, 0x0064, 0x0061, 0x0079, 0x0073, 0x0000
     u32 name_addr = 0x80B44FE0;
-    mem.write_u32(name_addr + 0,  0x00640037);  // 7 d
-    mem.write_u32(name_addr + 4,  0x00790061);  // a y
-    mem.write_u32(name_addr + 8,  0x00000073);  // s \0
-
-    // Game has a built-in callback at 0x80A0001C that already calls _lcd_set_frame (GOT 17).
-    // No additional patching needed. The callback is in the binary itself.
+    for (size_t i = 0; i < game_name.size() && i < 32; i++) {
+        mem.write_u16(name_addr + (u32)i * 2, (u16)(unsigned char)game_name[i]);
+    }
+    mem.write_u16(name_addr + (u32)game_name.size() * 2, 0); // null terminator
 
     // Note: code section protection was intentionally REMOVED.
     // The game's idle/task stacks are in the RAWD/BSS boundary area (see KUSEG bug history).
@@ -104,27 +134,21 @@ int main(int argc, char* argv[]) {
     mem.write_u32(0x80BFECD8, 0x8BFC4D89u);
     printf("[INIT] Pre-populated event queue 0x80BFECD8 = 0x8BFC4D89 (hardware-ready)\n");
 
-    // Write game name to BSS stub at 0x80BFF000 (in stack area, AFTER stack zero)
+    // Write BSS stub at 0x80BFF000 (in stack area, AFTER stack zero)
+    // The stub writes a marker, then jumps to AppMain with a0 = game name addr.
+    // Game name was already written at 0x80B44FE0 above, so stub just sets a0 & jumps.
     u32 stub_addr = 0x80BFF000;
-    // Write marker 0xCAFE at 0x80B43F00 to verify stub execution
+    u32 j_insn = 0x08000000 | ((app_main_addr >> 2) & 0x03FFFFFF);
+    // LUI t0, 0x80B4 ; LUI t1, 0xCAFE ; ORI t1, t1, 0xBABE ; SW t1, 0x3F00(t0) = *(0x80B43F00) = 0xCAFEBABE
     mem.write_u32(stub_addr + 0x00, 0x3C0880B4);  // LUI t0, 0x80B4
     mem.write_u32(stub_addr + 0x04, 0x3C09CAFE);  // LUI t1, 0xCAFE
     mem.write_u32(stub_addr + 0x08, 0x3529BABE);  // ORI t1, t1, 0xBABE
-    mem.write_u32(stub_addr + 0x0C, 0xAD093F00);  // SW  t1, 0x3F00(t0) = *(0x80B43F00) = 0xCAFEBABE
-    // Write game name "7days" to BSS
-    mem.write_u32(stub_addr + 0x10, 0x3C090064);  // LUI t1, 0x0064
-    mem.write_u32(stub_addr + 0x14, 0x35290037);  // ORI t1, t1, 0x0037  ; t1 = "7d"
-    mem.write_u32(stub_addr + 0x18, 0xAD093F30);  // SW  t1, 0x3F30(t0) = *(0x80B43F30) = "7d"
-    mem.write_u32(stub_addr + 0x1C, 0x3C090079);  // LUI t1, 0x0079
-    mem.write_u32(stub_addr + 0x20, 0x35290061);  // ORI t1, t1, 0x0061  ; t1 = "ay"
-    mem.write_u32(stub_addr + 0x24, 0xAD093F34);  // SW  t1, 0x3F34(t0) = *(0x80B43F34) = "ay"
-    mem.write_u32(stub_addr + 0x28, 0x24090073);  // ADDIU t1, r0, 0x73  ; t1 = "s\0"
-    mem.write_u32(stub_addr + 0x2C, 0xAD093F38);  // SW  t1, 0x3F38(t0) = *(0x80B43F38) = "s\0"
-    // Set a0 and jump to AppMain
-    mem.write_u32(stub_addr + 0x30, 0x3C0480B4);  // LUI a0, 0x80B4
-    mem.write_u32(stub_addr + 0x34, 0x082B5AC7);  // J   0x80AD6B1C (AppMain)
-    mem.write_u32(stub_addr + 0x38, 0x34844FE0);  // ORI a0, a0, 0x4FE0 (delay: a0=0x80B44FE0)
-    printf("[PATCH] BSS name stub at 0x%08X\n", stub_addr);
+    mem.write_u32(stub_addr + 0x0C, 0xAD093F00);  // SW  t1, 0x3F00(t0)
+    // Set a0 = 0x80B44FE0 and jump to AppMain
+    mem.write_u32(stub_addr + 0x10, 0x3C0480B4);  // LUI a0, 0x80B4
+    mem.write_u32(stub_addr + 0x14, j_insn);       // J   app_main_addr
+    mem.write_u32(stub_addr + 0x18, 0x34844FE0);  // ORI a0, a0, 0x4FE0 (delay slot)
+    printf("[PATCH] BSS stub at 0x%08X -> AppMain 0x%08X\n", stub_addr, app_main_addr);
 
     // Initialize display (SDL2)
     Display display;
@@ -135,7 +159,7 @@ int main(int argc, char* argv[]) {
 
     // Load resource archive
     Archive archive;
-    if (!archive.load(app_path)) {
+    if (!archive.load(app_path, (u32)app.resource_size)) {
         fprintf(stderr, "Failed to load resource archive from %s\n", app_path);
         return 1;
     }

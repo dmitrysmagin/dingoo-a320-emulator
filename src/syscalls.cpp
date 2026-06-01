@@ -1430,8 +1430,17 @@ void Syscalls::impl__sys_judge_event() {
     u32 event_val = m_mem.read_u32(EVENT_QUEUE_ADDR);
     if (event_val) {
         m_mem.write_u32(EVENT_QUEUE_ADDR, 0);
+        u8 type = event_val >> 8;
+        u8 code = event_val & 0xFF;
         printf("[INPUT] _sys_judge_event(a0=0x%08X) -> 0x%04X (type=%u code=%u)\n",
-               a0, event_val, event_val >> 8, event_val & 0xFF);
+               a0, event_val, type, code);
+        // Real Dingoo OS writes event data to the address read_event reads from.
+        // read_event: LW v0, 8(a0) -> LW v0, 4(v0), so *(s0+8)+4 = physical 5.
+        u32 s0 = g_cpu_regs[16];
+        if (s0 && (type == 1 || type == 2)) {
+            m_mem.write_u32(5, event_val);
+            printf("[INPUT]   => wrote event data to phys 0x00000005\n");
+        }
         g_cpu_regs[2] = event_val;
     } else {
         g_cpu_regs[2] = 0;
@@ -1469,9 +1478,25 @@ void Syscalls::impl_fsys_fopenW() {
         else mode += '?';
     }
 
-    // If path is "7days" (no extension), the game is opening its own binary to read
-    // embedded data (resource offsets, etc.).  Redirect to the actual .app file.
-    if (!m_app_path.empty() && (path == "7days" || path == "7days.app")) {
+    // If path matches the app binary name (with or without .app extension),
+    // the game is opening its own binary to read embedded data (resource offsets, etc.).
+    // Extract the basename from m_app_path for comparison.
+    bool is_self = false;
+    if (!m_app_path.empty()) {
+        std::string self_name = m_app_path;
+        size_t slash = self_name.find_last_of("/\\");
+        if (slash != std::string::npos) self_name = self_name.substr(slash + 1);
+        // Try exact match, match without .app, match lowercased
+        if (path == self_name) is_self = true;
+        size_t dot = self_name.find_last_of('.');
+        if (dot != std::string::npos && path == self_name.substr(0, dot)) is_self = true;
+        std::string path_lower = path;
+        std::transform(path_lower.begin(), path_lower.end(), path_lower.begin(), ::tolower);
+        std::string self_lower = self_name;
+        std::transform(self_lower.begin(), self_lower.end(), self_lower.begin(), ::tolower);
+        if (path_lower == self_lower) is_self = true;
+    }
+    if (is_self) {
         int idx = alloc_file_handle();
         if (idx < 0) { g_cpu_regs[2] = 0; return; }
         FILE* f = fopen(m_app_path.c_str(), "rb");
