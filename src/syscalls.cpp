@@ -830,27 +830,52 @@ u32 Syscalls::bitmask_to_keycode(u32 bitmask) {
     return Display::bitmask_to_keycode(bitmask);
 }
 
+// key_input_handler in 7days.app checks state_ptr+8 using raw hardware bit positions,
+// NOT the DKEY_ bitmask format. Confirmed from disassembly of 0x80A000FC:
+//   bit 16 (LUI 0x0001) -> keycode 17 (UP nav)
+//   bit 21 (LUI 0x0020) -> keycode 18 (DOWN nav)
+//   bit 31 (BGEZ sign)  -> keycode 8  (SELECT)
+//   bit 6  (ANDI 0x0040)-> keycode 2  (A button, DKEY_A=0x0040 happens to match)
+//   bit 11 (ANDI 0x0800)-> keycode 2  (R button, DKEY_R=0x0800 happens to match)
+//   bit 28 -> keycode 13, bit 18 -> keycode 14, bit 20 -> keycode 15, bit 27 -> keycode 16
+static u32 dkey_to_hw(u32 dkey) {
+    u32 hw = 0;
+    if (dkey & DKEY_A)      hw |= 0x00000040u;  // bit 6  (same as DKEY_A value)
+    if (dkey & DKEY_R)      hw |= 0x00000800u;  // bit 11 (same as DKEY_R value)
+    if (dkey & DKEY_UP)     hw |= 0x00010000u;  // bit 16
+    if (dkey & DKEY_DOWN)   hw |= 0x00200000u;  // bit 21
+    if (dkey & DKEY_SELECT) hw |= 0x80000000u;  // bit 31
+    if (dkey & DKEY_B)      hw |= 0x10000000u;  // bit 28 (keycode 13)
+    if (dkey & DKEY_LEFT)   hw |= 0x00040000u;  // bit 18 (keycode 14)
+    if (dkey & DKEY_RIGHT)  hw |= 0x00100000u;  // bit 20 (keycode 15)
+    if (dkey & DKEY_START)  hw |= 0x08000000u;  // bit 27 (keycode 16)
+    return hw;
+}
+
 void Syscalls::impl__kbd_get_status() {
     u32 state_ptr = arg(0);
     u32 keys = m_display.get_dingoo_keys();
     u32 released = ~keys & m_prev_kbd_keys;
     u32 pressed  = keys & ~m_prev_kbd_keys;
 
+    u32 curr_hw     = dkey_to_hw(keys);
+    u32 released_hw = dkey_to_hw(m_prev_kbd_keys) & ~curr_hw;
+
     if (state_ptr) {
         m_mem.write_u32(state_ptr + 0,  keys);
         m_mem.write_u32(state_ptr + 4,  pressed);
-        m_mem.write_u32(state_ptr + 8,  keys);
+        m_mem.write_u32(state_ptr + 8,  curr_hw);     // hardware bit format for key_input_handler
         m_mem.write_u32(state_ptr + 12, 0);
         m_mem.write_u32(state_ptr + 16, pressed);
-        m_mem.write_u32(state_ptr + 20, released);
+        m_mem.write_u32(state_ptr + 20, released_hw); // hardware bit format for key_input_handler
     }
     m_prev_kbd_keys = keys;
 
     g_cpu_regs[2] = keys;
 
     if (keys)
-        printf("[INPUT] _kbd_get_status(a0=0x%08X) -> 0x%04X released=0x%04X\n",
-               state_ptr, keys, released);
+        printf("[INPUT] _kbd_get_status(a0=0x%08X) dkey=0x%04X hw=0x%08X rel_hw=0x%08X\n",
+               state_ptr, keys, curr_hw, released_hw);
 
     m_mem.write_u32(KERNEL_KEY_STATE_ADDR, keys);
 }
