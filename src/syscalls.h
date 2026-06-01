@@ -203,8 +203,10 @@ private:
     // kernel_GP = 0x80B40000.
     static constexpr u32 KERNEL_KEY_STATE_ADDR = 0x80B39D08;
 
+    u32 m_prev_kbd_keys = 0;
+
     // µC/OS-II cooperative task scheduler
-    static constexpr int MAX_TASKS = 8;
+    static constexpr int MAX_TASKS = 64;
     struct Task {
         bool active;
         bool blocked;

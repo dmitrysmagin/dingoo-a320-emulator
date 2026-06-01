@@ -831,16 +831,27 @@ u32 Syscalls::bitmask_to_keycode(u32 bitmask) {
 }
 
 void Syscalls::impl__kbd_get_status() {
+    u32 state_ptr = arg(0);
     u32 keys = m_display.get_dingoo_keys();
+    u32 released = ~keys & m_prev_kbd_keys;
+    u32 pressed  = keys & ~m_prev_kbd_keys;
+
+    if (state_ptr) {
+        m_mem.write_u32(state_ptr + 0,  keys);
+        m_mem.write_u32(state_ptr + 4,  pressed);
+        m_mem.write_u32(state_ptr + 8,  keys);
+        m_mem.write_u32(state_ptr + 12, 0);
+        m_mem.write_u32(state_ptr + 16, pressed);
+        m_mem.write_u32(state_ptr + 20, released);
+    }
+    m_prev_kbd_keys = keys;
+
     g_cpu_regs[2] = keys;
 
     if (keys)
-        printf("[INPUT] _kbd_get_status -> 0x%04X\n", keys);
+        printf("[INPUT] _kbd_get_status(a0=0x%08X) -> 0x%04X released=0x%04X\n",
+               state_ptr, keys, released);
 
-    // Write key state to the kernel keyboard mailbox so games that poll
-    // this address directly (e.g. 7days event dispatcher at 0x80A000FC)
-    // receive key events. The return value in v0 is used by games that
-    // read the API result normally.
     m_mem.write_u32(KERNEL_KEY_STATE_ADDR, keys);
 }
 
@@ -1227,18 +1238,25 @@ void Syscalls::impl_OSTaskCreate() {
         t.regs[31] = entry;
         t.pc = entry;  // dedicated resume PC
 
+        int new_idx = m_task_count;
         m_task_count++;
         printf("[OSTaskCreate] Created task %d: entry=0x%08X prio=%u\n",
-               m_task_count - 1, entry, (u8)prio);
+               new_idx, entry, (u8)prio);
         g_cpu_regs[2] = 0;
+
+        if (m_scheduler_started) {
+            u8 cur_prio = (m_current_task >= 0) ? m_tasks[m_current_task].task_prio : 255;
+            if ((u8)prio < cur_prio) {
+                save_current_task();
+                switch_to_task(new_idx);
+                printf("[OSTaskCreate] Preempted to task %d (prio %u < %u)\n",
+                       new_idx, (u8)prio, cur_prio);
+            }
+        }
     } else {
         printf("[OSTaskCreate] FAILED: max tasks (%d) reached\n", MAX_TASKS);
         g_cpu_regs[2] = 0xFF;
     }
-
-    // Don't auto-start the scheduler here.
-    // The init code (GameEngineInit) needs to finish setting up before tasks run.
-    // On real Dingoo µC/OS-II, this would return to the caller which then calls OSStart.
 }
 
 
