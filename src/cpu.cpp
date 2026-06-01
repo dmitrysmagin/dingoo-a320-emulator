@@ -92,7 +92,11 @@ void CPU::exec_special(u32 insn) {
     case 0x2A: if (rd) regs[rd] = (s32)regs[rs] < (s32)regs[rt] ? 1 : 0; break;
     case 0x2B: if (rd) regs[rd] = regs[rs] < regs[rt] ? 1 : 0; break;
     default:
-        // Non-standard func codes (possibly MXU extensions) - treated as NOP
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            printf("[CPU] SPECIAL non-standard func=0x%02X at PC=0x%08X insn=0x%08X (treated as NOP, possibly MXU)\n", func, pc - 4, insn);
+        }
         break;
     }
 }
@@ -196,8 +200,16 @@ void CPU::execute(u32 insn) {
         case 0x11: regs[31] = pc + 4; if ((s32)regs[rs] >= 0) pc = pc + (offset << 2); break;  // BGEZAL
         case 0x12: regs[31] = pc + 4; if ((s32)regs[rs] < 0) pc = pc + (offset << 2); else nullify_delay = true; break;  // BLTZALL
         case 0x13: regs[31] = pc + 4; if ((s32)regs[rs] >= 0) pc = pc + (offset << 2); else nullify_delay = true; break;  // BGEZALL
+        default: {
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                printf("[CPU] REGIMM non-standard rt=0x%02X at PC=0x%08X insn=0x%08X\n", rt_field, pc - 4, insn);
+            }
+            break;
         }
-        break;
+    }
+    break;
     }
     case 0x02: {
         u32 target = (insn & 0x03FFFFFF) << 2;
@@ -349,7 +361,11 @@ void CPU::execute(u32 insn) {
         break;
     }
 
-    case 0x2F: break;  // CACHE (nop)
+    case 0x2F: {  // CACHE (nop)
+        static bool warned = false;
+        if (!warned) { warned = true; printf("[CPU] CACHE instruction at PC=0x%08X (ignored)\n", pc - 4); }
+        break;
+    }
     case 0x30: {  // LL
         u32 addr = regs[rs] + imm;
         if (rt) regs[rt] = mem->read_u32(addr);
@@ -358,7 +374,9 @@ void CPU::execute(u32 insn) {
         break;
     }
     case 0x31: {  // LWC1
-        mem->read_u32(regs[rs] + imm);  // discard result
+        mem->read_u32(regs[rs] + imm);
+        static bool warned = false;
+        if (!warned) { warned = true; printf("[CPU] LWC1 instruction at PC=0x%08X (load discarded)\n", pc - 4); }
         break;
     }
     case 0x32: {  // LWC2
@@ -367,7 +385,9 @@ void CPU::execute(u32 insn) {
         break;
     }
     case 0x33: {  // LWC3
-        mem->read_u32(regs[rs] + imm);  // discard result
+        mem->read_u32(regs[rs] + imm);
+        static bool warned = false;
+        if (!warned) { warned = true; printf("[CPU] LWC3 instruction at PC=0x%08X (load discarded)\n", pc - 4); }
         break;
     }
     case 0x34: {  // SC
@@ -381,13 +401,21 @@ void CPU::execute(u32 insn) {
         llbit = 0;
         break;
     }
-    case 0x35: break;  // SWC1 (nop - no store)
+    case 0x35: {  // SWC1 (nop - no store)
+        static bool warned = false;
+        if (!warned) { warned = true; printf("[CPU] SWC1 instruction at PC=0x%08X (store ignored)\n", pc - 4); }
+        break;
+    }
     case 0x36: {  // SWC2
         u32 addr = regs[rs] + imm;
         mem->write_u32(addr, mxu.mfc2(rt));
         break;
     }
-    case 0x37: break;  // SWC3 (nop - no store)
+    case 0x37: {  // SWC3 (nop - no store)
+        static bool warned = false;
+        if (!warned) { warned = true; printf("[CPU] SWC3 instruction at PC=0x%08X (store ignored)\n", pc - 4); }
+        break;
+    }
 
     default:
         printf("[CPU] Unknown opcode=0x%02X at PC=0x%08X insn=0x%08X\n", opcode, pc - 4, insn);

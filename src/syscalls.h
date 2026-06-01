@@ -17,6 +17,7 @@ public:
 
     void dispatch(int got_index, u32 return_addr);
     const char* got_name(int index) const;
+    bool got_is_stub(int index) const;
     void set_archive(Archive* archive) { m_archive = archive; }
     void set_app_path(const char* path) { m_app_path = path ? path : ""; }
 

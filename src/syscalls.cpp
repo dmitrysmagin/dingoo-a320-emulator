@@ -188,6 +188,18 @@ const char* Syscalls::got_name(int index) const {
     return "unknown";
 }
 
+bool Syscalls::got_is_stub(int index) const {
+    switch (index) {
+    case 12: case 14: case 15: case 22: case 23: case 24:
+    case 25: case 26: case 27: case 37: case 38: case 42:
+    case 43: case 44: case 45: case 46: case 47: case 48:
+    case 52: case 53: case 57: case 69: case 70: case 72:
+        return true;
+    default:
+        return false;
+    }
+}
+
 void Syscalls::dispatch(int got_index, u32 /*return_addr*/) {
     m_got_call_count++;
     if (got_index >= 0 && got_index < MAX_GOT_ENTRIES) m_got_call_counts[got_index]++;
@@ -618,6 +630,7 @@ void Syscalls::impl_LcdGetDisMode() {
 }
 
 void Syscalls::impl_vxGoHome() {
+    printf("[STUB] vxGoHome\n");
     g_cpu_regs[2] = 0;
 }
 
@@ -627,10 +640,12 @@ void Syscalls::impl_StartSwTimer() {
 }
 
 void Syscalls::impl_free_irq() {
+    printf("[STUB] free_irq\n");
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_fsys_RefreshCache() {
+    printf("[STUB] fsys_RefreshCache\n");
     g_cpu_regs[2] = 0;
 }
 
@@ -774,28 +789,34 @@ void Syscalls::impl_lcd_flip() {
 }
 
 void Syscalls::impl___icache_invalidate_all() {
+    printf("[STUB] __icache_invalidate_all\n");
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl___dcache_writeback_all() {
+    printf("[STUB] __dcache_writeback_all\n");
     g_cpu_regs[2] = 0;
 }
 
 // === GOT 24-31: media / OS / serial / input ===
 
 void Syscalls::impl_TaskMediaFunStop() {
+    printf("[STUB] TaskMediaFunStop\n");
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_OSCPUSaveSR() {
+    printf("[STUB] OSCPUSaveSR\n");
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_OSCPURestoreSR() {
+    printf("[STUB] OSCPURestoreSR\n");
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_serial_getc() {
+    printf("[STUB] serial_getc\n");
     g_cpu_regs[2] = 0;
 }
 
@@ -978,24 +999,29 @@ void Syscalls::impl_fsys_findnext() {
 }
 
 void Syscalls::impl_fsys_findclose() {
+    printf("[STUB] fsys_findclose\n");
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_fsys_flush_cache() {
+    printf("[STUB] fsys_flush_cache\n");
     g_cpu_regs[2] = 0;
 }
 
 // === GOT 46-48: USB ===
 
 void Syscalls::impl_USB_Connect() {
+    printf("[STUB] USB_Connect\n");
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_udc_attached() {
+    printf("[STUB] udc_attached\n");
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_USB_No_Connect() {
+    printf("[STUB] USB_No_Connect\n");
     g_cpu_regs[2] = 0;
 }
 
@@ -1058,10 +1084,12 @@ void Syscalls::impl_waveout_close_at_once() {
 }
 
 void Syscalls::impl_waveout_set_volume() {
+    printf("[STUB] waveout_set_volume\n");
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_HP_Mute_sw() {
+    printf("[STUB] HP_Mute_sw\n");
     g_cpu_regs[2] = 0;
 }
 
@@ -1101,6 +1129,7 @@ void Syscalls::impl_pcm_can_write() {
 }
 
 void Syscalls::impl_pcm_ioctl() {
+    printf("[STUB] pcm_ioctl\n");
     g_cpu_regs[2] = 0;
 }
 
@@ -1616,14 +1645,17 @@ void Syscalls::impl_fsys_fopenW() {
 }
 
 void Syscalls::impl___to_unicode_le() {
+    printf("[STUB] __to_unicode_le\n");
     g_cpu_regs[2] = (u32)-1;
 }
 
 void Syscalls::impl___to_locale_ansi() {
+    printf("[STUB] __to_locale_ansi\n");
     g_cpu_regs[2] = (u32)-1;
 }
 
 void Syscalls::impl_get_current_language() {
+    printf("[STUB] get_current_language -> 1 (Chinese)\n");
     g_cpu_regs[2] = 1; // Chinese (0=English)
 }
 
@@ -1646,7 +1678,7 @@ void Syscalls::free_dl_res_handle(int idx) {
 }
 
 void Syscalls::impl_get_dl_handle() {
-    // Return a dummy dl handle (0 = error/no-op in most games)
+    printf("[STUB] get_dl_handle\n");
     g_cpu_regs[2] = 0;
 }
 

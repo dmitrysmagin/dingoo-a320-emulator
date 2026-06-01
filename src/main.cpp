@@ -191,6 +191,11 @@ int main(int argc, char* argv[]) {
     printf("[INIT] Stack: 0x%08X\n", cpu.regs[29]);
     printf("[INIT] RAM size: %u MB\n", mem.size() / (1024 * 1024));
     printf("[INIT] Display: %dx%d (scale %d)\n", Display::WIDTH, Display::HEIGHT, Display::SCALE);
+    printf("[INIT] Imported APIs:\n");
+    for (u32 i = 0; i < (u32)app.imports.size() && i < MAX_GOT_ENTRIES; i++) {
+        const char* impl = syscalls.got_is_stub((int)i) ? "stub" : "implemented";
+        printf("  [%2u] %-30s %s\n", i, syscalls.got_name((int)i), impl);
+    }
 
     // Save initial CPU state as idle context for OSTaskDel fallback
     extern u32 g_cpu_regs[32];
@@ -275,8 +280,10 @@ int main(int argc, char* argv[]) {
 
     printf("\nGOT call counts:\n");
     for (int i = 0; i < (int)app.imports.size(); i++) {
-        if (syscalls.got_call_counts(i) > 0)
-            printf("  [%2d] %-30s %u\n", i, syscalls.got_name(i), syscalls.got_call_counts(i));
+        if (syscalls.got_call_counts(i) > 0) {
+            const char* impl = syscalls.got_is_stub(i) ? "(stub)" : "";
+            printf("  [%2d] %-30s %u %s\n", i, syscalls.got_name(i), syscalls.got_call_counts(i), impl);
+        }
     }
 
     cpu.print_trace();
