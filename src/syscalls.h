@@ -178,6 +178,14 @@ private:
     static constexpr u32 EVENT_TYPE_DOWN  = 0x01;
     static constexpr u32 EVENT_TYPE_UP    = 0x02;
 
+    // Dingoo µC/OS-II kernel keyboard state mailbox.
+    // Real firmware: keyboard ISR writes current key mask here every tick.
+    // `_kbd_get_status` updates this before returning, and games that poll
+    // directly (e.g. 7days event dispatcher at 0x80A000FC) read from this
+    // fixed kernel ABI address. Computed as kernel_GP - 0x62F8 where
+    // kernel_GP = 0x80B40000.
+    static constexpr u32 KERNEL_KEY_STATE_ADDR = 0x80B39D08;
+
     // µC/OS-II cooperative task scheduler
     static constexpr int MAX_TASKS = 8;
     struct Task {

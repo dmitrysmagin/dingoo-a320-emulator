@@ -818,15 +818,11 @@ void Syscalls::impl__kbd_get_status() {
     if (keys)
         printf("[INPUT] _kbd_get_status -> 0x%04X\n", keys);
 
-    // The real Dingoo OS _kbd_get_status also writes the key state into a
-    // memory-mapped OS buffer. The game's event dispatcher
-    // (at 0x80A000FC) reads that address immediately after calling this
-    // function and dispatches per-key events. Specifically:
-    // The game reads the key state from 0x80B39D08 (computed as
-    // LUI 0x80B4 + signed offset 0x9D08 = 0x80B40000 - 0x62F8 = 0x80B39D08).
-    // The event dispatcher at 0x80A000FC polls this address and dispatches
-    // per-key events. Without this write, the game never receives any key events.
-    m_mem.write_u32(0x80B39D08, keys);
+    // Write key state to the kernel keyboard mailbox so games that poll
+    // this address directly (e.g. 7days event dispatcher at 0x80A000FC)
+    // receive key events. The return value in v0 is used by games that
+    // read the API result normally.
+    m_mem.write_u32(KERNEL_KEY_STATE_ADDR, keys);
 }
 
 void Syscalls::impl_get_game_vol() {
