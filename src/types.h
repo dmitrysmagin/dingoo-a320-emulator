@@ -36,8 +36,6 @@ static constexpr u32 GOT_COUNT         = 72;
 static constexpr u32 STACK_TOP         = 0x80C10000;
 static constexpr u32 STACK_SIZE        = 64 * 1024;
 
-// Resource section offset in 7days.app
-static constexpr u64 RESOURCE_OFFSET   = 0x150000;
 
 // Exception codes
 static constexpr u32 EXC_INT    = 0;

@@ -159,7 +159,7 @@ int main(int argc, char* argv[]) {
 
     // Load resource archive
     Archive archive;
-    if (!archive.load(app_path, (u32)app.resource_size)) {
+    if (!archive.load(app_path, app.resource_offset, app.resource_size)) {
         fprintf(stderr, "Failed to load resource archive from %s\n", app_path);
         return 1;
     }

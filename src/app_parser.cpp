@@ -184,13 +184,40 @@ bool parse_app(const std::string& path, AppBinary& out) {
 
     printf("[APP] RAWD loaded: %u bytes\n", rawd.size);
 
-    // Resource section
-    out.resource_offset = RESOURCE_OFFSET;
-    out.resource_size = (u64)file_size - RESOURCE_OFFSET;
-    if (out.resource_size > 0) {
-        printf("[APP] Resource section: offset=0x%llX size=0x%llX\n",
-               out.resource_offset, out.resource_size);
+    // Resource section — dynamically locate the SPK archive
+    u64 raopp  = (u64)rawd.offset + rawd.prog_size;
+    u64 rawd_end = (u64)rawd.offset + rawd.size;
+
+    u64 spk_candidates[] = {
+        ((raopp + 0x7FFFF) & ~0x7FFFFu),   // align(raopp, 0x80000)
+        ((raopp + 0xFFFF)  & ~0xFFFFu),     // align(raopp, 0x10000)
+        ((rawd_end + 0x7FFFF) & ~0x7FFFFu), // align(rawd_end, 0x80000)
+        ((rawd_end + 0xFFFF)  & ~0xFFFFu),  // align(rawd_end, 0x10000)
+    };
+
+    out.resource_offset = 0;
+    for (u64 off : spk_candidates) {
+        if (off >= (u64)file_size) continue;
+        fseek(f, (long)off, SEEK_SET);
+        u16 count;
+        if (fread(&count, 2, 1, f) == 1 && count > 0 && count < 5000) {
+            u32 dir_size = 2 + (u32)count * 68;
+            if (off + dir_size <= (u64)file_size) {
+                out.resource_offset = off;
+                printf("[APP] SPK archive at 0x%llX (%u entries)\n", off, count);
+                break;
+            }
+        }
     }
+
+    if (out.resource_offset == 0) {
+        out.resource_offset = spk_candidates[0];
+        fprintf(stderr, "[APP] Warning: could not validate SPK, using 0x%llX\n", out.resource_offset);
+    }
+
+    out.resource_size = (u64)file_size - out.resource_offset;
+    printf("[APP] Resource section: offset=0x%llX size=0x%llX\n",
+           out.resource_offset, out.resource_size);
 
     fclose(f);
     return true;

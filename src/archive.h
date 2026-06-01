@@ -17,7 +17,7 @@ public:
     Archive();
     ~Archive();
 
-    bool load(const std::string& app_path, u32 resource_size);
+    bool load(const std::string& app_path, u64 resource_offset, u64 resource_size);
 
     // Find file by path (matches both "path" and ".\path" forms)
     const ArchiveEntry* find(const std::string& path) const;

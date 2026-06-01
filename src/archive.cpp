@@ -15,15 +15,14 @@ Archive::Archive() : m_loaded(false) {}
 
 Archive::~Archive() {}
 
-bool Archive::load(const std::string& app_path, u32 resource_size) {
+bool Archive::load(const std::string& app_path, u64 resource_offset, u64 resource_size) {
     FILE* f = fopen(app_path.c_str(), "rb");
     if (!f) return false;
 
     fseek(f, 0, SEEK_END);
-    u32 total_size = ftell(f);
-    if (RESOURCE_OFFSET + resource_size > total_size) {
-        // Resource offset might differ — try computing from file size
-        resource_size = total_size > RESOURCE_OFFSET ? total_size - RESOURCE_OFFSET : 0;
+    u64 total_size = ftell(f);
+    if (resource_offset + resource_size > total_size) {
+        resource_size = total_size > resource_offset ? total_size - resource_offset : 0;
     }
     if (resource_size == 0) {
         fclose(f);
@@ -31,9 +30,9 @@ bool Archive::load(const std::string& app_path, u32 resource_size) {
     }
 
     // Read the entire resource section
-    m_resource_data.resize(resource_size);
-    fseek(f, RESOURCE_OFFSET, SEEK_SET);
-    size_t read_bytes = fread(m_resource_data.data(), 1, resource_size, f);
+    m_resource_data.resize((size_t)resource_size);
+    fseek(f, (long)resource_offset, SEEK_SET);
+    size_t read_bytes = fread(m_resource_data.data(), 1, (size_t)resource_size, f);
     fclose(f);
 
     if (read_bytes != resource_size)
