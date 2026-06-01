@@ -91,7 +91,7 @@ int main(int argc, char* argv[]) {
 
     // Patch: fix SLTI bug at 0x80ADE0DC - compares $zero instead of $s0,
     // causing the event loop to never exit. Change 0x2A0200B0 to 0x2A1000B0.
-    {
+    /*{
         u32 patch_vaddr = 0x80ADE0DC;
         u32 current = mem.read_u32(patch_vaddr);
         if (current == 0x2A0200B0) {
@@ -100,7 +100,7 @@ int main(int argc, char* argv[]) {
         } else {
             printf("[PATCH] SLTI at 0x%08X = 0x%08X (not 7days, not patching)\n", patch_vaddr, current);
         }
-    }
+    }*/
 
     // Write game name as wide string at 0x80B44FE0 (for AppMain/game_main argument)
     u32 name_addr = 0x80B44FE0;

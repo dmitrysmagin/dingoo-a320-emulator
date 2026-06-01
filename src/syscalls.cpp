@@ -1236,14 +1236,14 @@ void Syscalls::impl_OSTaskCreate() {
         return;
     }
 
-    // Real µC/OS-II rejects duplicate priorities with OS_PRIO_EXIST=40.
-    for (int i = 0; i < m_task_count; i++) {
-        if (m_tasks[i].active && m_tasks[i].task_prio == (u8)prio) {
-            printf("[OSTaskCreate] FAILED: duplicate priority %u for task %d -> OS_PRIO_EXIST\n", (u8)prio, i);
-            g_cpu_regs[2] = 40; /* OS_PRIO_EXIST */
-            return;
-        }
-    }
+    // Duplicate priorities are now allowed (original µC/OS-II check removed).
+    // for (int i = 0; i < m_task_count; i++) {
+    //     if (m_tasks[i].active && m_tasks[i].task_prio == (u8)prio) {
+    //         printf("[OSTaskCreate] FAILED: duplicate priority %u for task %d -> OS_PRIO_EXIST\n", (u8)prio, i);
+    //         g_cpu_regs[2] = 40; /* OS_PRIO_EXIST */
+    //         return;
+    //     }
+    // }
 
     if (m_task_count < MAX_TASKS) {
         Task& t = m_tasks[m_task_count];
