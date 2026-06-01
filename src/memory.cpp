@@ -169,6 +169,8 @@ u32 Memory::read_u32(u32 vaddr) {
             u32 hi = (base + 1 < 256) ? m_lcd_palette[base + 1] : 0;
             return lo | (hi << 16);
         }
+        // GPIO pin level registers: active-low key matrix, all-high = no keys pressed
+        if (phys == 0x10010200 || phys == 0x10010300) return 0xFFFFFFFF;
         if (!m_tlb_exception) log_unmapped(phys, 0, 32, 0, vaddr);
         return 0;
     }

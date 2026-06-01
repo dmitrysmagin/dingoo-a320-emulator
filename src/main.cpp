@@ -216,11 +216,32 @@ int main(int argc, char* argv[]) {
 
     if (max_frames)
         printf("[INIT] Frame limit: %u CPU frames\n", max_frames);
+    // Kernel memory addresses for input state (written every frame so guest
+    // code that polls these directly — bypassing GOT syscalls — sees SDL input).
+    const u32 KERN_KEY_CURRENT  = 0x802DA020; // GPIO scan: current key bitmask
+    const u32 KERN_KEY_RELEASED = 0x802DA024; // GPIO scan: keys released this frame
+    const u32 KERN_KEY_PRESSED  = 0x802DA028; // GPIO scan: keys pressed this frame
+    const u32 KERN_KEY_SCAN_VAL = 0x80242B40; // key_matrix_scan_value
+    const u32 KERN_KEY_MAILBOX  = 0x80B39D08; // uC/OS-II keyboard state mailbox
+
     while (cpu.running && (max_frames == 0 || frame < max_frames)) {
         // Process SDL events (quit, keyboard)
         if (display.pump_events()) {
             printf("[DISPLAY] Quit requested\n");
             break;
+        }
+
+        // Write current key state to all kernel memory locations the game might poll
+        {
+            u32 keys = display.get_dingoo_keys();
+            u32 prev = mem.read_u32(KERN_KEY_CURRENT);
+            u32 pressed  = keys & ~prev;
+            u32 released = ~keys & prev;
+            mem.write_u32(KERN_KEY_CURRENT,  keys);
+            mem.write_u32(KERN_KEY_RELEASED, released);
+            mem.write_u32(KERN_KEY_PRESSED,  pressed);
+            mem.write_u32(KERN_KEY_SCAN_VAL, keys);
+            mem.write_u32(KERN_KEY_MAILBOX,  keys);
         }
 
         cpu.run_frame(max_insns_per_frame);

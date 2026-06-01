@@ -3,6 +3,7 @@
 
 #include "types.h"
 #include <SDL2/SDL.h>
+#include <queue>
 
 // Dingoo A320 key bitmasks for _kbd_get_status / get_key_val.
 // Values match the VK_GAME_* constants in gamelib.h (gameplay/gamelib.h):
@@ -67,6 +68,15 @@ public:
         else      m_dingoo_keys &= ~key;
     }
 
+    // Input event queue for _sys_judge_event / _kbd_get_key
+    static constexpr u32 EVT_KEY_DOWN = 0x01;
+    static constexpr u32 EVT_KEY_UP   = 0x02;
+    bool has_input_event() const { return !m_input_events.empty(); }
+    u32  pop_input_event();
+
+    // Convert DKEY_ bitmask to Dingoo SDK key code (A=1..RIGHT=12)
+    static u32 bitmask_to_keycode(u32 bitmask);
+
 private:
     SDL_Window*   m_window;
     SDL_Renderer* m_renderer;
@@ -81,6 +91,9 @@ private:
     bool m_initialized;
     bool m_argb_valid;                  // true once m_argb_cache has been populated
     u32 m_dingoo_keys;
+    u32 m_prev_dingoo_keys;
+    std::queue<u32> m_input_events;
+    static constexpr size_t MAX_INPUT_EVENTS = 64;
 };
 
 #endif // DISPLAY_H

@@ -14,6 +14,7 @@ Display::Display()
     , m_initialized(false)
     , m_argb_valid(false)
     , m_dingoo_keys(0)
+    , m_prev_dingoo_keys(0)
 {
     memset(m_framebuffer, 0, sizeof(m_framebuffer));
     memset(m_argb_cache,  0, sizeof(m_argb_cache));
@@ -238,6 +239,31 @@ void Display::save_screenshot(const char* path) {
     printf("[DISPLAY] Screenshot saved: %s\n", path);
 }
 
+u32 Display::bitmask_to_keycode(u32 bitmask) {
+    switch (bitmask) {
+        case DKEY_A:      return 0x01;
+        case DKEY_B:      return 0x02;
+        case DKEY_X:      return 0x03;
+        case DKEY_Y:      return 0x04;
+        case DKEY_L:      return 0x05;
+        case DKEY_R:      return 0x06;
+        case DKEY_START:  return 0x07;
+        case DKEY_SELECT: return 0x08;
+        case DKEY_UP:     return 0x09;
+        case DKEY_DOWN:   return 0x0A;
+        case DKEY_LEFT:   return 0x0B;
+        case DKEY_RIGHT:  return 0x0C;
+        default:          return 0;
+    }
+}
+
+u32 Display::pop_input_event() {
+    if (m_input_events.empty()) return 0;
+    u32 ev = m_input_events.front();
+    m_input_events.pop();
+    return ev;
+}
+
 bool Display::pump_events() {
     static int screenshot_idx = 0;
     SDL_Event event;
@@ -250,10 +276,20 @@ bool Display::pump_events() {
                 snprintf(path, sizeof(path), "screenshot_%03d.bmp", screenshot_idx++);
                 save_screenshot(path);
             }
-            m_dingoo_keys |= sdl_to_dingoo(event.key.keysym.sym);
+            u32 dk = sdl_to_dingoo(event.key.keysym.sym);
+            if (dk && !(m_dingoo_keys & dk) && m_input_events.size() < MAX_INPUT_EVENTS) {
+                u32 code = bitmask_to_keycode(dk);
+                if (code) m_input_events.push((EVT_KEY_DOWN << 8) | code);
+            }
+            m_dingoo_keys |= dk;
         }
         if (event.type == SDL_KEYUP) {
-            m_dingoo_keys &= ~sdl_to_dingoo(event.key.keysym.sym);
+            u32 dk = sdl_to_dingoo(event.key.keysym.sym);
+            if (dk && (m_dingoo_keys & dk) && m_input_events.size() < MAX_INPUT_EVENTS) {
+                u32 code = bitmask_to_keycode(dk);
+                if (code) m_input_events.push((EVT_KEY_UP << 8) | code);
+            }
+            m_dingoo_keys &= ~dk;
         }
     }
     return false;

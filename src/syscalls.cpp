@@ -827,22 +827,7 @@ void Syscalls::impl_serial_putc() {
 }
 
 u32 Syscalls::bitmask_to_keycode(u32 bitmask) {
-    // Dingoo A320 SDK key codes (input.md §Key codes)
-    switch (bitmask) {
-        case DKEY_A:      return 0x01;
-        case DKEY_B:      return 0x02;
-        case DKEY_X:      return 0x03;
-        case DKEY_Y:      return 0x04;
-        case DKEY_L:      return 0x05;
-        case DKEY_R:      return 0x06;
-        case DKEY_START:  return 0x07;
-        case DKEY_SELECT: return 0x08;
-        case DKEY_UP:     return 0x09;
-        case DKEY_DOWN:   return 0x0A;
-        case DKEY_LEFT:   return 0x0B;
-        case DKEY_RIGHT:  return 0x0C;
-        default:          return 0;
-    }
+    return Display::bitmask_to_keycode(bitmask);
 }
 
 void Syscalls::impl__kbd_get_status() {
@@ -1474,24 +1459,28 @@ void Syscalls::impl_GetTickCount() {
 
 void Syscalls::impl__sys_judge_event() {
     u32 a0 = arg(0);
+
+    // Check memory-based event queue first (startup sentinel 0x8BFC4D89)
     u32 event_val = m_mem.read_u32(EVENT_QUEUE_ADDR);
     if (event_val) {
         m_mem.write_u32(EVENT_QUEUE_ADDR, 0);
+        printf("[INPUT] _sys_judge_event(a0=0x%08X) -> 0x%08X (sentinel/hw)\n", a0, event_val);
+        g_cpu_regs[2] = event_val;
+        return;
+    }
+
+    // Dequeue SDL input events
+    if (m_display.has_input_event()) {
+        event_val = m_display.pop_input_event();
         u8 type = event_val >> 8;
         u8 code = event_val & 0xFF;
         printf("[INPUT] _sys_judge_event(a0=0x%08X) -> 0x%04X (type=%u code=%u)\n",
                a0, event_val, type, code);
-        // Real Dingoo OS writes event data to the address read_event reads from.
-        // read_event: LW v0, 8(a0) -> LW v0, 4(v0), so *(s0+8)+4 = physical 5.
-        u32 s0 = g_cpu_regs[16];
-        if (s0 && (type == 1 || type == 2)) {
-            m_mem.write_u32(5, event_val);
-            printf("[INPUT]   => wrote event data to phys 0x00000005\n");
-        }
         g_cpu_regs[2] = event_val;
-    } else {
-        g_cpu_regs[2] = 0;
+        return;
     }
+
+    g_cpu_regs[2] = 0;
 }
 
 // === GOT 68-71: unicode / locale ===
@@ -1655,8 +1644,9 @@ void Syscalls::impl___to_locale_ansi() {
 }
 
 void Syscalls::impl_get_current_language() {
-    printf("[STUB] get_current_language -> 1 (Chinese)\n");
-    g_cpu_regs[2] = 1; // Chinese (0=English)
+    int lang = 0; // Chinese (0=English)
+    printf("[STUB] get_current_language -> %d (%s)\n", lang, lang == 0 ? "English" : "Chinese");
+    g_cpu_regs[2] = lang; // Chinese (0=English)
 }
 
 // === dl_res resource API (brick.app only) ===
