@@ -4,12 +4,19 @@
 #include <algorithm>
 #include <cassert>
 
-// SPK archive format:
-//   uint16 LE: entry_count
-//   entry[0..entry_count-1]:
-//     char[64]:  name (null-padded, ASCII, e.g. ".\audio\file.sau")
-//     uint32 LE: data_offset (relative to start of resource section)
-//   data_block: starts at offset 2 + entry_count * 68
+// SPK archive format — two variants:
+//
+// Regular (Dingoo): 0x44-byte entries, 64-byte name + u32 data_off, zero-padded.
+//   Used by 7days, ultimate_drift.
+//
+// PC version:        0x24-byte entries, 32-byte name + u32 data_off, 0xCD-padded.
+//   Used by tetris, brick, candy.
+//
+// Detection: try REGULAR first (validates first 3 entries' data offsets),
+// fall back to PC if entries don't validate.
+
+static constexpr u32 SPK_ENTRY_REG = 0x44;   // 68 bytes
+static constexpr u32 SPK_ENTRY_PC  = 0x24;   // 36 bytes
 
 Archive::Archive() : m_loaded(false) {}
 
@@ -38,35 +45,64 @@ bool Archive::load(const std::string& app_path, u64 resource_offset, u64 resourc
     if (read_bytes != resource_size)
         return false;
 
-    // Parse SPK directory
     if (m_resource_data.size() < 2) { m_loaded = true; return true; }
 
     u16 entry_count;
     memcpy(&entry_count, m_resource_data.data(), 2);
 
-    u32 dir_size = 2 + (u32)entry_count * 68;
-    if (dir_size > m_resource_data.size()) {
-        printf("[ARCHIVE] Invalid entry count %u\n", (u32)entry_count);
+    // Detect SPK format by validating data offsets for first 3 entries
+    u32 entry_size = 0;
+    for (u32 try_sz : {SPK_ENTRY_REG, SPK_ENTRY_PC}) {
+        u32 dir_sz = 2 + (u32)entry_count * try_sz;
+        if (dir_sz > m_resource_data.size()) continue;
+
+        bool valid = true;
+        u32 max_check = std::min((u32)entry_count, 3u);
+        for (u32 i = 0; i < max_check; i++) {
+            u32 data_off;
+            memcpy(&data_off, &m_resource_data[2 + i * try_sz + try_sz - 4], 4);
+            if (data_off < dir_sz || (u64)data_off + 4 > m_resource_data.size()) {
+                valid = false;
+                break;
+            }
+        }
+        if (valid) {
+            entry_size = try_sz;
+            break;
+        }
+    }
+
+    if (entry_size == 0) {
+        printf("[ARCHIVE] Unrecognized SPK format (count=%u)\n", (u32)entry_count);
         m_loaded = true;
         return true;
     }
+
+    const char* label = (entry_size == SPK_ENTRY_REG) ? "REGULAR" : "PC";
+    printf("[ARCHIVE] SPK format: %s (%u entries, %u-byte dir)\n",
+           label, (u32)entry_count, 2 + (u32)entry_count * entry_size);
+
+    u32 name_len = entry_size - 4;
+    u32 dir_size = 2 + (u32)entry_count * entry_size;
 
     m_entries.reserve(entry_count);
     m_entries.resize(entry_count);
 
     for (u32 i = 0; i < (u32)entry_count; i++) {
-        u32 entry_off = 2 + i * 68;
+        u32 entry_off = 2 + i * entry_size;
 
-        // Read 64-byte name, null-terminated
-        char name_buf[65];
-        memcpy(name_buf, &m_resource_data[entry_off], 64);
-        name_buf[64] = 0;
+        // Read name (null-terminated, padded with 0x00 or 0xCD)
+        char name_buf[65] = {};
+        memcpy(name_buf, &m_resource_data[entry_off], std::min(name_len, 64u));
+        // Strip padding after first null
+        for (u32 j = 0; j < std::min(name_len, 64u); j++) {
+            if (name_buf[j] == 0) { name_buf[j] = 0; break; }
+        }
 
         // Read 4-byte data offset
         u32 data_off;
-        memcpy(&data_off, &m_resource_data[entry_off + 64], 4);
+        memcpy(&data_off, &m_resource_data[entry_off + name_len], 4);
 
-        // Strip leading ".\" or ".\" from name if present
         std::string name(name_buf);
         m_entries[i].name = name;
         m_entries[i].offset = data_off;
@@ -74,10 +110,10 @@ bool Archive::load(const std::string& app_path, u64 resource_offset, u64 resourc
         // Compute file size from next entry's offset (or end of resource)
         if (i + 1 < (u32)entry_count) {
             u32 next_off;
-            memcpy(&next_off, &m_resource_data[2 + (i + 1) * 68 + 64], 4);
+            memcpy(&next_off, &m_resource_data[2 + (i + 1) * entry_size + name_len], 4);
             m_entries[i].size = next_off - data_off;
         } else {
-            m_entries[i].size = resource_size - data_off;
+            m_entries[i].size = (u32)resource_size - data_off;
         }
 
         // Store in hash table by various path forms

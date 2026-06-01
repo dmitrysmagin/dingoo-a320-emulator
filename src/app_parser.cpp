@@ -1,6 +1,7 @@
 #include "app_parser.h"
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
 
 // Fixed-size header structs (matching SDK)
 #pragma pack(push, 1)
@@ -195,19 +196,60 @@ bool parse_app(const std::string& path, AppBinary& out) {
         ((rawd_end + 0xFFFF)  & ~0xFFFFu),  // align(rawd_end, 0x10000)
     };
 
-    out.resource_offset = 0;
-    for (u64 off : spk_candidates) {
-        if (off >= (u64)file_size) continue;
+    auto spk_validate = [&](u64 off) -> bool {
+        if (off + 2 > (u64)file_size) return false;
         fseek(f, (long)off, SEEK_SET);
         u16 count;
-        if (fread(&count, 2, 1, f) == 1 && count > 0 && count < 5000) {
-            u32 dir_size = 2 + (u32)count * 68;
-            if (off + dir_size <= (u64)file_size) {
+        if (fread(&count, 2, 1, f) != 1 || count < 1 || count > 5000)
+            return false;
+        // Try REGULAR (0x44) and PC (0x24) entry sizes
+        for (u32 entry_sz : {0x44u, 0x24u}) {
+            u32 dir_sz = 2 + (u32)count * entry_sz;
+            if (off + dir_sz > (u64)file_size) continue;
+            bool valid = true;
+            u32 max_check = std::min((u32)count, 3u);
+            for (u32 i = 0; i < max_check; i++) {
+                u32 data_off;
+                fseek(f, (long)(off + 2 + i * entry_sz + entry_sz - 4), SEEK_SET);
+                if (fread(&data_off, 4, 1, f) != 1) { valid = false; break; }
+                u64 abs_doff = off + data_off;
+                if (abs_doff < off + dir_sz || abs_doff > (u64)file_size)
+                    { valid = false; break; }
+            }
+            if (valid) return true;
+        }
+        return false;
+    };
+
+    out.resource_offset = 0;
+    for (u64 off : spk_candidates) {
+        if (!spk_validate(off)) continue;
+        out.resource_offset = off;
+        // Read count for display
+        fseek(f, (long)off, SEEK_SET);
+        u16 count;
+        fread(&count, 2, 1, f);
+        printf("[APP] SPK archive at 0x%llX (%u entries)\n", off, count);
+        break;
+    }
+
+    if (out.resource_offset == 0) {
+        // Fallback: scan at finer granularity
+        for (u64 off = spk_candidates[0]; off > rawd_end && off > 0; off -= 0x10000) {
+            if (spk_validate(off)) {
                 out.resource_offset = off;
-                printf("[APP] SPK archive at 0x%llX (%u entries)\n", off, count);
+                fseek(f, (long)off, SEEK_SET);
+                u16 count;
+                fread(&count, 2, 1, f);
+                printf("[APP] SPK archive at 0x%llX (%u entries, fallback)\n", off, count);
                 break;
             }
         }
+    }
+
+    if (out.resource_offset == 0) {
+        out.resource_offset = spk_candidates[0];
+        fprintf(stderr, "[APP] Warning: could not validate SPK, using 0x%llX\n", out.resource_offset);
     }
 
     if (out.resource_offset == 0) {
