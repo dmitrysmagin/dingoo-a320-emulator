@@ -3,8 +3,9 @@
 #include <cstring>
 #include <algorithm>
 #include <cassert>
+#include <vector>
 
-// SPK archive format — two variants:
+// SPK archive format — three variants:
 //
 // Regular (Dingoo): 0x44-byte entries, 64-byte name + u32 data_off, zero-padded.
 //   Used by 7days, ultimate_drift.
@@ -12,11 +13,14 @@
 // PC version:        0x24-byte entries, 32-byte name + u32 data_off, 0xCD-padded.
 //   Used by tetris, brick, candy.
 //
-// Detection: try REGULAR first (validates first 3 entries' data offsets),
-// fall back to PC if entries don't validate.
+// Big-name version:  u32 entry_count (4 bytes), 0x1F4-byte name + u32 data_off per entry.
+//   Used by Puzzle Bobble - Popo Bash (Chinese).
+//
+// Detection: try each variant in order, validating first 3 entries' data offsets.
 
-static constexpr u32 SPK_ENTRY_REG = 0x44;   // 68 bytes
-static constexpr u32 SPK_ENTRY_PC  = 0x24;   // 36 bytes
+static constexpr u32 SPK_ENTRY_REG     = 0x44;   // 68 bytes
+static constexpr u32 SPK_ENTRY_PC      = 0x24;   // 36 bytes
+static constexpr u32 SPK_ENTRY_BIGNAME = 0x1F8;  // 504 bytes (0x1F4 name + 4 offset)
 
 Archive::Archive() : m_loaded(false) {}
 
@@ -51,23 +55,52 @@ bool Archive::load(const std::string& app_path, u64 resource_offset, u64 resourc
     memcpy(&entry_count, m_resource_data.data(), 2);
 
     // Detect SPK format by validating data offsets for first 3 entries
+    struct SpkCandidate { u32 entry_sz; u32 count_bytes; const char* label; };
+    SpkCandidate candidates[] = {
+        {SPK_ENTRY_REG, 2, "REGULAR"},
+        {SPK_ENTRY_PC, 2, "PC"},
+        {SPK_ENTRY_BIGNAME, 4, "BIGNAME"},
+    };
+
     u32 entry_size = 0;
-    for (u32 try_sz : {SPK_ENTRY_REG, SPK_ENTRY_PC}) {
-        u32 dir_sz = 2 + (u32)entry_count * try_sz;
+    u32 count_bytes = 2;
+    const char* spk_label = "";
+    u32 parsed_count = entry_count;
+
+    for (auto& c : candidates) {
+        u32 ec;
+        if (c.count_bytes == 2) {
+            memcpy(&ec, m_resource_data.data(), 2);
+        } else {
+            if (m_resource_data.size() < 4) continue;
+            memcpy(&ec, m_resource_data.data(), 4);
+        }
+        if (ec < 1 || ec > 5000) continue;
+        u32 dir_sz = c.count_bytes + ec * c.entry_sz;
         if (dir_sz > m_resource_data.size()) continue;
 
         bool valid = true;
-        u32 max_check = std::min((u32)entry_count, 3u);
+        u32 first_do = 0;
+        u32 max_check = std::min(ec, 3u);
+        bool found_nonzero = false;
         for (u32 i = 0; i < max_check; i++) {
             u32 data_off;
-            memcpy(&data_off, &m_resource_data[2 + i * try_sz + try_sz - 4], 4);
+            u32 off = c.count_bytes + i * c.entry_sz + c.entry_sz - 4;
+            if (off + 4 > m_resource_data.size()) { valid = false; break; }
+            memcpy(&data_off, &m_resource_data[off], 4);
+            if (data_off == 0) continue;  // sentinel entry, skip
             if (data_off < dir_sz || (u64)data_off + 4 > m_resource_data.size()) {
                 valid = false;
                 break;
             }
+            if (!found_nonzero) { first_do = data_off; found_nonzero = true; }
+            else if (data_off == first_do) { valid = false; break; } // reject all-identical
         }
-        if (valid) {
-            entry_size = try_sz;
+        if (valid && found_nonzero) {
+            entry_size = c.entry_sz;
+            count_bytes = c.count_bytes;
+            parsed_count = ec;
+            spk_label = c.label;
             break;
         }
     }
@@ -78,39 +111,35 @@ bool Archive::load(const std::string& app_path, u64 resource_offset, u64 resourc
         return true;
     }
 
-    const char* label = (entry_size == SPK_ENTRY_REG) ? "REGULAR" : "PC";
-    printf("[ARCHIVE] SPK format: %s (%u entries, %u-byte dir)\n",
-           label, (u32)entry_count, 2 + (u32)entry_count * entry_size);
+    printf("[ARCHIVE] SPK format: %s (%u entries, %u-byte dir, %u-byte entries)\n",
+           spk_label, parsed_count, count_bytes + parsed_count * entry_size, entry_size);
 
     u32 name_len = entry_size - 4;
-    u32 dir_size = 2 + (u32)entry_count * entry_size;
 
-    m_entries.reserve(entry_count);
-    m_entries.resize(entry_count);
+    m_entries.reserve(parsed_count);
+    m_entries.resize(parsed_count);
 
-    for (u32 i = 0; i < (u32)entry_count; i++) {
-        u32 entry_off = 2 + i * entry_size;
+    for (u32 i = 0; i < parsed_count; i++) {
+        u32 entry_off = count_bytes + i * entry_size;
 
         // Read name (null-terminated, padded with 0x00 or 0xCD)
-        char name_buf[65] = {};
-        memcpy(name_buf, &m_resource_data[entry_off], std::min(name_len, 64u));
-        // Strip padding after first null
-        for (u32 j = 0; j < std::min(name_len, 64u); j++) {
-            if (name_buf[j] == 0) { name_buf[j] = 0; break; }
-        }
+        u32 buf_len = std::min(name_len, 256u);
+        std::vector<char> name_buf(buf_len + 1, 0);
+        memcpy(name_buf.data(), &m_resource_data[entry_off], buf_len);
+        name_buf[buf_len] = 0;
 
         // Read 4-byte data offset
         u32 data_off;
         memcpy(&data_off, &m_resource_data[entry_off + name_len], 4);
 
-        std::string name(name_buf);
+        std::string name(name_buf.data());
         m_entries[i].name = name;
         m_entries[i].offset = data_off;
 
         // Compute file size from next entry's offset (or end of resource)
-        if (i + 1 < (u32)entry_count) {
+        if (i + 1 < parsed_count) {
             u32 next_off;
-            memcpy(&next_off, &m_resource_data[2 + (i + 1) * entry_size + name_len], 4);
+            memcpy(&next_off, &m_resource_data[count_bytes + (i + 1) * entry_size + name_len], 4);
             m_entries[i].size = next_off - data_off;
         } else {
             m_entries[i].size = (u32)resource_size - data_off;
@@ -142,7 +171,7 @@ bool Archive::load(const std::string& app_path, u64 resource_offset, u64 resourc
         m_name_to_index[lower] = i;
     }
 
-    printf("[ARCHIVE] Loaded %u entries from SPK archive\n", (u32)entry_count);
+    printf("[ARCHIVE] Loaded %u entries from SPK archive\n", parsed_count);
     m_loaded = true;
     return true;
 }

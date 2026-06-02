@@ -189,35 +189,72 @@ bool parse_app(const std::string& path, AppBinary& out) {
     u64 raopp  = (u64)rawd.offset + rawd.prog_size;
     u64 rawd_end = (u64)rawd.offset + rawd.size;
 
+    // SPK candidate offsets: try aligned + raw end-of-RAWD positions
     u64 spk_candidates[] = {
         ((raopp + 0x7FFFF) & ~0x7FFFFu),   // align(raopp, 0x80000)
         ((raopp + 0xFFFF)  & ~0xFFFFu),     // align(raopp, 0x10000)
         ((rawd_end + 0x7FFFF) & ~0x7FFFFu), // align(rawd_end, 0x80000)
         ((rawd_end + 0xFFFF)  & ~0xFFFFu),  // align(rawd_end, 0x10000)
+        rawd_end,                           // right after code
+        rawd_end + 8,                       // after padding
     };
 
     auto spk_validate = [&](u64 off) -> bool {
         if (off + 2 > (u64)file_size) return false;
+
+        // Try u16-count formats: REGULAR (0x44) and PC (0x24)
         fseek(f, (long)off, SEEK_SET);
-        u16 count;
-        if (fread(&count, 2, 1, f) != 1 || count < 1 || count > 5000)
-            return false;
-        // Try REGULAR (0x44) and PC (0x24) entry sizes
-        for (u32 entry_sz : {0x44u, 0x24u}) {
-            u32 dir_sz = 2 + (u32)count * entry_sz;
-            if (off + dir_sz > (u64)file_size) continue;
-            bool valid = true;
-            u32 max_check = std::min((u32)count, 3u);
-            for (u32 i = 0; i < max_check; i++) {
-                u32 data_off;
-                fseek(f, (long)(off + 2 + i * entry_sz + entry_sz - 4), SEEK_SET);
-                if (fread(&data_off, 4, 1, f) != 1) { valid = false; break; }
-                u64 abs_doff = off + data_off;
-                if (abs_doff < off + dir_sz || abs_doff > (u64)file_size)
-                    { valid = false; break; }
+        u16 count_u16;
+        if (fread(&count_u16, 2, 1, f) != 1) return false;
+        if (count_u16 >= 1 && count_u16 <= 5000) {
+            for (u32 entry_sz : {0x44u, 0x24u}) {
+                u32 dir_sz = 2 + (u32)count_u16 * entry_sz;
+                if (off + dir_sz > (u64)file_size) continue;
+                bool valid = true;
+                u32 first_do = 0;
+                u32 max_check = std::min((u32)count_u16, 3u);
+                for (u32 i = 0; i < max_check; i++) {
+                    u32 data_off;
+                    fseek(f, (long)(off + 2 + i * entry_sz + entry_sz - 4), SEEK_SET);
+                    if (fread(&data_off, 4, 1, f) != 1) { valid = false; break; }
+                    if (data_off == 0) continue;  // sentinel entry, skip
+                    u64 abs_doff = off + data_off;
+                    if (abs_doff < off + dir_sz || abs_doff > (u64)file_size)
+                        { valid = false; break; }
+                    if (i == 0) first_do = data_off;
+                    else if (data_off == first_do) { valid = false; break; } // reject all-identical
+                }
+                if (valid) return true;
             }
-            if (valid) return true;
         }
+
+        // Try BIGNAME format: u32 count, entry_size = 0x1F8 (0x1F4 name + 4 offset)
+        if (off + 4 > (u64)file_size) return false;
+        fseek(f, (long)off, SEEK_SET);  // rewind to start for u32 read
+        u32 count_u32;
+        if (fread(&count_u32, 4, 1, f) != 1) return false;
+        if (count_u32 >= 1 && count_u32 <= 5000) {
+            u32 entry_sz = 0x1F8;
+            u32 dir_sz = 4 + count_u32 * entry_sz;
+            if (off + dir_sz <= (u64)file_size) {
+                bool valid = true;
+                u32 first_do = 0;
+                u32 max_check = std::min(count_u32, 3u);
+                for (u32 i = 0; i < max_check; i++) {
+                    u32 data_off;
+                    fseek(f, (long)(off + 4 + i * entry_sz + entry_sz - 4), SEEK_SET);
+                    if (fread(&data_off, 4, 1, f) != 1) { valid = false; break; }
+                    if (data_off == 0) continue;  // sentinel entry
+                    u64 abs_doff = off + data_off;
+                    if (abs_doff < off + dir_sz || abs_doff > (u64)file_size)
+                        { valid = false; break; }
+                    if (i == 0) first_do = data_off;
+                    else if (data_off == first_do) { valid = false; break; }
+                }
+                if (valid) return true;
+            }
+        }
+
         return false;
     };
 

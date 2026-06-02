@@ -535,6 +535,8 @@ void CPU::execute_one() {
         pc = branch_target;
     }
 
+
+
     // GOT trampoline check
     if (mem->is_got_address(pc)) {
         int idx = mem->got_index(pc);

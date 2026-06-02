@@ -349,7 +349,7 @@ u32 Syscalls::heap_realloc(u32 addr, u32 new_size) {
 // === File handles ===
 
 int Syscalls::alloc_file_handle() {
-    for (int i = 0; i < 64; i++) {
+    for (int i = 1; i < 64; i++) {  // start at 1 so 0 = NULL for guest
         if (!m_files[i].in_use) {
             m_files[i].in_use = true;
             m_files[i].offset = 0;
