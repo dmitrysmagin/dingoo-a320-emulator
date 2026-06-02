@@ -13,10 +13,15 @@ Boot the Dingoo game **"7days"** (`7days.app`, SPK archive) to playable gameplay
 
 ### CPU Emulation
 - MIPS32r1 core, all standard opcodes including LWL/LWR (correct little-endian formulas)
-- COP0 stubs (Count/Compare auto-increment per instruction, TLB no-ops)
+- COP0 stubs (Count/Compare auto-increment per instruction, TLB removed and replaced with debug output + trap)
 - COP2 / MXU coprocessor (`mxu.cpp`) — all encountered ops handled; zero unknown-opcode hits across 6.4B+ instructions
 - GOT trampoline dispatch for all 72 import entries
 - 6.4+ billion instructions executed in a 2-minute run with no crashes
+
+### Memory Management
+- TLB emulation removed — KSEG0/KSEG1 direct-mapped, KUSEG/KSEG2/3 identity-mapped
+- Virtual address translation simplified to direct mapping for all address spaces
+- All memory access paths now bypass TLB probe (saved ~160 lines from `cop0.cpp`)
 
 ### Display
 - 320×240 internal framebuffer, scaled 3× → 960×720 via SDL2
@@ -117,8 +122,7 @@ These are compressed images (far smaller than 153,600 bytes for an RGB565 frame)
 decompresses them before writing to the framebuffer. If prologue backgrounds fail to appear
 while text overlay works, the root cause is likely in the decompression or write path:
 
-- **TLB hypothesis**: Game may use TLB-mapped KUSEG for decompression output. TLB stubs in
-  `cop0.cpp` are no-ops, so writes land in identity-mapped physical addresses instead.
+- **TLB hypothesis**: Game may use TLB-mapped KUSEG for decompression output. **TLB emulation removed** — game now uses identity-mapped physical addresses exclusively.
   **But** TLB instructions counted in `docs/TLB.md` are in the resource section, not code
   section — game may not execute them at all during boot/prologue.
 - **Decompression format**: `.spl`/`.sst`/`.sbp` formats may use palette/indexed color modes
@@ -147,7 +151,7 @@ SDL_VIDEODRIVER=offscreen timeout 60 ./emulator.exe ../7days.app
 
 | Item | Notes |
 |------|-------|
-| **Prologue CG backgrounds** | Compressed `.spl`/`.sst` images; TLB or decompression issue suspected |
+| **Prologue CG backgrounds** | Compressed `.spl`/`.sst` images; decompression issue suspected (TLB removed) |
 | **Save files** | `slot1-3.sav` / `config.sdt` not present; game uses defaults, no persistence |
 | **Frame rate cap** | Emulator runs uncapped; no 60fps limiter |
 | **MXU correctness** | All ops handled without unknown-opcode errors, but output values unverified |
@@ -158,7 +162,9 @@ SDL_VIDEODRIVER=offscreen timeout 60 ./emulator.exe ../7days.app
 1. **Prologue CG debugging** — Determine root cause of black backgrounds:
    - Trace decompression output writes (capture buffer addresses and contents)
    - Verify CLUT palette data at `0x13050100` is populated for indexed-mode CGs
-   - Check if game uses TLB-mapped addresses for decompression targets
+   - Check if game uses TLB-mapped addresses for decompression targets (TLB now removed)
+2. **Palette/CLUT write handler** — Implement proper storage for LCD controller CLUT writes
+   at phys `0x13050100` (256 × 32-bit entries) in `memory.cpp`
 2. **Palette/CLUT write handler** — Implement proper storage for LCD controller CLUT writes
    at phys `0x13050100` (256 × 32-bit entries) in `memory.cpp`
 
@@ -176,6 +182,7 @@ SDL_VIDEODRIVER=offscreen timeout 60 ./emulator.exe ../7days.app
 | File | Role |
 |------|------|
 | `emulator/src/main.cpp` | Init, patches, BSS stub, main loop, screenshot milestones |
+| `emulator/src/cop0.cpp` | MIPS32 CP0 register handling, µC/OS-II state management, ERET |
 | `emulator/src/syscalls.cpp` | All 72 GOT handlers, µC/OS-II stubs, vsync/scheduler, input, LCD format mirror, FB pool |
 | `emulator/src/cpu.cpp` | MIPS32 execute loop, GOT trampoline |
 | `emulator/src/display.cpp` | SDL2 window, flip/flip_argb8888, RGB565 format, screenshots |
@@ -186,3 +193,4 @@ SDL_VIDEODRIVER=offscreen timeout 60 ./emulator.exe ../7days.app
 | `7days.app` | Game binary + resource archive (RESOURCE_OFFSET = 0x150000) |
 | `emulator/src/app_parser.cpp` | CCDL file parser (4-header format: CCDL/IMPT/EXPT/RAWD) |
 | `emulator/unimplemented.md` | API coverage gaps (missing + stubbed GOT entries) |
+| `emulator/src/cop0.h` | MIPS32 CP0 register definitions (TLB removed: 200+ lines saved) |

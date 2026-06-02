@@ -35,8 +35,7 @@ static constexpr u32 STACK_SIZE        = 64 * 1024;
 // Exception codes
 static constexpr u32 EXC_INT    = 0;
 static constexpr u32 EXC_MOD   = 1;
-static constexpr u32 EXC_TLBL  = 2;
-static constexpr u32 EXC_TLBS  = 3;
+// EXC_TLBL/TLBS removed: TLB emulation deleted; unhandled TLBR/TLBWI/TLBWR/TLBP traps to EXC_RI
 static constexpr u32 EXC_ADEL  = 4;
 static constexpr u32 EXC_ADES  = 5;
 static constexpr u32 EXC_IBE   = 6;

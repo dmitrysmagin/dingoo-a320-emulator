@@ -5,8 +5,6 @@
 #include <vector>
 #include <string>
 
-struct COP0; // forward decl for TLB translation
-
 class Memory {
 public:
     Memory();
@@ -20,10 +18,7 @@ public:
     // Zero a region (BSS)
     void zero_region(u32 phys_addr, u32 size);
 
-    // Set COP0 for TLB-aware translation
-    void set_cop0(COP0* cop0) { m_cop0 = cop0; }
-
-    // Address translation (write flag needed for TLB D-bit check)
+    // Address translation
     bool is_mapped(u32 vaddr);
     u32 vaddr_to_phys(u32 vaddr, bool write = false);
 
@@ -92,12 +87,8 @@ private:
     u32 m_hw_base;
     u32 m_code_start = 0;
     u32 m_code_end = 0;
-    COP0* m_cop0 = nullptr;
     std::vector<u32> m_write_counts;  // one counter per 4KB page
-    bool m_tlb_exception;
-    u32  m_tlb_exception_code;
-    u32  m_tlb_exception_vaddr;
-    u32  m_trace_start = 0;
+    u32 m_trace_start = 0;
     u32  m_trace_end = 0;
     u32  m_trace_write_count = 0;
     u32  m_trace_nonzero = 0;

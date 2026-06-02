@@ -176,9 +176,6 @@ int main(int argc, char* argv[]) {
     cpu.syscalls = &syscalls;
     cpu.reset();
 
-    // Wire COP0 to Memory for TLB translation
-    mem.set_cop0(&cpu.cop0);
-
     // Set up initial state for dl_main
     cpu.pc = app.entry_point;
     cpu.regs[29] = 0x80C00000;

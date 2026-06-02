@@ -244,15 +244,32 @@ void CPU::execute(u32 insn) {
         else if (rs_field == 0x10) {
             // C0 (TLB / ERET) — function is in bits 5-0
             switch (func) {
-            case 0x01: cop0.tlbr(); break;
-            case 0x02: cop0.tlbwi(); break;
-            case 0x06: cop0.tlbwr(); break;
-            case 0x08: cop0.tlbp(); break;
+            case 0x01: // TLBR — TLB removed; trap
+                printf("[CPU] TLBR (unhandled) at PC=0x%08X insn=0x%08X\n", pc - 4, insn);
+                raise_exception(EXC_RI);
+                break;
+            case 0x02: // TLBWI — TLB removed; trap
+                printf("[CPU] TLBWI (unhandled) at PC=0x%08X insn=0x%08X\n", pc - 4, insn);
+                raise_exception(EXC_RI);
+                break;
+            case 0x06: // TLBWR — TLB removed; trap
+                printf("[CPU] TLBWR (unhandled) at PC=0x%08X insn=0x%08X\n", pc - 4, insn);
+                raise_exception(EXC_RI);
+                break;
+            case 0x08: // TLBP — TLB removed; trap (mark Index as not found)
+                printf("[CPU] TLBP (unhandled) at PC=0x%08X insn=0x%08X\n", pc - 4, insn);
+                cop0.regs.index = 0x80000000; // bit 31 = 1: not found
+                raise_exception(EXC_RI);
+                break;
             case 0x18: // ERET
                 pc = cop0.regs.epc;
                 cop0.regs.status &= ~0x2u;
                 llbit = 0;
                 ll_addr = 0;
+                break;
+            default:
+                printf("[CPU] COP0 C0 unknown func=0x%02X at PC=0x%08X insn=0x%08X\n", func, pc - 4, insn);
+                raise_exception(EXC_RI);
                 break;
             }
         }
