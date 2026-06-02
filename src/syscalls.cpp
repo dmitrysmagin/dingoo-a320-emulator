@@ -93,8 +93,8 @@ void SDLCALL Syscalls::audio_callback(void* userdata, Uint8* stream, int len) {
     }
     while (i < samples) buf[i++] = 0;
     SDL_UnlockMutex(sys->m_audio_mutex);
-    printf("[AUDIO] callback processed %d samples, queue remaining %zu\n", i, sys->m_audio_queue.size());
-    }
+    //printf("[AUDIO] callback processed %d samples, queue remaining %zu\n", i, sys->m_audio_queue.size());
+}
 
 
 u32 Syscalls::arg(int n) {
@@ -205,7 +205,7 @@ bool Syscalls::got_is_stub(int index) const {
 
 void Syscalls::dispatch(int got_index, u32 /*return_addr*/) {
     m_got_call_count++;
-    if (got_index >= 0 && got_index < MAX_GOT_ENTRIES) m_got_call_counts[got_index]++;
+    if (got_index >= 0 && got_index < (int)MAX_GOT_ENTRIES) m_got_call_counts[got_index]++;
     switch (got_index) {
     case  0: impl_abort(); break;
     case  1: impl_printf(); break;
@@ -1146,8 +1146,8 @@ void Syscalls::impl_waveout_write() {
     }
 
     const u32 count = size / 2;
-    // Limit total queue size to 32768 samples (≈64 KB) to avoid unbounded growth.
-    constexpr size_t MAX_QUEUE_SAMPLES = 32768;
+    // Limit total queue size to 8192 samples (≈16 KB) to avoid unbounded growth.
+    constexpr size_t MAX_QUEUE_SAMPLES = 8192;
     std::vector<s16> samples(count);
     m_mem.read_block(buf_addr, (u8*)samples.data(), size);
 
@@ -1165,8 +1165,8 @@ void Syscalls::impl_waveout_write() {
 }
 
 void Syscalls::impl_waveout_can_write() {
-    // Return available write space in bytes (max 64KB ring, subtract queued samples)
-    constexpr size_t MAX_QUEUE_SAMPLES = 32768;
+    // Return available write space in bytes (max 8192 samples, subtract queued)
+    constexpr size_t MAX_QUEUE_SAMPLES = 8192;
     SDL_LockMutex(m_audio_mutex);
     size_t queued = m_audio_queue.size();
     SDL_UnlockMutex(m_audio_mutex);
@@ -1976,7 +1976,7 @@ bool Syscalls::simulate_vsync() {
     static u32 dump_count = 0;
     dump_count++;
     if (dump_count % 1000 == 0) {
-        for (int i = 0; i < MAX_GOT_ENTRIES; i++) {
+        for (int i = 0; i < (int)MAX_GOT_ENTRIES; i++) {
             if (m_got_call_counts[i] > 0) {
                 printf("[GOT] %3d: %-25s %u\n", i, got_name(i), m_got_call_counts[i]);
             }
