@@ -24,6 +24,7 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     , m_start_tick(SDL_GetTicks())
     , m_scheduler_started(false)
     , m_task_switched(false)
+    , m_in_idle(false)
     , m_idle_pc(0)
 {
     memset(m_got_call_counts, 0, sizeof(m_got_call_counts));
@@ -1298,6 +1299,13 @@ void Syscalls::impl_OSSemPend() {
         return;
     }
 
+    // No current task (e.g. after OSTaskDel self) — can't block, return timeout.
+    if (m_current_task < 0 || m_current_task >= m_task_count) {
+        if (err_ptr) m_mem.write_u8(err_ptr, 10);  // OS_TIMEOUT
+        g_cpu_regs[2] = 10;
+        return;
+    }
+
     // Block current task on this semaphore.
     // *err is written when the task resumes (by OSSemPost or by timeout in simulate_vsync).
     save_current_task();
@@ -1367,13 +1375,27 @@ void Syscalls::impl_OSTimeDly() {
         return;
     }
 
+    // No current task — nothing to delay, just return.
+    if (m_current_task < 0 || m_current_task >= m_task_count) {
+        g_cpu_regs[2] = 0;
+        return;
+    }
+
     save_current_task();
     m_tasks[m_current_task].blocked = true;
     m_tasks[m_current_task].wake_tick = m_os_ticks + ticks;
+    m_tasks[m_current_task].regs[2] = 0;  // OS_NO_ERR returned when task resumes
 
     int next = find_ready_task();
     if (next >= 0) {
         switch_to_task(next);
+    } else {
+        // No other task ready — yield to idle loop until vsync wakes this task
+        memcpy(g_cpu_regs, m_idle_regs, sizeof(g_cpu_regs));
+        g_cpu_pc = m_idle_pc;
+        g_cpu_hi = m_idle_hi;
+        g_cpu_lo = m_idle_lo;
+        m_task_switched = true;
     }
     g_cpu_regs[2] = 0;
 }
@@ -1446,6 +1468,10 @@ void Syscalls::impl_OSTaskDel() {
     int deleted_task = -1;
 
     if (prio == 255) {
+        if (m_current_task < 0) {
+            g_cpu_regs[2] = 2; /* OS_TASK_NOT_EXIST */
+            return;
+        }
         deleted_task = m_current_task;
     } else if (prio == 254) {
         // OS_TASK_IDLE_PRIO — real impl returns OS_TASK_DEL_IDLE
@@ -1489,10 +1515,8 @@ void Syscalls::impl_OSTaskDel() {
         printf("[OSTaskDel] Deleted self (task %d), switched to task %d\n",
                deleted_task, next);
     } else {
-        printf("[OSTaskDel] Deleted self (task %d), resumed idle\n", deleted_task);
-        memcpy(g_cpu_regs, m_idle_regs, sizeof(g_cpu_regs));
-        g_cpu_pc = m_idle_pc;
-        m_task_switched = true;
+        printf("[OSTaskDel] Deleted self (task %d), returning to caller (no ready task)\n", deleted_task);
+        m_in_idle = true;
     }
 }
 
@@ -1908,6 +1932,10 @@ bool Syscalls::simulate_vsync() {
         if (next >= 0) {
             switch_to_task(next);
             switched = true;
+            if (m_in_idle) {
+                printf("[SCHEDULER] Leaving idle, switching to task %d\n", next);
+                m_in_idle = false;
+            }
         }
     }
 

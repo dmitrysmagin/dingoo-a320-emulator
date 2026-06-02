@@ -231,6 +231,7 @@ private:
     u32 m_start_tick;
     bool m_scheduler_started;
     bool m_task_switched;
+    bool m_in_idle;
     u32 m_idle_pc;
 
     void save_current_task();
@@ -246,6 +247,7 @@ public:
     bool simulate_vsync();
     void set_idle_regs(const u32 regs[32]);
     void set_idle_pc(u32 pc) { m_idle_pc = pc; }
+    bool in_idle() const { return m_in_idle; }
     bool task_switched() const { return m_task_switched; }
     void clear_task_switched() { m_task_switched = false; }
 };
