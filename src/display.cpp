@@ -14,6 +14,7 @@ Display::Display()
     , m_initialized(false)
     , m_argb_valid(false)
     , m_dingoo_keys(0)
+    , m_hw_keys(0)
     , m_prev_dingoo_keys(0)
 {
     memset(m_framebuffer, 0, sizeof(m_framebuffer));
@@ -204,6 +205,19 @@ static u32 sdl_to_dingoo(SDL_Keycode sym) {
     }
 }
 
+// Game-correct hardware bits for state[8], derived from user test:
+// bit 18 = RIGHT, bit 20 = SELECT, bit 27 = DOWN, bit 28 = LEFT, bit 31 = START
+static u32 sdl_to_game_hw(SDL_Keycode sym) {
+    switch (sym) {
+    case SDLK_UP:       return 0x00100000u;  // bit 20 = UP
+    case SDLK_DOWN:     return 0x08000000u;  // bit 27 = DOWN
+    case SDLK_LEFT:     return 0x10000000u;  // bit 28 = LEFT
+    case SDLK_RIGHT:    return 0x00040000u;  // bit 18 = RIGHT
+    case SDLK_RETURN:   return 0x80000000u;  // bit 31 = START
+    default:            return 0;
+    }
+}
+
 void Display::present_blank() {
     if (m_initialized)
         SDL_RenderPresent(m_renderer);
@@ -282,6 +296,7 @@ bool Display::pump_events() {
                 if (code) m_input_events.push((EVT_KEY_DOWN << 8) | code);
             }
             m_dingoo_keys |= dk;
+            m_hw_keys |= sdl_to_game_hw(event.key.keysym.sym);
         }
         if (event.type == SDL_KEYUP) {
             u32 dk = sdl_to_dingoo(event.key.keysym.sym);
@@ -290,6 +305,7 @@ bool Display::pump_events() {
                 if (code) m_input_events.push((EVT_KEY_UP << 8) | code);
             }
             m_dingoo_keys &= ~dk;
+            m_hw_keys &= ~sdl_to_game_hw(event.key.keysym.sym);
         }
     }
     return false;

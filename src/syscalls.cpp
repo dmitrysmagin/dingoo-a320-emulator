@@ -856,27 +856,27 @@ static u32 dkey_to_hw(u32 dkey) {
 void Syscalls::impl__kbd_get_status() {
     u32 state_ptr = arg(0);
     u32 keys = m_display.get_dingoo_keys();
-    u32 released = ~keys & m_prev_kbd_keys;
+    u32 hw   = m_display.get_hw_keys();
     u32 pressed  = keys & ~m_prev_kbd_keys;
 
-    u32 curr_hw     = dkey_to_hw(keys);
-    u32 released_hw = dkey_to_hw(m_prev_kbd_keys) & ~curr_hw;
+    u32 released_hw = m_prev_hw & ~hw;
 
     if (state_ptr) {
         m_mem.write_u32(state_ptr + 0,  keys);
         m_mem.write_u32(state_ptr + 4,  pressed);
-        m_mem.write_u32(state_ptr + 8,  curr_hw);     // hardware bit format for key_input_handler
+        m_mem.write_u32(state_ptr + 8,  hw);           // game-correct bits for key_input_handler
         m_mem.write_u32(state_ptr + 12, 0);
         m_mem.write_u32(state_ptr + 16, pressed);
-        m_mem.write_u32(state_ptr + 20, released_hw); // hardware bit format for key_input_handler
+        m_mem.write_u32(state_ptr + 20, released_hw);   // released game-correct bits
     }
     m_prev_kbd_keys = keys;
+    m_prev_hw = hw;
 
     g_cpu_regs[2] = keys;
 
     if (keys)
         printf("[INPUT] _kbd_get_status(a0=0x%08X) dkey=0x%04X hw=0x%08X rel_hw=0x%08X\n",
-               state_ptr, keys, curr_hw, released_hw);
+               state_ptr, keys, hw, released_hw);
 
     m_mem.write_u32(KERNEL_KEY_STATE_ADDR, keys);
 }

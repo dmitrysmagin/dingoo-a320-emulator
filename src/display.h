@@ -63,6 +63,7 @@ public:
     void clear_dirty() { m_dirty = false; }
 
     u32 get_dingoo_keys() const { return m_dingoo_keys; }
+    u32 get_hw_keys() const { return m_hw_keys; }
     void set_key(u32 key, bool down) {
         if (down) m_dingoo_keys |= key;
         else      m_dingoo_keys &= ~key;
@@ -91,6 +92,7 @@ private:
     bool m_initialized;
     bool m_argb_valid;                  // true once m_argb_cache has been populated
     u32 m_dingoo_keys;
+    u32 m_hw_keys;
     u32 m_prev_dingoo_keys;
     std::queue<u32> m_input_events;
     static constexpr size_t MAX_INPUT_EVENTS = 64;
