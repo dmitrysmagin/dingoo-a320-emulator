@@ -214,9 +214,15 @@ static u32 sdl_to_game_hw(SDL_Keycode sym) {
     case SDLK_DOWN:     return 0x08000000u;  // bit 27 = DOWN
     case SDLK_LEFT:     return 0x10000000u;  // bit 28 = LEFT
     case SDLK_RIGHT:    return 0x00040000u;  // bit 18 = RIGHT
-    case SDLK_RETURN:   return 0x80000000u;  // bit 31 = START/A (confirm)
-    case SDLK_TAB:      return 0x00200000u;  // bit 21 = SELECT (back)
-    default:            return 0;             // face buttons: keycode-only
+    case SDLK_RETURN:   return 0x80000000u;   // bit 31 = START/A (confirm)
+    case SDLK_TAB:      return 0x00200000u;   // bit 21 = SELECT (back)
+    case SDLK_z:        return 0x00000040u;   // bit  6 = DKEY_A hw
+    case SDLK_x:        return 0x10000000u;   // bit 28 = DKEY_B hw (collides with LEFT!)
+    case SDLK_a:        return 0x00000100u;   // bit  8 = VK_GAME_X
+    case SDLK_s:        return 0x00000200u;   // bit  9 = VK_GAME_Y
+    case SDLK_q:        return 0x00001000u;   // bit 12 = VK_GAME_L
+    case SDLK_w:        return 0x00000800u;   // bit 11 = DKEY_R hw
+    default:            return 0;
     }
 }
 
