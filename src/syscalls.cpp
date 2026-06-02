@@ -3,6 +3,15 @@
 #include <cstring>
 #include <cstdlib>
 #include <algorithm>
+#include <sys/stat.h>
+
+// fsys_find constants (mirrors dingoo_sdk/include/dingoo/fsys.h)
+#define FSYS_FILENAME_MAX 544
+#define FSYS_ATTR_DISKLABEL 0x08
+#define FSYS_ATTR_DIR       0x10
+#define FSYS_ATTR_FILE      0x20
+#define FSYS_FIND_FILE      0x00
+#define FSYS_FIND_DIRECTORY 0x10
 
 extern u32 g_cpu_regs[32];
 extern u32 g_cpu_pc;
@@ -1046,18 +1055,156 @@ void Syscalls::impl_fsys_fwrite() {
     g_cpu_regs[2] = do_fwrite(buf, size, nmemb, handle);
 }
 
+int Syscalls::alloc_search_handle() {
+    for (size_t i = 0; i < m_searches.size(); i++) {
+        if (!m_searches[i].in_use) { m_searches[i].in_use = true; return (int)i; }
+    }
+    int idx = (int)m_searches.size();
+    m_searches.push_back({});
+    m_searches[idx].in_use = true;
+    return idx;
+}
+
+void Syscalls::free_search_handle(int idx) {
+    if (idx < 0 || idx >= (int)m_searches.size() || !m_searches[idx].in_use) return;
+    if (m_searches[idx].dir) closedir(m_searches[idx].dir);
+    m_searches[idx].in_use = false;
+    m_searches[idx].dir = nullptr;
+}
+
 void Syscalls::impl_fsys_findfirst() {
-    printf("[FSYS] findfirst() - stub\n");
-    g_cpu_regs[2] = (u32)-1;
+    u32 path_addr = arg(0);
+    int filter = (int)arg(1);   // e.g. -1, FSYS_FIND_FILE(0), FSYS_FIND_DIRECTORY(0x10)
+    u32 info_addr = arg(2);
+
+    std::string path = path_addr ? guest_string(path_addr) : "";
+    printf("[FSYS] findfirst(path='%s', filter=%d, info=0x%08X)\n", path.c_str(), filter, info_addr);
+
+    if (!info_addr) { g_cpu_regs[2] = (u32)-1; return; }
+
+    // Normalise path: strip 'a:\' / '.\' and keep directory part
+    std::string dir_path;
+    {
+        size_t star = path.find('*');
+        if (star != std::string::npos) path = path.substr(0, star);
+        size_t last_slash = path.find_last_of("/\\");
+        dir_path = (last_slash != std::string::npos) ? path.substr(0, last_slash) : ".";
+        // Strip leading .\ ./
+        while (dir_path.size() >= 2 && dir_path[0] == '.' && (dir_path[1] == '\\' || dir_path[1] == '/'))
+            dir_path = dir_path.substr(2);
+        // Strip leading "a:" or "A:"
+        if (dir_path.size() >= 2 && dir_path[1] == ':')
+            dir_path = dir_path.substr(2);
+        if (dir_path.empty()) dir_path = ".";
+        // Append backslash for opendir safety
+        if (dir_path.back() != '/' && dir_path.back() != '\\')
+            dir_path += '/';
+    }
+
+    int idx = alloc_search_handle();
+    m_searches[idx].dir = opendir(dir_path.c_str());
+    m_searches[idx].filter = filter;
+    m_searches[idx].dir_path = dir_path;
+
+    if (!m_searches[idx].dir) {
+        // Fallback: try save/ prefix
+        std::string alt = "save/" + dir_path;
+        m_searches[idx].dir = opendir(alt.c_str());
+        if (m_searches[idx].dir) m_searches[idx].dir_path = alt;
+    }
+    if (!m_searches[idx].dir) {
+        printf("[FSYS] findfirst: cannot open '%s'\n", dir_path.c_str());
+        free_search_handle(idx);
+        g_cpu_regs[2] = (u32)-1;
+        return;
+    }
+
+    // Store handle in user struct (1‑based)
+    u32 info_phys = info_addr & 0x1FFFFFFF;
+    m_mem.write_u32(info_phys + 0, (u32)(idx + 1)); // handle
+
+    // Fill first entry
+    g_cpu_regs[2] = 0; // assume success
+    impl_fsys_findnext(); // sets result
+    // If next returns -1, first also fails
+    u32 result = g_cpu_regs[2];
+    if (result != 0) {
+        // No entries found – close and return -1
+        free_search_handle(idx);
+        m_mem.write_u32(info_phys + 0, 0);
+    }
+    g_cpu_regs[2] = result;
 }
 
 void Syscalls::impl_fsys_findnext() {
-    printf("[FSYS] findnext() - stub\n");
-    g_cpu_regs[2] = (u32)-1;
+    u32 info_addr = arg(0);
+    if (!info_addr) { g_cpu_regs[2] = (u32)-1; return; }
+
+    u32 info_phys = info_addr & 0x1FFFFFFF;
+    u32 handle = m_mem.read_u32(info_phys + 0);
+    if (handle == 0) { g_cpu_regs[2] = (u32)-1; return; }
+    int idx = (int)handle - 1;
+    if (idx < 0 || idx >= (int)m_searches.size() || !m_searches[idx].in_use || !m_searches[idx].dir) {
+        g_cpu_regs[2] = (u32)-1;
+        return;
+    }
+
+    DIR* dir = m_searches[idx].dir;
+    int filter = m_searches[idx].filter;
+    const std::string& base_path = m_searches[idx].dir_path;
+
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        // Skip . and ..
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+            continue;
+
+        // Build full path for stat
+        std::string full = base_path + entry->d_name;
+        struct stat st;
+        if (stat(full.c_str(), &st) != 0) continue;
+
+        // Determine attributes
+        u32 attr = 0;
+        if (S_ISDIR(st.st_mode))
+            attr = FSYS_ATTR_DIR;
+        else if (S_ISREG(st.st_mode))
+            attr = FSYS_ATTR_FILE;
+        else
+            continue; // skip unexpected
+
+        // Apply filter
+        if (filter != -1) {
+            if (filter == FSYS_FIND_FILE && (attr & FSYS_ATTR_FILE) == 0) continue;
+            if (filter == FSYS_FIND_DIRECTORY && (attr & FSYS_ATTR_DIR) == 0) continue;
+        }
+
+        // Fill info struct (offset layout: handle=0, size=4, attr=8, time=12, pad=16, name=18)
+        m_mem.write_u32(info_phys + 4, (u32)st.st_size);
+        m_mem.write_u32(info_phys + 8, attr);
+        m_mem.write_u32(info_phys + 12, 0); // time
+        m_mem.write_u16(info_phys + 16, 0); // padding
+        size_t name_len = strlen(entry->d_name);
+        if (name_len > FSYS_FILENAME_MAX - 1) name_len = FSYS_FILENAME_MAX - 1;
+        for (size_t i = 0; i < name_len; i++)
+            m_mem.write_u8(info_phys + 18 + (u32)i, (u8)entry->d_name[i]);
+        m_mem.write_u8(info_phys + 18 + (u32)name_len, 0);
+
+        g_cpu_regs[2] = 0; // success
+        return;
+    }
+    g_cpu_regs[2] = (u32)-1; // no more entries
 }
 
 void Syscalls::impl_fsys_findclose() {
-    printf("[STUB] fsys_findclose\n");
+    u32 info_addr = arg(0);
+    if (!info_addr) { g_cpu_regs[2] = (u32)-1; return; }
+    u32 info_phys = info_addr & 0x1FFFFFFF;
+    u32 handle = m_mem.read_u32(info_phys + 0);
+    if (handle == 0) { g_cpu_regs[2] = 0; return; }
+    int idx = (int)handle - 1;
+    free_search_handle(idx);
+    m_mem.write_u32(info_phys + 0, 0);
     g_cpu_regs[2] = 0;
 }
 

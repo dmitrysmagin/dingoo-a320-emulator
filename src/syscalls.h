@@ -10,6 +10,7 @@
 #include <vector>
 #include <queue>
 #include <SDL2/SDL.h>
+#include <dirent.h>
 
 class Syscalls {
 public:
@@ -263,6 +264,17 @@ public:
     void process_timers();
     void call_guest_function(u32 func, u32 arg0);
     u32 m_last_timer_tick;
+
+    // Directory search handles (fsys_findfirst/next/close)
+    struct SearchEntry {
+        bool in_use;
+        DIR* dir;
+        int filter;
+        std::string dir_path;
+    };
+    std::vector<SearchEntry> m_searches;
+    int alloc_search_handle();
+    void free_search_handle(int idx);
 };
 
 #endif // SYSCALLS_H
