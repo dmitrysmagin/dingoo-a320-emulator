@@ -1753,13 +1753,63 @@ void Syscalls::impl_fsys_fopenW() {
 }
 
 void Syscalls::impl___to_unicode_le() {
-    printf("[STUB] __to_unicode_le\n");
-    g_cpu_regs[2] = (u32)-1;
+    u32 src = arg(0);
+    if (!src) { g_cpu_regs[2] = 0; return; }
+
+    // Read ASCII source string
+    char buf[1024];
+    u32 len = 0;
+    for (u32 i = 0; i < sizeof(buf) - 1; i++) {
+        u8 c = m_mem.read_u8(src + i);
+        buf[i] = (char)c;
+        if (c == 0) { len = i; break; }
+    }
+    if (len == 0) { g_cpu_regs[2] = 0; return; }
+
+    // Allocate wide buffer in guest heap
+    u32 dst = heap_alloc((len + 1) * 2);
+    if (!dst) { g_cpu_regs[2] = 0; return; }
+    u32 dst_phys = dst & 0x1FFFFFFF;
+
+    // Write UTF-16LE (naive ASCII)
+    for (u32 i = 0; i < len; i++) {
+        u16 wc = (u8)buf[i] < 128 ? (u16)(u8)buf[i] : (u16)'?';
+        m_mem.write_u16(dst_phys + i * 2, wc);
+    }
+    m_mem.write_u16(dst_phys + len * 2, 0); // null terminator
+
+    printf("[UNICODE] __to_unicode_le(\"%s\") -> 0x%08X\n", buf, dst);
+    g_cpu_regs[2] = dst;
 }
 
 void Syscalls::impl___to_locale_ansi() {
-    printf("[STUB] __to_locale_ansi\n");
-    g_cpu_regs[2] = (u32)-1;
+    u32 src = arg(0);
+    if (!src) { g_cpu_regs[2] = 0; return; }
+
+    // Read UTF-16LE source
+    u16 wide[512];
+    u32 len = 0;
+    for (u32 i = 0; i < 512; i++) {
+        u16 c = m_mem.read_u16(src + i * 2);
+        wide[i] = c;
+        if (c == 0) { len = i; break; }
+    }
+    if (len == 0) { g_cpu_regs[2] = 0; return; }
+
+    // Allocate ASCII buffer in guest heap
+    u32 dst = heap_alloc(len + 1);
+    if (!dst) { g_cpu_regs[2] = 0; return; }
+    u32 dst_phys = dst & 0x1FFFFFFF;
+
+    // Write low byte of each wchar_t (naive ASCII)
+    for (u32 i = 0; i < len; i++) {
+        u8 c = (wide[i] < 128) ? (u8)wide[i] : '?';
+        m_mem.write_u8(dst_phys + i, c);
+    }
+    m_mem.write_u8(dst_phys + len, 0); // null terminator
+
+    printf("[UNICODE] __to_locale_ansi(0x%08X, %u chars) -> 0x%08X\n", src, len, dst);
+    g_cpu_regs[2] = dst;
 }
 
 void Syscalls::impl_get_current_language() {
