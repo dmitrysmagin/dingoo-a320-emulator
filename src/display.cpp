@@ -206,15 +206,17 @@ static u32 sdl_to_dingoo(SDL_Keycode sym) {
 }
 
 // Game-correct hardware bits for state[8], derived from user test:
-// bit 18 = RIGHT, bit 20 = SELECT, bit 27 = DOWN, bit 28 = LEFT, bit 31 = START
+// bit 20 = UP, bit 27 = DOWN, bit 28 = LEFT, bit 18 = RIGHT,
+// bit 21 = SELECT, bit 31 = START/A
 static u32 sdl_to_game_hw(SDL_Keycode sym) {
     switch (sym) {
     case SDLK_UP:       return 0x00100000u;  // bit 20 = UP
     case SDLK_DOWN:     return 0x08000000u;  // bit 27 = DOWN
     case SDLK_LEFT:     return 0x10000000u;  // bit 28 = LEFT
     case SDLK_RIGHT:    return 0x00040000u;  // bit 18 = RIGHT
-    case SDLK_RETURN:   return 0x80000000u;  // bit 31 = START
-    default:            return 0;
+    case SDLK_RETURN:   return 0x80000000u;  // bit 31 = START/A (confirm)
+    case SDLK_TAB:      return 0x00200000u;  // bit 21 = SELECT (back)
+    default:            return 0;             // face buttons: keycode-only
     }
 }
 

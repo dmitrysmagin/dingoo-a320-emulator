@@ -845,11 +845,11 @@ static u32 dkey_to_hw(u32 dkey) {
     if (dkey & DKEY_R)      hw |= 0x00000800u;  // bit 11 (same as DKEY_R value)
     if (dkey & DKEY_UP)     hw |= 0x00010000u;  // bit 16
     if (dkey & DKEY_DOWN)   hw |= 0x00200000u;  // bit 21
-    if (dkey & DKEY_SELECT) hw |= 0x80000000u;  // bit 31
-    if (dkey & DKEY_B)      hw |= 0x10000000u;  // bit 28 (keycode 13)
-    if (dkey & DKEY_LEFT)   hw |= 0x00040000u;  // bit 18 (keycode 14)
-    if (dkey & DKEY_RIGHT)  hw |= 0x00100000u;  // bit 20 (keycode 15)
-    if (dkey & DKEY_START)  hw |= 0x08000000u;  // bit 27 (keycode 16)
+    if (dkey & DKEY_SELECT) hw |= 0x80000000u;  // bit 31 START (or A)
+    if (dkey & DKEY_B)      hw |= 0x10000000u;  // bit 28 LEFT
+    if (dkey & DKEY_LEFT)   hw |= 0x00040000u;  // bit 18 RIGHT
+    if (dkey & DKEY_RIGHT)  hw |= 0x00100000u;  // bit 20 UP
+    if (dkey & DKEY_START)  hw |= 0x08000000u;  // bit 27 DOWN
     return hw;
 }
 
