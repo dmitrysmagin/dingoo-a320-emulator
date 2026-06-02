@@ -926,28 +926,27 @@ u32 Syscalls::bitmask_to_keycode(u32 bitmask) {
 //   bit 21 (LUI 0x0020) -> keycode 18 (DOWN nav)
 void Syscalls::impl__kbd_get_status() {
     u32 state_ptr = arg(0);
-    u32 keys = m_display.get_dingoo_keys();
-    u32 hw   = m_display.get_hw_keys();
-    u32 pressed  = keys & ~m_prev_kbd_keys;
-
-    u32 released_hw = m_prev_hw & ~hw;
+    u32 keys = m_display.get_dingoo_keys();  // DKEY_* bitmask for kernel state + $v0
+    u32 hw   = m_display.get_hw_keys();      // game-correct bitmask for KEY_STATUS
+    u32 hw_pressed  = hw & ~m_prev_hw;       // new hw bits since last call
+    u32 hw_released = m_prev_hw & ~hw;        // hw bits released since last call
 
     if (state_ptr) {
-        m_mem.write_u32(state_ptr + 0,  keys);
-        m_mem.write_u32(state_ptr + 4,  pressed);
-        m_mem.write_u32(state_ptr + 8,  hw);           // game-correct bits for key_input_handler
-        m_mem.write_u32(state_ptr + 12, 0);
-        m_mem.write_u32(state_ptr + 16, pressed);
-        m_mem.write_u32(state_ptr + 20, released_hw);   // released game-correct bits
+        // KEY_STATUS struct (dingoo_sdk keyboard.h / entry.h):
+        //   +0: unsigned long pressed   (keys newly pressed, game-correct bit positions)
+        //   +4: unsigned long released  (keys newly released, game-correct bit positions)
+        //   +8: unsigned long status    (current key state, game-correct bit positions)
+        m_mem.write_u32(state_ptr + 0, hw_pressed);
+        m_mem.write_u32(state_ptr + 4, hw_released);
+        m_mem.write_u32(state_ptr + 8, hw);
     }
-    m_prev_kbd_keys = keys;
     m_prev_hw = hw;
 
     g_cpu_regs[2] = keys;
 
     if (keys)
-        printf("[INPUT] _kbd_get_status(a0=0x%08X) dkey=0x%04X hw=0x%08X rel_hw=0x%08X\n",
-               state_ptr, keys, hw, released_hw);
+        printf("[INPUT] _kbd_get_status(a0=0x%08X) hw=0x%08X pressed=0x%08X released=0x%08X\n",
+               state_ptr, hw, hw_pressed, hw_released);
 
     m_mem.write_u32(KERNEL_KEY_STATE_ADDR, keys);
 }

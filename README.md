@@ -106,19 +106,25 @@ SDL_VIDEODRIVER=offscreen ./emulator.exe --frames 1000 ../snake.app
 
 ### Controls
 
-| Dingoo button | SDL/Keyboard key |
-|---------------|------------------|
-| A             | Z                |
-| B             | X                |
-| X             | A                |
-| Y             | S                |
-| L             | Q                |
-| R             | W                |
-| START         | Enter            |
-| SELECT        | Tab              |
-| D-Pad         | Arrow keys       |
-| Volume +/-    | = / -            |
-| Quit          | Escape           |
+Key bit positions within `KEY_STATUS.status` follow the Dingoo SDK convention
+(used by AstroLander `control.h` constants).
+
+| Dingoo button | SDL/Keyboard key | HW bit |
+|---------------|------------------|--------|
+| A             | Z                | 31     |
+| B             | X                | 21     |
+| X             | A                | 16     |
+| Y             | S                | 6      |
+| L             | Q                | 8      |
+| R             | W                | 29     |
+| START         | Enter            | 11     |
+| SELECT        | Tab              | 10     |
+| D-Pad Up      | ↑                | 20     |
+| D-Pad Down    | ↓                | 27     |
+| D-Pad Left    | ←                | 28     |
+| D-Pad Right   | →                | 18     |
+| Volume +/-    | = / -            | —      |
+| Quit          | Escape           | —      |
 
 ---
 
@@ -183,7 +189,9 @@ Guest memory layout:
 | Feature | Status |
 |---------|--------|
 | Full SDL keyboard → Dingoo bitmask mapping | ✅ Complete |
-| Event queue (`_sys_judge_event` reads at 0x80BFECD8) | ✅ Complete |
+| `KEY_STATUS` struct (`_kbd_get_status`) conforms to Dingoo SDK (3 fields, hw bit positions) | ✅ Complete |
+| `_kbd_get_key` returns Dingoo SDK keycode (0x01–0x0C) | ✅ Complete |
+| `_sys_judge_event` returns `(type<<8)\|code` per SDK | ✅ Complete |
 | Direct GPIO scan key state at kernel memory addresses | ✅ Complete |
 | Offscreen/headless mode support | ✅ Complete |
 
@@ -195,15 +203,15 @@ Guest memory layout:
 | Resource archive parsing (.spk, up to 3216 entries) | ✅ Complete |
 | Path normalization (`.\dir\file.ext` → `dir/file.ext`) | ✅ Complete |
 | Save file writes (`slot*.sav`, `config.sdt`, `state.sdt`) | ❌ Returns NOT FOUND (game handles gracefully) |
-| `fsys_findfirst`/`findnext` | ⚠️ Stubbed (returns -1) |
+| `fsys_findfirst`/`findnext` | ✅ Real implementation (`opendir`/`readdir` on host) |
 | `fsys_remove`/`rename` | ⚠️ Stubbed (returns -1) |
 
 ### Syscall API Coverage
 
 The emulator intercepts all GOT trampoline calls from the guest binary. Of ~77 possible imports:
 
-- **45 implemented** — real implementations (malloc, printf, LCD, audio, input, etc.)
-- **27 stubbed** — return constants (abort, cache ops, USB, volume, etc.)
+- **50 implemented** — real implementations (malloc, printf, LCD, audio, input, timer, unicode, directory search, etc.)
+- **22 stubbed** — return constants (abort, cache ops, USB, volume, etc.)
 - **0 unknown** for standard 72-entry GOT apps
 - **38 unknown** for Yi-Chi King Fighter (uncommon µC/GUI imports)
 
@@ -249,9 +257,7 @@ Tested with 14 `.app` files:
 | Save file write path not implemented | ⚠️ Medium priority |
 | No frame rate cap (runs as fast as emulator can go) | ⚠️ Low priority |
 | MXU audio mixing correctness unverified | ⚠️ Low priority |
-| `fsys_findfirst`/`findnext` stubbed | ⚠️ Low priority |
-| `StartSwTimer` stubbed (returns 1, no timer created) | ⚠️ Low priority |
-| `__to_unicode_le` / `__to_locale_ansi` stubbed | ⚠️ May affect Chinese-language UI |
+| `get_current_language` hardcoded to English | ⚠️ Low priority — may affect Chinese UI locale |
 
 ---
 
@@ -261,14 +267,10 @@ Tested with 14 `.app` files:
 
 | GOT | API | Minimal implementation |
 |-----|-----|-----------------------|
-| 42–43 | `fsys_findfirst`/`findnext` | Iterate over `Archive` entries or host `save/` dir |
-| 13 | `StartSwTimer` | Store period + callback; check on each frame |
-| 69 | `__to_unicode_le` | Convert UTF-8 to UTF-16LE, allocate guest buffer |
-| 70 | `__to_locale_ansi` | Convert UTF-16LE to UTF-8, allocate guest buffer |
 | 72 | `get_dl_handle` | Allocate dummy handle referencing current Archive |
 | 73–76 | `dl_res_*` | Thin wrappers around `Archive::find` |
 
-### Harmless hardware stubs (27 entries)
+### Harmless hardware stubs (22 entries)
 
 Compete list in [`unimplemented.md`](unimplemented.md). All return constants with no side effects.
 
@@ -317,3 +319,5 @@ Compete list in [`unimplemented.md`](unimplemented.md). All return constants wit
 - **OS**: µC/OS-II real-time kernel (task creation, semaphores, time services)
 - **Archive format (`.spk`)**: `uint16 LE count` + `count × (char[64] name + uint32 LE offset)` + data blocks
 - **`.app` format**: CCDL/IMPT/EXPT/RAWD 4-header structure; resource section appended after RAWD
+- **`KEY_STATUS` struct** (Dingoo SDK `keyboard.h`): 3 × `unsigned long` — `pressed` (+0), `released` (+4), `status` (+8). Bit positions are game-specific hardware constants (AstroLander `control.h`), not DKEY_* values
+- **Input API**: `_kbd_get_status(KEY_STATUS*)` fills the struct with hw-bit current state; `_kbd_get_key()` returns a Dingoo SDK keycode (0x01–0x0C); `_sys_judge_event(void*)` returns `(type<<8)\|code` or 0

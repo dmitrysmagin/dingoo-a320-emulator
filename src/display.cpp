@@ -205,23 +205,22 @@ static u32 sdl_to_dingoo(SDL_Keycode sym) {
     }
 }
 
-// Game-correct hardware bits for state[8], derived from user test:
-// bit 20 = UP, bit 27 = DOWN, bit 28 = LEFT, bit 18 = RIGHT,
-// bit 21 = SELECT, bit 31 = START/A
+// Game-correct hardware bits for KEY_STATUS.status, matching
+// AstroLander control.h D-Pad/button bit positions.
 static u32 sdl_to_game_hw(SDL_Keycode sym) {
     switch (sym) {
-    case SDLK_UP:       return 0x00100000u;  // bit 20 = UP
-    case SDLK_DOWN:     return 0x08000000u;  // bit 27 = DOWN
-    case SDLK_LEFT:     return 0x10000000u;  // bit 28 = LEFT
-    case SDLK_RIGHT:    return 0x00040000u;  // bit 18 = RIGHT
-    case SDLK_RETURN:   return 0x80000000u;   // bit 31 = START/A (confirm)
-    case SDLK_TAB:      return 0x00200000u;   // bit 21 = SELECT (back)
-    case SDLK_z:        return 0x00000040u;   // bit  6 = DKEY_A hw
-    case SDLK_x:        return 0x10000000u;   // bit 28 = DKEY_B hw (collides with LEFT!)
-    case SDLK_a:        return 0x00000100u;   // bit  8 = VK_GAME_X
-    case SDLK_s:        return 0x00000200u;   // bit  9 = VK_GAME_Y
-    case SDLK_q:        return 0x00001000u;   // bit 12 = VK_GAME_L
-    case SDLK_w:        return 0x00000800u;   // bit 11 = DKEY_R hw
+    case SDLK_UP:       return 1u << 20;  // CONTROL_DPAD_UP
+    case SDLK_DOWN:     return 1u << 27;  // CONTROL_DPAD_DOWN
+    case SDLK_LEFT:     return 1u << 28;  // CONTROL_DPAD_LEFT
+    case SDLK_RIGHT:    return 1u << 18;  // CONTROL_DPAD_RIGHT
+    case SDLK_RETURN:   return 1u << 11;  // CONTROL_BUTTON_START
+    case SDLK_TAB:      return 1u << 10;  // CONTROL_BUTTON_SELECT
+    case SDLK_z:        return 1u << 31;  // CONTROL_BUTTON_A
+    case SDLK_x:        return 1u << 21;  // CONTROL_BUTTON_B
+    case SDLK_a:        return 1u << 16;  // CONTROL_BUTTON_X
+    case SDLK_s:        return 1u << 6;   // CONTROL_BUTTON_Y
+    case SDLK_q:        return 1u << 8;   // CONTROL_TRIGGER_LEFT
+    case SDLK_w:        return 1u << 29;  // CONTROL_TRIGGER_RIGHT
     default:            return 0;
     }
 }
