@@ -211,6 +211,7 @@ bool parse_app(const std::string& path, AppBinary& out) {
                 u32 dir_sz = 2 + (u32)count_u16 * entry_sz;
                 if (off + dir_sz > (u64)file_size) continue;
                 bool valid = true;
+                bool found_nonzero = false;
                 u32 first_do = 0;
                 u32 max_check = std::min((u32)count_u16, 3u);
                 for (u32 i = 0; i < max_check; i++) {
@@ -218,13 +219,14 @@ bool parse_app(const std::string& path, AppBinary& out) {
                     fseek(f, (long)(off + 2 + i * entry_sz + entry_sz - 4), SEEK_SET);
                     if (fread(&data_off, 4, 1, f) != 1) { valid = false; break; }
                     if (data_off == 0) continue;  // sentinel entry, skip
+                    found_nonzero = true;
                     u64 abs_doff = off + data_off;
                     if (abs_doff < off + dir_sz || abs_doff > (u64)file_size)
                         { valid = false; break; }
                     if (i == 0) first_do = data_off;
                     else if (data_off == first_do) { valid = false; break; } // reject all-identical
                 }
-                if (valid) return true;
+                if (valid && found_nonzero) return true;
             }
         }
 
@@ -238,6 +240,7 @@ bool parse_app(const std::string& path, AppBinary& out) {
             u32 dir_sz = 4 + count_u32 * entry_sz;
             if (off + dir_sz <= (u64)file_size) {
                 bool valid = true;
+                bool found_nonzero = false;
                 u32 first_do = 0;
                 u32 max_check = std::min(count_u32, 3u);
                 for (u32 i = 0; i < max_check; i++) {
@@ -245,13 +248,14 @@ bool parse_app(const std::string& path, AppBinary& out) {
                     fseek(f, (long)(off + 4 + i * entry_sz + entry_sz - 4), SEEK_SET);
                     if (fread(&data_off, 4, 1, f) != 1) { valid = false; break; }
                     if (data_off == 0) continue;  // sentinel entry
+                    found_nonzero = true;
                     u64 abs_doff = off + data_off;
                     if (abs_doff < off + dir_sz || abs_doff > (u64)file_size)
                         { valid = false; break; }
                     if (i == 0) first_do = data_off;
                     else if (data_off == first_do) { valid = false; break; }
                 }
-                if (valid) return true;
+                if (valid && found_nonzero) return true;
             }
         }
 

@@ -349,7 +349,7 @@ u32 Syscalls::heap_realloc(u32 addr, u32 new_size) {
 // === File handles ===
 
 int Syscalls::alloc_file_handle() {
-    for (int i = 1; i < 64; i++) {  // start at 1 so 0 = NULL for guest
+    for (int i = 0; i < 64; i++) {
         if (!m_files[i].in_use) {
             m_files[i].in_use = true;
             m_files[i].offset = 0;
@@ -835,24 +835,6 @@ u32 Syscalls::bitmask_to_keycode(u32 bitmask) {
 // NOT the DKEY_ bitmask format. Confirmed from disassembly of 0x80A000FC:
 //   bit 16 (LUI 0x0001) -> keycode 17 (UP nav)
 //   bit 21 (LUI 0x0020) -> keycode 18 (DOWN nav)
-//   bit 31 (BGEZ sign)  -> keycode 8  (SELECT)
-//   bit 6  (ANDI 0x0040)-> keycode 2  (A button, DKEY_A=0x0040 happens to match)
-//   bit 11 (ANDI 0x0800)-> keycode 2  (R button, DKEY_R=0x0800 happens to match)
-//   bit 28 -> keycode 13, bit 18 -> keycode 14, bit 20 -> keycode 15, bit 27 -> keycode 16
-static u32 dkey_to_hw(u32 dkey) {
-    u32 hw = 0;
-    if (dkey & DKEY_A)      hw |= 0x00000040u;  // bit 6  (same as DKEY_A value)
-    if (dkey & DKEY_R)      hw |= 0x00000800u;  // bit 11 (same as DKEY_R value)
-    if (dkey & DKEY_UP)     hw |= 0x00010000u;  // bit 16
-    if (dkey & DKEY_DOWN)   hw |= 0x00200000u;  // bit 21
-    if (dkey & DKEY_SELECT) hw |= 0x80000000u;  // bit 31 START (or A)
-    if (dkey & DKEY_B)      hw |= 0x10000000u;  // bit 28 LEFT
-    if (dkey & DKEY_LEFT)   hw |= 0x00040000u;  // bit 18 RIGHT
-    if (dkey & DKEY_RIGHT)  hw |= 0x00100000u;  // bit 20 UP
-    if (dkey & DKEY_START)  hw |= 0x08000000u;  // bit 27 DOWN
-    return hw;
-}
-
 void Syscalls::impl__kbd_get_status() {
     u32 state_ptr = arg(0);
     u32 keys = m_display.get_dingoo_keys();
