@@ -117,6 +117,18 @@ private:
     void impl_dl_res_get_data();
     void impl_dl_res_close();
 
+    // GOT 77-86: LCD/input wrappers and µC/GUI helpers
+    void impl_lcd_set_frame();
+    void impl_lcd_get_frame();
+    void impl_lcd_get_bpp();
+    void impl_LCD_GetXSize();
+    void impl_LCD_GetYSize();
+    void impl_LCD_Color2Index();
+    void impl_kbd_get_key();
+    void impl_kbd_get_status();
+    void impl_sys_judge_event();
+    void impl_open_gui_key_msg();
+
     std::string format_string(const std::string& fmt, int first_arg);
 
     // Internal helpers

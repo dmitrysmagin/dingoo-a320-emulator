@@ -62,10 +62,14 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     // Populate OS LCD format mirror (normally set during LcdGetDisMode/rgb_user_init).
     // phys 0x00508FC0: pixel format width (2 = RGB565, 4 = ARGB8888)
     // phys 0x006A1DDC: palette flag  (0 = RGB/ARGB, non-zero = 8-bit indexed + CLUT)
+    // phys 0x0056F16A: canonical LCD width  (read by LCD_GetXSize / direct access)
+    // phys 0x0056F16C: canonical LCD height (read by LCD_GetYSize / direct access)
     {
         u8* raw = m_mem.get_raw_ptr();
         *(u32*)(raw + 0x00508FC0) = 2;
         *(u32*)(raw + 0x006A1DDC) = 0;
+        *(u16*)(raw + 0x0056F16A) = Display::WIDTH;
+        *(u16*)(raw + 0x0056F16C) = Display::HEIGHT;
     }
     for (int i = 0; i < MAX_DL_RES; i++) {
         m_dl_res[i].in_use = false;
@@ -197,8 +201,18 @@ const char* Syscalls::got_name(int index) const {
         "dl_res_get_size",       // 74
         "dl_res_get_data",       // 75
         "dl_res_close",          // 76
+        "lcd_set_frame",         // 77
+        "lcd_get_frame",         // 78
+        "lcd_get_bpp",           // 79
+        "LCD_GetXSize",          // 80
+        "LCD_GetYSize",          // 81
+        "LCD_Color2Index",       // 82
+        "kbd_get_key",           // 83
+        "kbd_get_status",        // 84
+        "sys_judge_event",       // 85
+        "open_gui_key_msg",      // 86
     };
-    if (index >= 0 && index < 77) return names[index];
+    if (index >= 0 && index < 87) return names[index];
     return "unknown";
 }
 
@@ -208,6 +222,7 @@ bool Syscalls::got_is_stub(int index) const {
     case 25: case 26: case 27: case 37: case 38: case 42:
     case 43: case 44: case 45: case 46: case 47: case 48:
     case 52: case 53: case 57: case 69: case 70: case 72:
+    case 86:
         return true;
     default:
         return false;
@@ -295,6 +310,16 @@ void Syscalls::dispatch(int got_index, u32 /*return_addr*/) {
     case 74: impl_dl_res_get_size(); break;
     case 75: impl_dl_res_get_data(); break;
     case 76: impl_dl_res_close(); break;
+    case 77: impl_lcd_set_frame(); break;
+    case 78: impl_lcd_get_frame(); break;
+    case 79: impl_lcd_get_bpp(); break;
+    case 80: impl_LCD_GetXSize(); break;
+    case 81: impl_LCD_GetYSize(); break;
+    case 82: impl_LCD_Color2Index(); break;
+    case 83: impl_kbd_get_key(); break;
+    case 84: impl_kbd_get_status(); break;
+    case 85: impl_sys_judge_event(); break;
+    case 86: impl_open_gui_key_msg(); break;
     default:
         printf("[SYSCALL] Unknown GOT index %d\n", got_index);
         break;
@@ -2133,6 +2158,70 @@ void Syscalls::impl_dl_res_close() {
     if (idx >= 0 && idx < MAX_DL_RES) {
         free_dl_res_handle(idx);
     }
+    g_cpu_regs[2] = 0;
+}
+
+// === GOT 77-86: LCD wrappers, input wrappers, µC/GUI helpers ===
+
+void Syscalls::impl_lcd_set_frame() {
+    // Non-underscore wrapper: same as _lcd_set_frame
+    impl__lcd_set_frame();
+}
+
+void Syscalls::impl_lcd_get_frame() {
+    // Non-underscore wrapper: same as _lcd_get_frame
+    impl__lcd_get_frame();
+}
+
+void Syscalls::impl_lcd_get_bpp() {
+    u32 fmt_mirror = m_mem.read_u32(0x80508FC0);
+    u32 pal_flag   = m_mem.read_u32(0x806A1DDC);
+    if (pal_flag != 0) {
+        g_cpu_regs[2] = 8;
+    } else if (fmt_mirror >= 4) {
+        g_cpu_regs[2] = 32;
+    } else {
+        g_cpu_regs[2] = 16;
+    }
+}
+
+void Syscalls::impl_LCD_GetXSize() {
+    g_cpu_regs[2] = Display::WIDTH;
+}
+
+void Syscalls::impl_LCD_GetYSize() {
+    g_cpu_regs[2] = Display::HEIGHT;
+}
+
+void Syscalls::impl_LCD_Color2Index() {
+    // Real firmware signature: int LCD_Color2Index(uint16_t color, uint32_t *index_out)
+    // a0 = 16-bit RGB565 color (zero-extended), a1 = output pointer
+    // For direct-color displays the palette index equals the color value.
+    u32 color = arg(0) & 0xFFFF;
+    u32 out_ptr = arg(1);
+    if (out_ptr)
+        m_mem.write_u32(out_ptr, color);
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_kbd_get_key() {
+    // Non-underscore wrapper: same as _kbd_get_key
+    impl__kbd_get_key();
+}
+
+void Syscalls::impl_kbd_get_status() {
+    // Non-underscore wrapper: same as _kbd_get_status
+    impl__kbd_get_status();
+}
+
+void Syscalls::impl_sys_judge_event() {
+    // Non-underscore wrapper: same as _sys_judge_event
+    impl__sys_judge_event();
+}
+
+void Syscalls::impl_open_gui_key_msg() {
+    // µC/GUI-specific; only imported by Yi-Chi King Fighter
+    printf("[STUB] open_gui_key_msg\n");
     g_cpu_regs[2] = 0;
 }
 
