@@ -68,7 +68,7 @@ bool Archive::load(const std::string& app_path, u64 resource_offset, u64 resourc
     u32 parsed_count = entry_count;
 
     for (auto& c : candidates) {
-        u32 ec;
+        u32 ec = 0;
         if (c.count_bytes == 2) {
             memcpy(&ec, m_resource_data.data(), 2);
         } else {
