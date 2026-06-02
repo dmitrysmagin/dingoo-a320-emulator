@@ -1668,7 +1668,7 @@ void Syscalls::impl_fsys_fopenW() {
 
     // If path is garbage, try game init files in order
     std::string search_path = path;
-    if (search_path.empty() || search_path.find_first_not_of(' ') == std::string::npos ||
+    /*if (search_path.empty() || search_path.find_first_not_of(' ') == std::string::npos ||
         search_path.find('?') != std::string::npos) {
         // Game constructs paths using game name from BSS, which gets overwritten.
         // Fall back to expected init files in priority order.
@@ -1683,7 +1683,7 @@ void Syscalls::impl_fsys_fopenW() {
                 break;
             }
         }
-    }
+    }*/
 
     // Look up in archive first — try multiple path variants
     if (m_archive) {
