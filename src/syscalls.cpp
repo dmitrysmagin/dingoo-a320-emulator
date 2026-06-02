@@ -93,7 +93,9 @@ void SDLCALL Syscalls::audio_callback(void* userdata, Uint8* stream, int len) {
     }
     while (i < samples) buf[i++] = 0;
     SDL_UnlockMutex(sys->m_audio_mutex);
-}
+    printf("[AUDIO] callback processed %d samples, queue remaining %zu\n", i, sys->m_audio_queue.size());
+    }
+
 
 u32 Syscalls::arg(int n) {
     if (n >= 0 && n <= 3) return g_cpu_regs[4 + n];
@@ -1032,20 +1034,47 @@ void Syscalls::impl_USB_No_Connect() {
 // === GOT 49-57: audio ===
 
 void Syscalls::impl_waveout_open() {
-    int sample_rate = (int)arg(0);
-    int channels = (int)arg(1);
-    int bits = (int)arg(2);
+    u32 a0 = arg(0), a1 = arg(1), a2 = arg(2);
+    printf("[AUDIO] waveout_open raw args: a0=0x%08X a1=0x%08X a2=0x%08X\n", a0, a1, a2);
+
+    // waveout_open takes a single waveout_args* pointer:
+    //   struct { u32 sample_rate; u16 format; u8 channel; u8 volume; } // 8 bytes
+    int sample_rate, channels, bits;
+
+    // Try reading as struct pointer first (SDK convention)
+    if (a0 >= 0x80000000 || (a0 >= 0x1000 && a0 < m_mem.size())) {
+        // a0 is likely a pointer to waveout_args struct
+        sample_rate = (int)m_mem.read_u32(a0);
+        u16 format  = m_mem.read_u16(a0 + 4);
+        u8  channel = m_mem.read_u8(a0 + 6);
+        u8  volume  = m_mem.read_u8(a0 + 7);
+        channels = channel;
+        bits = (format == 0) ? 16 : 16;  // format field meaning unclear; always 16-bit PCM
+        printf("[AUDIO] struct@0x%08X: rate=%d format=%u ch=%u vol=%u\n",
+               a0, sample_rate, format, channel, volume);
+    } else {
+        // Fallback: individual args (legacy)
+        sample_rate = (int)a0;
+        channels = (int)a1;
+        bits = (int)a2;
+    }
 
     if (sample_rate <= 0) sample_rate = 44100;
-    if (channels <= 0) channels = 2;
+    if (channels <= 0 || channels > 2) channels = 2;  // force mono/stereo
     if (bits <= 0) bits = 16;
+
+    // Create mutex if not yet created
+    if (!m_audio_mutex) {
+        m_audio_mutex = SDL_CreateMutex();
+        printf("[AUDIO] Created audio mutex: %p\n", (void*)m_audio_mutex);
+    }
 
     if (m_audio_device > 0) {
         SDL_CloseAudioDevice(m_audio_device);
         m_audio_device = 0;
     }
 
-    SDL_AudioSpec want, have;
+    SDL_AudioSpec want;
     SDL_zero(want);
     want.freq = sample_rate;
     want.format = AUDIO_S16SYS;
@@ -1054,19 +1083,19 @@ void Syscalls::impl_waveout_open() {
     want.callback = audio_callback;
     want.userdata = this;
 
-    m_audio_device = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+    m_audio_device = SDL_OpenAudioDevice(nullptr, 0, &want, 0, 0);
     if (m_audio_device > 0) {
         SDL_PauseAudioDevice(m_audio_device, 0);
         m_audio_open = true;
         m_audio_device_open = true;
         printf("[AUDIO] waveout_open: %dHz %dch %dbit -> device=%u (got %dHz %dch)\n",
-               sample_rate, channels, bits, m_audio_device, have.freq, have.channels);
-        g_cpu_regs[2] = 0;
+               sample_rate, channels, bits, m_audio_device, want.freq, want.channels);
+        g_cpu_regs[2] = 1;  // return non-zero instance handle
     } else {
         printf("[AUDIO] waveout_open FAILED: %s\n", SDL_GetError());
         m_audio_open = false;
         m_audio_device_open = false;
-        g_cpu_regs[2] = (u32)-1;
+        g_cpu_regs[2] = 0;
     }
 }
 
@@ -1098,34 +1127,53 @@ void Syscalls::impl_HP_Mute_sw() {
 }
 
 void Syscalls::impl_waveout_write() {
-    u32 buf_addr = arg(0);
-    u32 size = arg(1);
+    // SDK: int waveout_write(waveout_inst* inst, char* buffer, int count)
+    // skip inst (arg0), buffer = arg1, count = arg2
+    u32 buf_addr = arg(1);
+    u32 size = arg(2);
 
     if (size == 0 || !buf_addr) {
         g_cpu_regs[2] = 0;
         return;
     }
 
-    u32 count = size / 2;
+    // Log first few calls to see actual buffer addresses and sizes
+    if (m_audio_write_count < 10) {
+        printf("[AUDIO] waveout_write #%u: buf=0x%08X size=%u bytes\n",
+               m_audio_write_count, buf_addr, size);
+    } else if (m_audio_write_count == 10) {
+        printf("[AUDIO] waveout_write: subsequent calls suppressed\n");
+    }
+
+    const u32 count = size / 2;
+    // Limit total queue size to 32768 samples (≈64 KB) to avoid unbounded growth.
+    constexpr size_t MAX_QUEUE_SAMPLES = 32768;
     std::vector<s16> samples(count);
     m_mem.read_block(buf_addr, (u8*)samples.data(), size);
 
     SDL_LockMutex(m_audio_mutex);
-    for (u32 i = 0; i < count; i++)
+    size_t space = (MAX_QUEUE_SAMPLES > m_audio_queue.size()) ? (MAX_QUEUE_SAMPLES - m_audio_queue.size()) : 0;
+    size_t to_push = std::min<size_t>(count, space);
+    for (size_t i = 0; i < to_push; ++i) {
         m_audio_queue.push(samples[i]);
+    }
+    // Discard excess samples if queue is full.
     SDL_UnlockMutex(m_audio_mutex);
 
-    g_cpu_regs[2] = size;
+    g_cpu_regs[2] = size; // return byte count as before
     m_audio_write_count++;
 }
 
 void Syscalls::impl_waveout_can_write() {
-    // Return available write space in bytes (max 64KB ring, subtract queued)
+    // Return available write space in bytes (max 64KB ring, subtract queued samples)
+    constexpr size_t MAX_QUEUE_SAMPLES = 32768;
     SDL_LockMutex(m_audio_mutex);
     size_t queued = m_audio_queue.size();
     SDL_UnlockMutex(m_audio_mutex);
-    u32 free = (queued >= 32768) ? 0 : (u32)((32768 - queued) * 2);
-    g_cpu_regs[2] = free ? free : 4096;
+    size_t free_samples = (queued >= MAX_QUEUE_SAMPLES) ? 0 : (MAX_QUEUE_SAMPLES - queued);
+    u32 free_bytes = static_cast<u32>(free_samples * 2);
+    // Return at least a small buffer so callers don't think audio is dead.
+    g_cpu_regs[2] = free_bytes ? free_bytes : 4096;
 }
 
 void Syscalls::impl_pcm_can_write() {
