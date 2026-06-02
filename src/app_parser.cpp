@@ -289,18 +289,14 @@ bool parse_app(const std::string& path, AppBinary& out) {
     }
 
     if (out.resource_offset == 0) {
-        out.resource_offset = spk_candidates[0];
-        fprintf(stderr, "[APP] Warning: could not validate SPK, using 0x%llX\n", out.resource_offset);
+        // No valid SPK archive found; continue without resources
+        out.resource_size = 0;
+        fprintf(stderr, "[APP] Warning: no valid SPK archive found; proceeding without resources\n");
+    } else {
+        out.resource_size = (u64)file_size - out.resource_offset;
+        printf("[APP] Resource section: offset=0x%llX size=0x%llX\n",
+               out.resource_offset, out.resource_size);
     }
-
-    if (out.resource_offset == 0) {
-        out.resource_offset = spk_candidates[0];
-        fprintf(stderr, "[APP] Warning: could not validate SPK, using 0x%llX\n", out.resource_offset);
-    }
-
-    out.resource_size = (u64)file_size - out.resource_offset;
-    printf("[APP] Resource section: offset=0x%llX size=0x%llX\n",
-           out.resource_offset, out.resource_size);
 
     fclose(f);
     return true;

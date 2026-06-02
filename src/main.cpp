@@ -159,11 +159,15 @@ int main(int argc, char* argv[]) {
 
     // Load resource archive
     Archive archive;
-    if (!archive.load(app_path, app.resource_offset, app.resource_size)) {
-        fprintf(stderr, "Failed to load resource archive from %s\n", app_path);
-        return 1;
+    if (app.resource_size > 0) {
+        if (!archive.load(app_path, app.resource_offset, app.resource_size)) {
+            fprintf(stderr, "Failed to load resource archive from %s\n", app_path);
+            return 1;
+        }
+        printf("[INIT] Resource archive loaded: %zu entries\n", archive.count());
+    } else {
+        printf("[INIT] No resource archive present; skipping load\n");
     }
-    printf("[INIT] Resource archive loaded: %zu entries\n", archive.count());
 
     // Initialize syscalls
     Syscalls syscalls(mem, display);
