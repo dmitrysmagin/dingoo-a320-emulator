@@ -251,6 +251,18 @@ public:
     bool in_idle() const { return m_in_idle; }
     bool task_switched() const { return m_task_switched; }
     void clear_task_switched() { m_task_switched = false; }
+
+    // Software timer (StartSwTimer / timer-processing loop)
+    struct TimerEntry {
+        bool active;
+        u32 period_ms;
+        u32 callback;
+        u32 elapsed; // cumulative ms elapsed
+    };
+    std::vector<TimerEntry> m_timers;
+    void process_timers();
+    void call_guest_function(u32 func, u32 arg0);
+    u32 m_last_timer_tick;
 };
 
 #endif // SYSCALLS_H

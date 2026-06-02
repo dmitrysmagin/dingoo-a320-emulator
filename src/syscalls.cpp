@@ -26,6 +26,7 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     , m_task_switched(false)
     , m_in_idle(false)
     , m_idle_pc(0)
+    , m_last_timer_tick(SDL_GetTicks())
 {
     memset(m_got_call_counts, 0, sizeof(m_got_call_counts));
     for (int i = 0; i < MAX_TASKS; i++) {
@@ -638,8 +639,59 @@ void Syscalls::impl_vxGoHome() {
 }
 
 void Syscalls::impl_StartSwTimer() {
-    printf("[TIMER] StartSwTimer(%u, 0x%08X)\n", arg(0), arg(1));
-    g_cpu_regs[2] = 1;
+    u32 period = arg(0);
+    u32 callback = arg(1);
+    printf("[TIMER] StartSwTimer(period=%u, callback=0x%08X)\n", period, callback);
+
+    // Find free slot
+    int idx = -1;
+    for (size_t i = 0; i < m_timers.size(); i++) {
+        if (!m_timers[i].active) { idx = (int)i; break; }
+    }
+    if (idx < 0) {
+        idx = (int)m_timers.size();
+        m_timers.push_back({});
+    }
+    m_timers[idx].active = true;
+    m_timers[idx].period_ms = period;
+    m_timers[idx].callback = callback;
+    m_timers[idx].elapsed = 0;
+    g_cpu_regs[2] = (u32)(idx + 1); // return 1-based timer handle
+}
+
+void Syscalls::process_timers() {
+    u32 now = SDL_GetTicks();
+    u32 delta = now - m_last_timer_tick;
+    m_last_timer_tick = now;
+
+    if (delta == 0) return;
+
+    for (auto& t : m_timers) {
+        if (!t.active || t.callback == 0) continue;
+        t.elapsed += delta;
+        while (t.elapsed >= t.period_ms) {
+            t.elapsed -= t.period_ms;
+            printf("[TIMER] Firing timer callback 0x%08X\n", t.callback);
+            call_guest_function(t.callback, 0);
+        }
+    }
+}
+
+void Syscalls::call_guest_function(u32 func_addr, u32 arg0) {
+    // Save current context
+    u32 old_ra = g_cpu_regs[31];
+    u32 old_sp = g_cpu_regs[29];
+
+    // Allocate stack frame: push original ra for the return stub
+    u32 sp = old_sp - 16;
+    m_mem.write_u32(sp + 0, old_ra);
+    m_mem.write_u32(sp + 4, 0); // padding
+
+    // Set up to call the function
+    g_cpu_regs[29] = sp;
+    g_cpu_regs[31] = 0x80BFFF00; // return stub restores ra and sp
+    g_cpu_regs[4] = arg0;       // a0 = argument
+    g_cpu_pc = func_addr;
 }
 
 void Syscalls::impl_free_irq() {

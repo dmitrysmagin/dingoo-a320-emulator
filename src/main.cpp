@@ -150,6 +150,15 @@ int main(int argc, char* argv[]) {
     mem.write_u32(stub_addr + 0x18, 0x34844FE0);  // ORI a0, a0, 0x4FE0 (delay slot)
     printf("[PATCH] BSS stub at 0x%08X -> AppMain 0x%08X\n", stub_addr, app_main_addr);
 
+    // Write timer callback return stub at 0x80BFFF00
+    //   lw $ra, 0($sp);  addiu $sp, $sp, 8;  jr $ra;  nop
+    u32 timer_ret_stub = 0x80BFFF00;
+    mem.write_u32(timer_ret_stub + 0x00, 0x8FBF0000);
+    mem.write_u32(timer_ret_stub + 0x04, 0x27BD0008);
+    mem.write_u32(timer_ret_stub + 0x08, 0x03E00008);
+    mem.write_u32(timer_ret_stub + 0x0C, 0x00000000);
+    printf("[PATCH] Timer return stub at 0x%08X\n", timer_ret_stub);
+
     // Initialize display (SDL2)
     Display display;
     if (!display.init()) {
@@ -246,6 +255,7 @@ int main(int argc, char* argv[]) {
         }
 
         cpu.run_frame(max_insns_per_frame);
+        syscalls.process_timers();
         frame++;
 
         // Check if PC is in valid code region
