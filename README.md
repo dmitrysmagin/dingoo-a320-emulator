@@ -210,8 +210,8 @@ Guest memory layout:
 
 The emulator intercepts all GOT trampoline calls from the guest binary. Of ~77 possible imports:
 
-- **50 implemented** — real implementations (malloc, printf, LCD, audio, input, timer, unicode, directory search, etc.)
-- **22 stubbed** — return constants (abort, cache ops, USB, volume, etc.)
+- **52 implemented** — real implementations (malloc, printf, LCD, audio, input, timer, unicode, directory search, SR, etc.)
+- **20 stubbed** — return constants (abort, cache ops, USB, volume, etc.)
 - **0 unknown** for standard 72-entry GOT apps
 - **38 unknown** for Yi-Chi King Fighter (uncommon µC/GUI imports)
 
@@ -270,7 +270,7 @@ Tested with 14 `.app` files:
 | 72 | `get_dl_handle` | Allocate dummy handle referencing current Archive |
 | 73–76 | `dl_res_*` | Thin wrappers around `Archive::find` |
 
-### Harmless hardware stubs (22 entries)
+### Harmless hardware stubs (20 entries)
 
 Compete list in [`unimplemented.md`](unimplemented.md). All return constants with no side effects.
 

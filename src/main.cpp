@@ -187,6 +187,7 @@ int main(int argc, char* argv[]) {
     CPU cpu;
     cpu.mem = &mem;
     cpu.syscalls = &syscalls;
+    syscalls.set_cop0(&cpu.cop0);
     cpu.reset();
 
     // Set up initial state for dl_main

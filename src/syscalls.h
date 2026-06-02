@@ -3,6 +3,7 @@
 
 #include "types.h"
 #include "memory.h"
+#include "cop0.h"
 #include <vector>
 #include "display.h"
 #include "archive.h"
@@ -21,6 +22,7 @@ public:
     bool got_is_stub(int index) const;
     void set_archive(Archive* archive) { m_archive = archive; }
     void set_app_path(const char* path) { m_app_path = path ? path : ""; }
+    void set_cop0(COP0* cop0) { m_cop0 = cop0; }
 
 private:
     Memory& m_mem;
@@ -167,6 +169,7 @@ private:
     u32 do_ferror(u32 file_handle);
 
     Archive* m_archive;
+    COP0* m_cop0 = nullptr;
     std::string m_app_path;
     bool m_audio_open;
     bool m_audio_device_open;

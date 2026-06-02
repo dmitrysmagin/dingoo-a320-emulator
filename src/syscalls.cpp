@@ -219,7 +219,7 @@ const char* Syscalls::got_name(int index) const {
 bool Syscalls::got_is_stub(int index) const {
     switch (index) {
     case 12: case 14: case 15: case 22: case 23: case 24:
-    case 25: case 26: case 27: case 37: case 38: case 42:
+    case 27: case 37: case 38: case 42:
     case 43: case 44: case 45: case 46: case 47: case 48:
     case 52: case 53: case 57: case 69: case 70: case 72:
     case 86:
@@ -896,12 +896,15 @@ void Syscalls::impl_TaskMediaFunStop() {
 }
 
 void Syscalls::impl_OSCPUSaveSR() {
-    printf("[STUB] OSCPUSaveSR\n");
-    g_cpu_regs[2] = 0;
+    u32 old_sr = m_cop0 ? m_cop0->regs.status : 0;
+    u32 new_sr = old_sr & ~1u; // clear IE bit (SR bit 0) — disable interrupts
+    if (m_cop0) m_cop0->regs.status = new_sr;
+    g_cpu_regs[2] = old_sr;
 }
 
 void Syscalls::impl_OSCPURestoreSR() {
-    printf("[STUB] OSCPURestoreSR\n");
+    u32 sr = arg(0);
+    if (m_cop0) m_cop0->regs.status = sr;
     g_cpu_regs[2] = 0;
 }
 
