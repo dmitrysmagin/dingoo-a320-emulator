@@ -26,6 +26,7 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     , m_audio_write_count(0)
     , m_audio_device(0)
     , m_audio_mutex(nullptr)
+    , m_volume(1.0f)
     , m_got_call_count(0)
     , m_current_task(-1)
     , m_task_count(0)
@@ -1316,12 +1317,18 @@ void Syscalls::impl_waveout_close_at_once() {
 }
 
 void Syscalls::impl_waveout_set_volume() {
-    printf("[STUB] waveout_set_volume\n");
+    // SDK: int waveout_set_volume(waveout_inst* inst, int vol)  vol = 0-100
+    u32 vol = arg(1);
+    m_volume = (float)vol / 100.0f;
+    if (m_volume < 0.0f) m_volume = 0.0f;
+    if (m_volume > 1.0f) m_volume = 1.0f;
+    printf("[AUDIO] waveout_set_volume(%u) -> %.2f\n", vol, m_volume);
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_HP_Mute_sw() {
-    printf("[STUB] HP_Mute_sw\n");
+    printf("[AUDIO] HP_Mute_sw -> muted\n");
+    m_volume = 0.0f;
     g_cpu_regs[2] = 0;
 }
 
@@ -1354,7 +1361,8 @@ void Syscalls::impl_waveout_write() {
     size_t space = (MAX_QUEUE_SAMPLES > m_audio_queue.size()) ? (MAX_QUEUE_SAMPLES - m_audio_queue.size()) : 0;
     size_t to_push = std::min<size_t>(count, space);
     for (size_t i = 0; i < to_push; ++i) {
-        m_audio_queue.push(samples[i]);
+        s16 s = (s16)(samples[i] * m_volume);
+        m_audio_queue.push(s);
     }
     // Discard excess samples if queue is full.
     SDL_UnlockMutex(m_audio_mutex);

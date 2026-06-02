@@ -10,6 +10,6 @@ These APIs are currently stubbed in the emulator but can be implemented with min
 | 70 | `__to_locale_ansi` | returns -1 | Convert UTF‑16LE buffer to UTF‑8, allocate guest buffer, write, return pointer. |
 | 72 | `get_dl_handle` | returns 0 | Allocate a dummy handle referencing the current `Archive`. |
 | 73‑76 | `dl_res_open` / `dl_res_get_size` / `dl_res_get_data` / `dl_res_close` | not implemented | Thin wrappers around `Archive::find` using the handle from `get_dl_handle`. |
-| 52 | `waveout_set_volume` | no‑op | Store a global volume multiplier; apply it when pushing samples in `waveout_write`. |
-| 53 | `HP_Mute_sw` | no‑op | Set volume multiplier to 0. |
+| 52 | `waveout_set_volume` | implemented | Volume multiplier stored; applied in `waveout_write`. |
+| 53 | `HP_Mute_sw` | implemented | Sets volume multiplier to 0. |
 | 57 | `pcm_ioctl` | no‑op | Return 0 (success). |

@@ -162,6 +162,7 @@ private:
     SDL_AudioDeviceID m_audio_device;
     SDL_mutex* m_audio_mutex;
     std::queue<s16> m_audio_queue;
+    float m_volume;
     u32 m_got_call_count;
     u32 m_got_call_counts[MAX_GOT_ENTRIES];
     std::vector<u32> m_semaphores;
