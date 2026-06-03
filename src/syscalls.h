@@ -274,6 +274,9 @@ private:
     SDL_AudioDeviceID m_audio_device;
     SDL_mutex* m_audio_mutex;
     std::queue<s16> m_audio_queue;
+    u32 m_audio_sem;               // µC/OS-II semaphore for flow control
+    u64 m_audio_samples_written;   // total samples written by waveout_write
+    volatile u64 m_audio_samples_consumed;  // total samples consumed by SDL callback (written from audio thread)
     float m_volume;
     u32 m_pcm_volume = 128;
     u32 m_got_call_count;
@@ -304,6 +307,8 @@ private:
     DlResHandle m_dl_res[MAX_DL_RES];
     int alloc_dl_res_handle();
     void free_dl_res_handle(int idx);
+
+    void sem_pend(u32 sem_ptr, u32 timeout, u32 err_ptr);
 
     // Per-slot handler index: maps GOT slot → index into static s_handlers[]
     std::vector<int> m_slot_handlers;

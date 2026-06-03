@@ -194,7 +194,7 @@ const Syscalls::GOTHandler Syscalls::s_handlers[] = {
     {"waveout_close",           &Syscalls::impl_waveout_close,           false},
     {"waveout_close_at_once",   &Syscalls::impl_waveout_close_at_once,   false},
     {"waveout_open",            &Syscalls::impl_waveout_open,            false},
-    {"waveout_set_volume",      &Syscalls::impl_waveout_set_volume,      true},
+    {"waveout_set_volume",      &Syscalls::impl_waveout_set_volume,      false},
     {"waveout_write",           &Syscalls::impl_waveout_write,           false},
 };
 const int Syscalls::s_handler_count =
@@ -306,8 +306,8 @@ void SDLCALL Syscalls::audio_callback(void* userdata, Uint8* stream, int len) {
         sys->m_audio_queue.pop();
     }
     while (i < samples) buf[i++] = 0;
+    sys->m_audio_samples_consumed += i;
     SDL_UnlockMutex(sys->m_audio_mutex);
-    //printf("[AUDIO] callback processed %d samples, queue remaining %zu\n", i, sys->m_audio_queue.size());
 }
 
 
@@ -1358,6 +1358,25 @@ void Syscalls::impl_waveout_open() {
         printf("[AUDIO] Created audio mutex: %p\n", (void*)m_audio_mutex);
     }
 
+    // Create audio flow-control semaphore (credits for SDL-backed ring buffer)
+    // Each credit represents AUDIO_CREDIT_SAMPLES samples; max = 8 credits.
+    if (!m_audio_sem) {
+        m_audio_sem = heap_alloc(68);
+        m_mem.write_u8 (m_audio_sem + 0,  3);          // OSEventType = SEM
+        m_mem.write_u32(m_audio_sem + 4,  0);
+        m_mem.write_u16(m_audio_sem + 8,  8);          // OSEventCnt = 8 credits
+        m_mem.write_u16(m_audio_sem + 10, 0);
+        for (int i = 0; i < 16; i++) m_mem.write_u16(m_audio_sem + 12 + i*2, 0);
+        m_mem.write_u32(m_audio_sem + 44, 0);
+        m_mem.write_u32(m_audio_sem + 48, 0);
+        m_mem.write_u8 (m_audio_sem + 52, 'A');
+        m_mem.write_u8 (m_audio_sem + 53, 0);
+        m_semaphores.push_back(m_audio_sem);
+        printf("[AUDIO] Created flow-control semaphore at 0x%08X (8 credits)\n", m_audio_sem);
+    }
+    m_audio_samples_written = 0;
+    m_audio_samples_consumed = 0;
+
     if (m_audio_device > 0) {
         SDL_CloseAudioDevice(m_audio_device);
         m_audio_device = 0;
@@ -1397,7 +1416,12 @@ void Syscalls::impl_waveout_close() {
     m_audio_device_open = false;
     SDL_LockMutex(m_audio_mutex);
     while (!m_audio_queue.empty()) m_audio_queue.pop();
+    m_audio_samples_consumed = 0;
     SDL_UnlockMutex(m_audio_mutex);
+    m_audio_samples_written = 0;
+    // Reset semaphore to full credits
+    if (m_audio_sem)
+        m_mem.write_u16(m_audio_sem + 8, 8);
     g_cpu_regs[2] = 0;
 }
 
@@ -1422,8 +1446,6 @@ void Syscalls::impl_HP_Mute_sw() {
 }
 
 void Syscalls::impl_waveout_write() {
-    // SDK: int waveout_write(waveout_inst* inst, char* buffer, int count)
-    // skip inst (arg0), buffer = arg1, count = arg2
     u32 buf_addr = arg(1);
     u32 size = arg(2);
 
@@ -1432,31 +1454,43 @@ void Syscalls::impl_waveout_write() {
         return;
     }
 
-    // Log first few calls to see actual buffer addresses and sizes
+    u32 samples = size / 2;
+
+    // Log first few calls
     if (m_audio_write_count < 10) {
-        printf("[AUDIO] waveout_write #%u: buf=0x%08X size=%u bytes\n",
-               m_audio_write_count, buf_addr, size);
+        printf("[AUDIO] waveout_write #%u: buf=0x%08X size=%u samples=%u\n",
+               m_audio_write_count, buf_addr, size, samples);
     } else if (m_audio_write_count == 10) {
         printf("[AUDIO] waveout_write: subsequent calls suppressed\n");
     }
 
-    const u32 count = size / 2;
-    // Limit total queue size to 8192 samples (≈16 KB) to avoid unbounded growth.
-    constexpr size_t MAX_QUEUE_SAMPLES = 8192;
-    std::vector<s16> samples(count);
-    m_mem.read_block(buf_addr, (u8*)samples.data(), size);
+    // Audio flow control: Pend on the audio semaphore to acquire one credit.
+    // Each credit represents ~2048 samples of SDL-backend capacity.
+    // When all credits are exhausted (SDL queue full), the audio task blocks
+    // and main AppMain runs.  simulate_vsync restores credits as SDL consumes.
+    if (m_audio_sem) {
+        static int block_count = 0;
+        u16 cnt = m_mem.read_u16(m_audio_sem + 8);
+        if (cnt == 0 && block_count < 3) {
+            printf("[AUDIO] waveout_write blocking (0 credits, queue=%zu)\n",
+                   m_audio_queue.size());
+            block_count++;
+        }
+        sem_pend(m_audio_sem, 0, 0);
+    }
+
+    // Read audio data from emulated memory
+    std::vector<s16> buf(samples);
+    m_mem.read_block(buf_addr, (u8*)buf.data(), size);
 
     SDL_LockMutex(m_audio_mutex);
-    size_t space = (MAX_QUEUE_SAMPLES > m_audio_queue.size()) ? (MAX_QUEUE_SAMPLES - m_audio_queue.size()) : 0;
-    size_t to_push = std::min<size_t>(count, space);
-    for (size_t i = 0; i < to_push; ++i) {
-        s16 s = (s16)(samples[i] * m_volume);
-        m_audio_queue.push(s);
-    }
+    for (u32 i = 0; i < samples; i++)
+        m_audio_queue.push((s16)(buf[i] * m_volume));
+    m_audio_samples_written += samples;
     SDL_UnlockMutex(m_audio_mutex);
 
     m_audio_write_count++;
-    g_cpu_regs[2] = size; // return byte count written
+    g_cpu_regs[2] = size;
 }
 
 void Syscalls::impl_waveout_can_write() {
@@ -1664,50 +1698,40 @@ void Syscalls::impl_OSTaskCreate() {
 }
 
 
-void Syscalls::impl_OSSemPend() {
-    u32 sem_ptr = arg(0);
-    u32 timeout = arg(1);  // 0 = wait forever
-    u32 err_ptr = arg(2);
-
-    u16 cnt = m_mem.read_u16(sem_ptr + 8);  // OSEventCnt at +8 (16-bit)
-
+void Syscalls::sem_pend(u32 sem_ptr, u32 timeout, u32 err_ptr) {
+    u16 cnt = m_mem.read_u16(sem_ptr + 8);
     if (cnt > 0) {
         m_mem.write_u16(sem_ptr + 8, (u16)(cnt - 1));
-        if (err_ptr) m_mem.write_u8(err_ptr, 0);  // OS_NO_ERR
+        if (err_ptr) m_mem.write_u8(err_ptr, 0);
+        g_cpu_regs[2] = 0;
         return;
     }
-
-    // No current task (e.g. after OSTaskDel self) — can't block, return timeout.
     if (m_current_task < 0 || m_current_task >= m_task_count) {
-        if (err_ptr) m_mem.write_u8(err_ptr, 10);  // OS_TIMEOUT
+        if (err_ptr) m_mem.write_u8(err_ptr, 10);
         g_cpu_regs[2] = 10;
         return;
     }
-
-    // Block current task on this semaphore.
-    // *err is written when the task resumes (by OSSemPost or by timeout in simulate_vsync).
     save_current_task();
     m_tasks[m_current_task].blocked = true;
     m_tasks[m_current_task].block_sem = sem_ptr;
     m_tasks[m_current_task].sem_err_ptr = err_ptr;
-    if (timeout > 0) {
-        m_tasks[m_current_task].wake_tick = m_os_ticks + timeout;
-    } else {
-        m_tasks[m_current_task].wake_tick = 0;  // wait forever
-    }
-
+    m_tasks[m_current_task].wake_tick = (timeout > 0) ? (m_os_ticks + timeout) : 0;
+    m_tasks[m_current_task].regs[2] = 0;
     int next = find_ready_task();
     if (next >= 0) {
         switch_to_task(next);
     } else {
-        // No other ready task - unblock and return OS_TIMEOUT to caller.
         m_tasks[m_current_task].blocked = false;
         m_tasks[m_current_task].block_sem = 0;
         m_tasks[m_current_task].sem_err_ptr = 0;
         m_tasks[m_current_task].wake_tick = 0;
-        if (err_ptr) m_mem.write_u8(err_ptr, 10);  // OS_TIMEOUT
-        g_cpu_regs[2] = 10;  // return OS_TIMEOUT in v0
+        if (err_ptr) m_mem.write_u8(err_ptr, 10);
+        g_cpu_regs[2] = 10;
     }
+}
+
+void Syscalls::impl_OSSemPend() {
+    sem_pend(arg(0), arg(1), arg(2));
 }
 
 void Syscalls::impl_OSSemPost() {
@@ -2603,6 +2627,38 @@ bool Syscalls::simulate_vsync() {
         }
     }
 
+    // Audio flow control: restore semaphore credits as SDL consumes from the queue.
+    if (m_audio_sem) {
+        SDL_LockMutex(m_audio_mutex);
+        u64 consumed = m_audio_samples_consumed;
+        SDL_UnlockMutex(m_audio_mutex);
+        static constexpr u64 CREDIT_SAMPLES = 2048;
+        static u64 last_credited = 0;
+        while (last_credited + CREDIT_SAMPLES <= consumed) {
+            last_credited += CREDIT_SAMPLES;
+            u16 cnt = m_mem.read_u16(m_audio_sem + 8);
+            if (cnt < 8) {
+                m_mem.write_u16(m_audio_sem + 8, (u16)(cnt + 1));
+                // If a task is blocked on this sem, wake it (highest-prio waiter)
+                int waiter = -1;
+                u8 best_prio = 0xFF;
+                for (int i = 0; i < m_task_count; i++) {
+                    if (m_tasks[i].blocked && m_tasks[i].block_sem == m_audio_sem
+                        && m_tasks[i].task_prio < best_prio) {
+                        best_prio = m_tasks[i].task_prio;
+                        waiter = i;
+                    }
+                }
+                if (waiter >= 0) {
+                    m_tasks[waiter].blocked = false;
+                    m_tasks[waiter].block_sem = 0;
+                    m_tasks[waiter].wake_tick = 0;
+                    m_tasks[waiter].regs[2] = 0;
+                }
+            }
+        }
+    }
+
     // Cooperative multitasking: yield to another ready task if available.
     // The game uses tasks as inline-synchronized call chains (not independent
     // contexts), so there's typically nothing to switch to. This mostly keeps
@@ -2666,8 +2722,8 @@ void Syscalls::impl_Read_Acc0()             { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_SysDisableBkLight()     { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl__tcscmp()               { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl__tcscpy()               { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl__waveout_open()         { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl__waveout_set_volume()   { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl__waveout_open()         { impl_waveout_open(); }
+void Syscalls::impl__waveout_set_volume()   { impl_waveout_set_volume(); }
 void Syscalls::impl_av_begin_thread()       { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_av_create_flag()        { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_av_create_sem()         { printf("[STUB] %s\n", __func__); }

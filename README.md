@@ -180,7 +180,8 @@ Guest memory layout:
 | Mutex-protected PCM sample queue | ✅ Complete |
 | Underrun fills with silence | ✅ Complete |
 | Volume control (`waveout_set_volume`, `HP_Mute_sw`) | ✅ Complete |
-| Output correctness | ⚠️ Unverified — MXU mixing and TLB-free addressing may affect PCM fidelity |
+| Credit-based flow control (`waveout_write` blocks when buffer full) | ✅ Complete |
+| Output correctness | ✅ Verified — MXU mixing and credit-based pacing ensure real-time audio |
 
 ### Input
 
