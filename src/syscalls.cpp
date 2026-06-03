@@ -999,13 +999,13 @@ void Syscalls::impl_get_game_vol() {
 }
 
 void Syscalls::impl__kbd_get_key() {
-    // Return the Dingoo SDK key code (0x01-0x0C) from the key event FIFO,
-    // or 0 if no event is queued.   Both key-down and key-up are returned
-    // as the same key code — one event per press/release.
+    // Return the key event (type<<8|code) from the event FIFO, matching the
+    // real firmware at 0x80169200.  Event types: 0x01=down, 0x02=up, 0x03=held.
+    // Returns 0 when the queue is empty.
     if (m_display.has_key_event()) {
-        u32 code = m_display.pop_key_event();
-        printf("[INPUT] _kbd_get_key -> 0x%02X (code=%u)\n", code, code);
-        g_cpu_regs[2] = code;
+        u32 ev = m_display.pop_key_event();
+        printf("[INPUT] _kbd_get_key -> 0x%04X\n", ev);
+        g_cpu_regs[2] = ev;
         return;
     }
     g_cpu_regs[2] = 0;

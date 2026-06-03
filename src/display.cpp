@@ -310,7 +310,7 @@ bool Display::pump_events() {
                 if (code) {
                     u32 ev = (EVT_KEY_DOWN << 8) | code;
                     m_input_events.push(ev);
-                    m_key_events.push(code);
+                    m_key_events.push(ev);
                 }
             }
             m_dingoo_keys |= dk;
@@ -323,7 +323,7 @@ bool Display::pump_events() {
                 if (code) {
                     u32 ev = (EVT_KEY_UP << 8) | code;
                     m_input_events.push(ev);
-                    m_key_events.push(code);
+                    m_key_events.push(ev);
                 }
             }
             m_dingoo_keys &= ~dk;
