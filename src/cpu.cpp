@@ -106,52 +106,200 @@ void CPU::exec_special2(u32 insn) {
     int rs = (insn >> 21) & 0x1F;
     int rt = (insn >> 16) & 0x1F;
     int rd = (insn >> 11) & 0x1F;
+    bool mxu_en = (mxu.state.ctrl & 1) != 0;
+
     switch (func) {
-    // MIPS32r1 SPECIAL2 multiply-accumulate: {HI,LO} op= rs * rt
-    case 0x00: {  // MADD: {HI,LO} += signed(rs) * signed(rt)
-        s64 acc = ((s64)(s32)hi << 32) | lo;
-        acc += (s64)(s32)regs[rs] * (s64)(s32)regs[rt];
-        lo = (u32)(acc & 0xFFFFFFFF);
-        hi = (u32)((u64)acc >> 32);
+    // ── MIPS32r1 SPECIAL2 (conflicts with MXU1 when MXU_EN) ──────
+    case 0x00:
+        if (mxu_en) { mxu.exec_mxu1(insn); break; }
+        {  // MADD: {HI,LO} += signed(rs) * signed(rt)
+            s64 acc = ((s64)(s32)hi << 32) | lo;
+            acc += (s64)(s32)regs[rs] * (s64)(s32)regs[rt];
+            lo = (u32)(acc & 0xFFFFFFFF);
+            hi = (u32)((u64)acc >> 32);
+        }
         break;
-    }
-    case 0x01: {  // MADDU: {HI,LO} += unsigned(rs) * unsigned(rt)
-        u64 acc = ((u64)hi << 32) | lo;
-        acc += (u64)regs[rs] * (u64)regs[rt];
-        lo = (u32)(acc & 0xFFFFFFFF);
-        hi = (u32)(acc >> 32);
+    case 0x01:
+        if (mxu_en) { mxu.exec_mxu1(insn); break; }
+        {  // MADDU: {HI,LO} += unsigned(rs) * unsigned(rt)
+            u64 acc = ((u64)hi << 32) | lo;
+            acc += (u64)regs[rs] * (u64)regs[rt];
+            lo = (u32)(acc & 0xFFFFFFFF);
+            hi = (u32)(acc >> 32);
+        }
         break;
-    }
-    case 0x02: {  // MUL rd, rs, rt: rd = low32(rs * rt), HI/LO UNPREDICTABLE
+    case 0x02:  // MUL rd, rs, rt (MIPS only — no MXU1 conflict)
         if (rd) regs[rd] = regs[rs] * regs[rt];
         break;
-    }
-    case 0x04: {  // MSUB: {HI,LO} -= signed(rs) * signed(rt)
-        s64 acc = ((s64)(s32)hi << 32) | lo;
-        acc -= (s64)(s32)regs[rs] * (s64)(s32)regs[rt];
-        lo = (u32)(acc & 0xFFFFFFFF);
-        hi = (u32)((u64)acc >> 32);
+    case 0x04:
+        if (mxu_en) { mxu.exec_mxu1(insn); break; }
+        {  // MSUB: {HI,LO} -= signed(rs) * signed(rt)
+            s64 acc = ((s64)(s32)hi << 32) | lo;
+            acc -= (s64)(s32)regs[rs] * (s64)(s32)regs[rt];
+            lo = (u32)(acc & 0xFFFFFFFF);
+            hi = (u32)((u64)acc >> 32);
+        }
+        break;
+    case 0x05:
+        if (mxu_en) { mxu.exec_mxu1(insn); break; }
+        {  // MSUBU: {HI,LO} -= unsigned(rs) * unsigned(rt)
+            u64 acc = ((u64)hi << 32) | lo;
+            acc -= (u64)regs[rs] * (u64)regs[rt];
+            lo = (u32)(acc & 0xFFFFFFFF);
+            hi = (u32)(acc >> 32);
+        }
+        break;
+    case 0x20:
+        if (mxu_en) { mxu.exec_mxu1(insn); break; }
+        {  // CLZ rd, rs: count leading zeros
+            if (regs[rs] == 0) regs[rd] = 32;
+            else { u32 v = regs[rs]; int c = 0; while ((v & 0x80000000u) == 0) { v <<= 1; c++; } regs[rd] = c; }
+        }
+        break;
+    case 0x21:
+        if (mxu_en) { mxu.exec_mxu1(insn); break; }
+        {  // CLO rd, rs: count leading ones
+            if (regs[rs] == 0xFFFFFFFF) regs[rd] = 32;
+            else { u32 v = regs[rs]; int c = 0; while ((v & 0x80000000u) != 0) { v <<= 1; c++; } regs[rd] = c; }
+        }
+        break;
+
+    // ── MXU1 memory-load ops ─────────────────────────────────────
+    case 0x10: { // S32LDD: XR[rt]  = mem[GPR[rs]+GPR[rd]], XR[rt|1] = mem[addr+4]
+        u32 addr = regs[rs] + regs[rd];
+        mxu.state.xregs[rt & 15]   = mem->read_u32(addr);
+        mxu.state.xregs[(rt|1) & 15] = mem->read_u32(addr + 4);
         break;
     }
-    case 0x05: {  // MSUBU: {HI,LO} -= unsigned(rs) * unsigned(rt)
-        u64 acc = ((u64)hi << 32) | lo;
-        acc -= (u64)regs[rs] * (u64)regs[rt];
-        lo = (u32)(acc & 0xFFFFFFFF);
-        hi = (u32)(acc >> 32);
+    case 0x12: { // S32LDDV: XR[rt..] = mem[GPR[rs] + GPR[rt]<<2] (like LDDV — indexed)
+        u32 addr = regs[rs] + (regs[rt] << 2);
+        mxu.state.xregs[rd & 15]     = mem->read_u32(addr);
+        mxu.state.xregs[(rd|1) & 15] = mem->read_u32(addr + 4);
         break;
     }
-    case 0x20: {  // CLZ rd, rs: count leading zeros
-        if (regs[rs] == 0) regs[rd] = 32;
-        else { u32 v = regs[rs]; int c = 0; while ((v & 0x80000000u) == 0) { v <<= 1; c++; } regs[rd] = c; }
+    case 0x14: { // S32LDI: XR[rt..] = mem[GPR[rs]+sa], GPR[rd] += sa
+        u32 addr = regs[rs] + (s32)sext16((insn & 0xFFFF));
+        mxu.state.xregs[rt & 15]   = mem->read_u32(addr);
+        mxu.state.xregs[(rt|1) & 15] = mem->read_u32(addr + 4);
+        if (rd) regs[rd] += (s32)sext16((insn & 0xFFFF));
         break;
     }
-    case 0x21: {  // CLO rd, rs: count leading ones
-        if (regs[rs] == 0xFFFFFFFF) regs[rd] = 32;
-        else { u32 v = regs[rs]; int c = 0; while ((v & 0x80000000u) != 0) { v <<= 1; c++; } regs[rd] = c; }
+    case 0x16: { // S32LDIV: XR[rd..] = mem[GPR[rs] + GPR[rt]<<2], GPR[rt] += 1
+        u32 addr = regs[rs] + (regs[rt] << 2);
+        mxu.state.xregs[rd & 15]     = mem->read_u32(addr);
+        mxu.state.xregs[(rd|1) & 15] = mem->read_u32(addr + 4);
+        regs[rt]++;
         break;
     }
+
+    // ── MXU1 memory-store ops ────────────────────────────────────
+    case 0x11: { // S32STD
+        u32 addr = regs[rs] + regs[rd];
+        mem->write_u32(addr,     mxu.state.xregs[rt & 15]);
+        mem->write_u32(addr + 4, mxu.state.xregs[(rt|1) & 15]);
+        break;
+    }
+    case 0x13: { // S32STDV
+        u32 addr = regs[rs] + (regs[rt] << 2);
+        mem->write_u32(addr,     mxu.state.xregs[rd & 15]);
+        mem->write_u32(addr + 4, mxu.state.xregs[(rd|1) & 15]);
+        break;
+    }
+    case 0x15: { // S32SDI
+        u32 addr = regs[rs] + (s32)sext16((insn & 0xFFFF));
+        mem->write_u32(addr,     mxu.state.xregs[rt & 15]);
+        mem->write_u32(addr + 4, mxu.state.xregs[(rt|1) & 15]);
+        if (rd) regs[rd] += (s32)sext16((insn & 0xFFFF));
+        break;
+    }
+    case 0x17: { // S32SDIV
+        u32 addr = regs[rs] + (regs[rt] << 2);
+        mem->write_u32(addr,     mxu.state.xregs[rd & 15]);
+        mem->write_u32(addr + 4, mxu.state.xregs[(rd|1) & 15]);
+        regs[rt]++;
+        break;
+    }
+
+    // ── MXU1 byte/halfword loads ─────────────────────────────────
+    case 0x22: { // S8LDD
+        u32 addr = regs[rs] + regs[rd];
+        mxu.state.xregs[rt & 15] = (u32)(s8)mem->read_u8(addr);
+        break;
+    }
+    case 0x24: { // S8LDI
+        u32 addr = regs[rs] + (s32)sext16((insn & 0xFFFF));
+        mxu.state.xregs[rt & 15] = (u32)(s8)mem->read_u8(addr);
+        break;
+    }
+    case 0x2A: { // S16LDD
+        u32 addr = regs[rs] + regs[rd];
+        mxu.state.xregs[rt & 15] = (u32)(s16)mem->read_u16(addr);
+        break;
+    }
+    case 0x2C: { // S16LDI
+        u32 addr = regs[rs] + (s32)sext16((insn & 0xFFFF));
+        mxu.state.xregs[rt & 15] = (u32)(s16)mem->read_u16(addr);
+        break;
+    }
+
+    // ── MXU1 byte/halfword stores ────────────────────────────────
+    case 0x23: { // S8STD
+        u32 addr = regs[rs] + regs[rd];
+        mem->write_u8(addr, (u8)mxu.state.xregs[rt & 15]);
+        break;
+    }
+    case 0x25: { // S8SDI
+        u32 addr = regs[rs] + (s32)sext16((insn & 0xFFFF));
+        mem->write_u8(addr, (u8)mxu.state.xregs[rt & 15]);
+        break;
+    }
+    case 0x2B: { // S16STD
+        u32 addr = regs[rs] + regs[rd];
+        mem->write_u16(addr, (u16)mxu.state.xregs[rt & 15]);
+        break;
+    }
+    case 0x2D: { // S16SDI
+        u32 addr = regs[rs] + (s32)sext16((insn & 0xFFFF));
+        mem->write_u16(addr, (u16)mxu.state.xregs[rt & 15]);
+        break;
+    }
+
+    // ── LX: unaligned load to GPR ────────────────────────────────
+    case 0x28: { // LX — word/halfword/byte select via bits 24:22
+        int lx_type = (insn >> 22) & 3;
+        u32 addr = regs[rs] + (s32)sext16((insn & 0xFFFF));
+        if (lx_type == 0)      regs[rd] = mem->read_u32(addr);
+        else if (lx_type == 1) regs[rd] = (u32)(s16)mem->read_u16(addr);
+        else if (lx_type == 2) regs[rd] = (u32)(s8)mem->read_u8(addr);
+        else                   regs[rd] = (u32)(s16)mem->read_u16(addr);
+        break;
+    }
+
+    // ── Register moves MXU ↔ GPR ─────────────────────────────────
+    case 0x2E: // S32M2I: XR[rd] → GPR[rt]
+        regs[rt] = mxu.state.xregs[rd & 15];
+        break;
+    case 0x2F: // S32I2M: GPR[rt] → XR[rd]
+        mxu.state.xregs[rd & 15] = regs[rt];
+        break;
+
+    // ── MXU1 compute ops (no memory) ─────────────────────────────
+    case 0x03:
+    case 0x06: case 0x07:
+    case 0x08: case 0x09: case 0x0A: case 0x0B:
+    case 0x0C: case 0x0D: case 0x0E: case 0x0F:
+    case 0x18: case 0x19: case 0x1A: case 0x1B:
+    case 0x26: case 0x27:
+    case 0x30: case 0x31: case 0x32: case 0x33:
+    case 0x34: case 0x35: case 0x36: case 0x37:
+    case 0x38: case 0x39: case 0x3A: case 0x3B:
+    case 0x3C: case 0x3D: case 0x3E:
+        mxu.exec_mxu1(insn);
+        break;
+
     default:
-        printf("[CPU] SPECIAL2 unknown func=0x%02X at PC=0x%08X insn=0x%08X\n", func, pc - 4, insn);
+        printf("[CPU] SPECIAL2 unknown func=0x%02X at PC=0x%08X insn=0x%08X\n",
+               func, pc - 4, insn);
         raise_exception(EXC_RI);
         break;
     }

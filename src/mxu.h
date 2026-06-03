@@ -25,6 +25,9 @@ public:
 
     // Custom MXU operations (opcode from bits 0-5 of SPECIAL2 field)
     void exec_custom(u32 insn);
+
+    // MXU1 operations (SPECIAL2 opcode 0x1C, func selects the operation)
+    void exec_mxu1(u32 insn);
 };
 
 #endif // MXU_H
