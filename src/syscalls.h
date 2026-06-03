@@ -171,6 +171,7 @@ private:
     Archive* m_archive;
     COP0* m_cop0 = nullptr;
     std::string m_app_path;
+    u32 m_lcd_bpp;       // 1=indexed, 2=RGB565, 4=ARGB8888; never stored in guest RAM
     bool m_audio_open;
     bool m_audio_device_open;
     u32 m_audio_write_count;
@@ -265,6 +266,7 @@ public:
     bool simulate_vsync();
     void set_idle_regs(const u32 regs[32]);
     void set_idle_pc(u32 pc) { m_idle_pc = pc; }
+    void register_main_context(u32 pc, u32 a0, u8 prio);
     bool in_idle() const { return m_in_idle; }
     bool task_switched() const { return m_task_switched; }
     void clear_task_switched() { m_task_switched = false; }

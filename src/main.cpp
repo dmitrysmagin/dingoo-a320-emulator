@@ -102,7 +102,7 @@ int main(int argc, char* argv[]) {
         }
     }*/
 
-    // Write game name as wide string at 0x80B44FE0 (for AppMain/game_main argument)
+    // Write game name as wide string at 0x80B44FE0 (for AppMain a0 argument)
     u32 name_addr = 0x80B44FE0;
     for (size_t i = 0; i < game_name.size() && i < 32; i++) {
         mem.write_u16(name_addr + (u32)i * 2, (u16)(unsigned char)game_name[i]);
@@ -134,21 +134,10 @@ int main(int argc, char* argv[]) {
     mem.write_u32(0x80BFECD8, 0x8BFC4D89u);
     printf("[INIT] Pre-populated event queue 0x80BFECD8 = 0x8BFC4D89 (hardware-ready)\n");
 
-    // Write BSS stub at 0x80BFF000 (in stack area, AFTER stack zero)
-    // The stub writes a marker, then jumps to AppMain with a0 = game name addr.
-    // Game name was already written at 0x80B44FE0 above, so stub just sets a0 & jumps.
-    u32 stub_addr = 0x80BFF000;
-    u32 j_insn = 0x08000000 | ((app_main_addr >> 2) & 0x03FFFFFF);
-    // LUI t0, 0x80B4 ; LUI t1, 0xCAFE ; ORI t1, t1, 0xBABE ; SW t1, 0x3F00(t0) = *(0x80B43F00) = 0xCAFEBABE
-    mem.write_u32(stub_addr + 0x00, 0x3C0880B4);  // LUI t0, 0x80B4
-    mem.write_u32(stub_addr + 0x04, 0x3C09CAFE);  // LUI t1, 0xCAFE
-    mem.write_u32(stub_addr + 0x08, 0x3529BABE);  // ORI t1, t1, 0xBABE
-    mem.write_u32(stub_addr + 0x0C, 0xAD093F00);  // SW  t1, 0x3F00(t0)
-    // Set a0 = 0x80B44FE0 and jump to AppMain
-    mem.write_u32(stub_addr + 0x10, 0x3C0480B4);  // LUI a0, 0x80B4
-    mem.write_u32(stub_addr + 0x14, j_insn);       // J   app_main_addr
-    mem.write_u32(stub_addr + 0x18, 0x34844FE0);  // ORI a0, a0, 0x4FE0 (delay slot)
-    printf("[PATCH] BSS stub at 0x%08X -> AppMain 0x%08X\n", stub_addr, app_main_addr);
+    // Sentinel: dl_main returns to this address, which signals Phase 1 is complete.
+    // Sits in the zeroed stack area (0x80BFF000-0x80C10000), so it contains 0x00000000
+    // (NOPs) but we never execute there — run_until_pc stops before fetching from it.
+    const u32 DL_MAIN_SENTINEL = 0x80BFFE00;
 
     // Write timer callback return stub at 0x80BFFF00
     //   lw $ra, 0($sp);  addiu $sp, $sp, 8;  jr $ra;  nop
@@ -190,43 +179,6 @@ int main(int argc, char* argv[]) {
     syscalls.set_cop0(&cpu.cop0);
     cpu.reset();
 
-    // Set up initial state for dl_main
-    cpu.pc = app.entry_point;
-    cpu.regs[29] = 0x80C00000;
-    cpu.regs[30] = 0x80C00000;
-    cpu.regs[31] = stub_addr;  // return to stub after init
-    cpu.regs[4] = 0;   // a0 = argc = 0
-    cpu.regs[5] = 0;   // a1 = argv = 0 (0 = first-time init)
-
-    printf("[INIT] Entry point: 0x%08X (dl_main)\n", cpu.pc);
-    printf("[INIT] Stack: 0x%08X\n", cpu.regs[29]);
-    printf("[INIT] RAM size: %u MB\n", mem.size() / (1024 * 1024));
-    printf("[INIT] Display: %dx%d (scale %d)\n", Display::WIDTH, Display::HEIGHT, Display::SCALE);
-    printf("[INIT] Imported APIs:\n");
-    for (u32 i = 0; i < (u32)app.imports.size() && i < MAX_GOT_ENTRIES; i++) {
-        const char* impl = syscalls.got_is_stub((int)i) ? "stub" : "implemented";
-        printf("  [%2u] %-30s %s\n", i, syscalls.got_name((int)i), impl);
-    }
-
-    // Save initial CPU state as idle context for OSTaskDel fallback
-    extern u32 g_cpu_regs[32];
-    memcpy(g_cpu_regs, cpu.regs, sizeof(g_cpu_regs));
-    syscalls.set_idle_regs(g_cpu_regs);
-    syscalls.set_idle_pc(cpu.pc);
-
-    printf("\n=== Starting emulation ===\n\n");
-    fflush(stdout);
-
-    srand((u32)time(NULL));
-
-    clock_t start = clock();
-    u32 frame = 0;
-    u32 max_insns_per_frame = 2000000;
-    u32 max_frames = arg_max_frames;  // 0 = unlimited (runs until quit or CPU halts)
-    u32 frame_count = 0;
-
-    if (max_frames)
-        printf("[INIT] Frame limit: %u CPU frames\n", max_frames);
     // Kernel memory addresses for input state (written every frame so guest
     // code that polls these directly — bypassing GOT syscalls — sees SDL input).
     const u32 KERN_KEY_CURRENT  = 0x802DA020; // GPIO scan: current key bitmask
@@ -235,6 +187,94 @@ int main(int argc, char* argv[]) {
     const u32 KERN_KEY_SCAN_VAL = 0x80242B40; // key_matrix_scan_value
     const u32 KERN_KEY_MAILBOX  = 0x80B39D08; // uC/OS-II keyboard state mailbox
 
+    auto write_keys = [&]() {
+        u32 keys = display.get_dingoo_keys();
+        u32 prev = mem.read_u32(KERN_KEY_CURRENT);
+        mem.write_u32(KERN_KEY_CURRENT,  keys);
+        mem.write_u32(KERN_KEY_RELEASED, ~keys & prev);
+        mem.write_u32(KERN_KEY_PRESSED,  keys & ~prev);
+        mem.write_u32(KERN_KEY_SCAN_VAL, keys);
+        mem.write_u32(KERN_KEY_MAILBOX,  keys);
+    };
+
+    printf("[INIT] RAM size: %u MB\n", mem.size() / (1024 * 1024));
+    printf("[INIT] Display: %dx%d (scale %d)\n", Display::WIDTH, Display::HEIGHT, Display::SCALE);
+    printf("[INIT] Imported APIs:\n");
+    for (u32 i = 0; i < (u32)app.imports.size() && i < MAX_GOT_ENTRIES; i++) {
+        const char* impl = syscalls.got_is_stub((int)i) ? "stub" : "implemented";
+        printf("  [%2u] %-30s %s\n", i, syscalls.got_name((int)i), impl);
+    }
+
+    srand((u32)time(NULL));
+    clock_t start = clock();
+    u32 max_insns_per_frame = 2000000;
+    u32 frame_count = 0;
+
+    // =========================================================
+    // Phase 1: run dl_main to completion
+    // dl_main is the module initialiser — it allocates resources
+    // and sets up state, then returns.  We run it in isolation
+    // and detect its return by watching for DL_MAIN_SENTINEL.
+    // =========================================================
+    cpu.pc = app.entry_point;
+    cpu.regs[29] = 0x80C00000;
+    cpu.regs[30] = 0x80C00000;
+    cpu.regs[31] = DL_MAIN_SENTINEL;
+    cpu.regs[4] = 0;   // a0 = argc = 0
+    cpu.regs[5] = 0;   // a1 = argv = NULL (first-time init)
+
+    printf("\n=== Phase 1: dl_main at 0x%08X ===\n\n", cpu.pc);
+    fflush(stdout);
+
+    {
+        u32 dl_frame = 0;
+        while (cpu.running && cpu.pc != DL_MAIN_SENTINEL) {
+            if (display.pump_events()) { cpu.running = false; break; }
+            write_keys();
+            cpu.run_until_pc(DL_MAIN_SENTINEL, max_insns_per_frame);
+            syscalls.process_timers();
+            dl_frame++;
+            if (dl_frame % 500 == 0)
+                printf("[PHASE 1] frame=%u PC=0x%08X insns=%llu\n", dl_frame, cpu.pc, cpu.insn_count);
+        }
+        printf("[PHASE 1] dl_main returned after %u frames (insns=%llu)\n", dl_frame, cpu.insn_count);
+    }
+
+    if (!cpu.running) {
+        fprintf(stderr, "[PHASE 1] dl_main did not return cleanly — halting\n");
+        cpu.print_trace();
+        return 1;
+    }
+
+    // Save post-init CPU state as idle context for OSTaskDel fallback
+    extern u32 g_cpu_regs[32];
+    memcpy(g_cpu_regs, cpu.regs, sizeof(g_cpu_regs));
+    syscalls.set_idle_regs(g_cpu_regs);
+    syscalls.set_idle_pc(cpu.pc);
+
+    // =========================================================
+    // Phase 2: call AppMain
+    // The OS looks up "AppMain" from the export table after
+    // dl_main has returned and calls it with the game name.
+    // =========================================================
+    cpu.pc        = app_main_addr;
+    cpu.regs[31]  = DL_MAIN_SENTINEL; // AppMain is not expected to return; sentinel catches it
+    cpu.regs[4]   = name_addr;         // a0 = wide-string game name (already written above)
+    // $sp / $fp left as dl_main balanced its own frame
+
+    // Register AppMain as a µC/OS-II task at higher priority than audio (16).
+    // AppMain prio 5 means OSTaskCreate(audio, 16) does NOT preempt AppMain —
+    // audio only gets CPU when AppMain blocks (OSSemPend/OSTimeDly).
+    syscalls.register_main_context(app_main_addr, name_addr, 5);
+
+    printf("\n=== Phase 2: AppMain at 0x%08X ===\n\n", app_main_addr);
+    fflush(stdout);
+
+    u32 frame = 0;
+    u32 max_frames = arg_max_frames;  // 0 = unlimited
+    if (max_frames)
+        printf("[INIT] Frame limit: %u CPU frames\n", max_frames);
+
     while (cpu.running && (max_frames == 0 || frame < max_frames)) {
         // Process SDL events (quit, keyboard)
         if (display.pump_events()) {
@@ -242,22 +282,20 @@ int main(int argc, char* argv[]) {
             break;
         }
 
-        // Write current key state to all kernel memory locations the game might poll
-        {
-            u32 keys = display.get_dingoo_keys();
-            u32 prev = mem.read_u32(KERN_KEY_CURRENT);
-            u32 pressed  = keys & ~prev;
-            u32 released = ~keys & prev;
-            mem.write_u32(KERN_KEY_CURRENT,  keys);
-            mem.write_u32(KERN_KEY_RELEASED, released);
-            mem.write_u32(KERN_KEY_PRESSED,  pressed);
-            mem.write_u32(KERN_KEY_SCAN_VAL, keys);
-            mem.write_u32(KERN_KEY_MAILBOX,  keys);
-        }
-
-        cpu.run_frame(max_insns_per_frame);
+        write_keys();
+        cpu.run_until_pc(DL_MAIN_SENTINEL, max_insns_per_frame);
         syscalls.process_timers();
+        cpu.do_vsync();
         frame++;
+
+        // AppMain (or any task) returned to the sentinel.
+        // Let the scheduler switch to the next runnable task. If nothing
+        // switches in, there is genuinely nothing left to run.
+        if (cpu.pc == DL_MAIN_SENTINEL) {
+            if (!cpu.running) break;
+            printf("[PHASE 2] Sentinel hit at frame %u — no runnable task, stopping\n", frame);
+            break;
+        }
 
         // Check if PC is in valid code region
         u32 pc_phys = cpu.pc & 0x1FFFFFFF;

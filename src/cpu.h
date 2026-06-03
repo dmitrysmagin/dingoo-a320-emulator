@@ -26,7 +26,9 @@ struct CPU {
 
     void reset();
     void execute_one();
+    void run_until_pc(u32 stop_pc, u32 max_insns);
     void run_frame(u32 max_insns);
+    void do_vsync();       // vsync epilogue only (no instruction execution)
     void print_trace();
 
 private:

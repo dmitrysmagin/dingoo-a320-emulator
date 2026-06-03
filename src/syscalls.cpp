@@ -21,6 +21,7 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     : m_mem(mem)
     , m_display(display)
     , m_heap_top(0x00020000)  // phys: zone1 above exception vectors, zone2 at 0x04000000 (above archive)
+    , m_lcd_bpp(2)       // default RGB565 — updated by LcdGetDisMode/rgb_user_init
     , m_audio_open(false)
     , m_audio_device_open(false)
     , m_audio_write_count(0)
@@ -59,15 +60,13 @@ Syscalls::Syscalls(Memory& mem, Display& display)
         m_fb_pool[i].size = 0;
         m_fb_pool[i].in_use = false;
     }
-    // Populate OS LCD format mirror (normally set during LcdGetDisMode/rgb_user_init).
-    // phys 0x00508FC0: pixel format width (2 = RGB565, 4 = ARGB8888)
-    // phys 0x006A1DDC: palette flag  (0 = RGB/ARGB, non-zero = 8-bit indexed + CLUT)
+    // Populate OS LCD size mirror (direct-read by game code that bypasses GOT).
     // phys 0x0056F16A: canonical LCD width  (read by LCD_GetXSize / direct access)
     // phys 0x0056F16C: canonical LCD height (read by LCD_GetYSize / direct access)
+    // pixel format (bpp) is kept in m_lcd_bpp — not in guest RAM — to prevent
+    // the game's heap from corrupting it.
     {
         u8* raw = m_mem.get_raw_ptr();
-        *(u32*)(raw + 0x00508FC0) = 2;
-        *(u32*)(raw + 0x006A1DDC) = 0;
         *(u16*)(raw + 0x0056F16A) = Display::WIDTH;
         *(u16*)(raw + 0x0056F16C) = Display::HEIGHT;
     }
@@ -415,7 +414,7 @@ void Syscalls::close_file_handle(int idx) {
 // === Internal I/O helpers (used by both stdlib-style and fsys_* calls) ===
 
 u32 Syscalls::do_fread(u32 ptr, u32 size, u32 nmemb, u32 file_handle) {
-    int idx = file_handle;
+    int idx = (int)file_handle - 1;
     if (idx < 0 || idx >= 64 || !m_files[idx].in_use) return 0;
     u32 total = size * nmemb;
     if (m_files[idx].is_host && m_files[idx].host_file) {
@@ -446,7 +445,7 @@ u32 Syscalls::do_fread(u32 ptr, u32 size, u32 nmemb, u32 file_handle) {
 }
 
 u32 Syscalls::do_fwrite(u32 ptr, u32 size, u32 nmemb, u32 file_handle) {
-    int idx = file_handle;
+    int idx = (int)file_handle - 1;
     if (idx < 0 || idx >= 64 || !m_files[idx].in_use) return 0;
     u32 total = size * nmemb;
     if (m_files[idx].is_host && m_files[idx].host_file) {
@@ -460,7 +459,7 @@ u32 Syscalls::do_fwrite(u32 ptr, u32 size, u32 nmemb, u32 file_handle) {
 }
 
 u32 Syscalls::do_fseek(u32 file_handle, s32 offset, u32 whence) {
-    int idx = file_handle;
+    int idx = (int)file_handle - 1;
     if (idx < 0 || idx >= 64 || !m_files[idx].in_use) return (u32)-1;
     if (m_files[idx].is_host && m_files[idx].host_file) {
         u32 ret = (u32)fseek(m_files[idx].host_file, offset, (int)whence);
@@ -482,7 +481,7 @@ u32 Syscalls::do_fseek(u32 file_handle, s32 offset, u32 whence) {
 }
 
 u32 Syscalls::do_ftell(u32 file_handle) {
-    int idx = file_handle;
+    int idx = (int)file_handle - 1;
     if (idx < 0 || idx >= 64 || !m_files[idx].in_use) return (u32)-1;
     if (m_files[idx].is_host && m_files[idx].host_file)
         return (u32)ftell(m_files[idx].host_file);
@@ -490,7 +489,7 @@ u32 Syscalls::do_ftell(u32 file_handle) {
 }
 
 u32 Syscalls::do_feof(u32 file_handle) {
-    int idx = file_handle;
+    int idx = (int)file_handle - 1;
     if (idx < 0 || idx >= 64 || !m_files[idx].in_use) return 1;
     if (m_files[idx].is_host && m_files[idx].host_file)
         return (u32)feof(m_files[idx].host_file);
@@ -500,7 +499,7 @@ u32 Syscalls::do_feof(u32 file_handle) {
 }
 
 u32 Syscalls::do_ferror(u32 file_handle) {
-    int idx = file_handle;
+    int idx = (int)file_handle - 1;
     if (idx < 0 || idx >= 64 || !m_files[idx].in_use) return 0;
     if (m_files[idx].is_host && m_files[idx].host_file)
         return (u32)ferror(m_files[idx].host_file);
@@ -798,10 +797,7 @@ void Syscalls::impl__lcd_set_frame() {
     static constexpr u32 PIXEL_COUNT = Display::WIDTH * Display::HEIGHT;  // 76800
 
     u32 end_ptr = arg(0) & 0x1FFFFFFF;
-    u32 fmt_mirror = m_mem.read_u32(0x80508FC0);
-    u32 pal_flag   = m_mem.read_u32(0x806A1DDC);
-    u32 bpp = (pal_flag != 0) ? 1 : ((fmt_mirror >= 2) ? fmt_mirror : 2);
-
+    u32 bpp = m_lcd_bpp;
     u32 buf_size = PIXEL_COUNT * bpp;
     g_cpu_regs[2] = 0;
 
@@ -810,9 +806,27 @@ void Syscalls::impl__lcd_set_frame() {
 
     u32 start = end_ptr - buf_size;
     u8* ram = m_mem.get_raw_ptr();
+
+    // Count non-zero pixels to check if anything is actually drawn
+    static u32 lcd_sample_count = 0;
+    if (lcd_sample_count < 10) {
+        u32 nonzero = 0, nonwhite = 0;
+        u32 stride = bpp;
+        for (u32 i = 0; i + stride <= buf_size; i += stride) {
+            u32 px = 0;
+            for (u32 b = 0; b < stride; b++) px |= ((u32)ram[start + i + b] << (b * 8));
+            if (px != 0) nonzero++;
+            u32 white = (stride == 2) ? 0xFFFF : 0xFFFFFFFF;
+            if (px != white) nonwhite++;
+        }
+        printf("[LCD] frame %u: start=0x%08X bpp=%u nonzero=%u nonwhite=%u (of %u)\n",
+               lcd_sample_count, start, bpp, nonzero, nonwhite, PIXEL_COUNT);
+        lcd_sample_count++;
+    }
+
     u32 display_addr = 0;
 
-    if (pal_flag != 0) {
+    if (bpp == 1) {
         // 8-bit indexed → CLUT lookup, convert to RGB565
         u32 buf_phys = allocate_fb(PIXEL_COUNT * 2);
         if (buf_phys && buf_phys + PIXEL_COUNT * 2 <= m_mem.size()) {
@@ -996,7 +1010,7 @@ void Syscalls::impl_fsys_fopen() {
             m_files[idx].archive = m_archive;
             m_files[idx].archive_entry = entry;
             m_files[idx].offset = 0;
-            g_cpu_regs[2] = (u32)idx;
+            g_cpu_regs[2] = (u32)idx + 1;
             return;
         }
     }
@@ -1010,7 +1024,7 @@ void Syscalls::impl_fsys_fopen() {
         if (f) {
             m_files[idx].is_host = true;
             m_files[idx].host_file = f;
-            g_cpu_regs[2] = (u32)idx;
+            g_cpu_regs[2] = (u32)idx + 1;
             return;
         }
     }
@@ -1024,7 +1038,8 @@ void Syscalls::impl_fsys_fread() {
     u32 size   = arg(1);
     u32 nmemb  = arg(2);
     u32 handle = arg(3);
-    u32 before = (handle < 64 && m_files[handle].in_use) ? m_files[handle].offset : 0;
+    int hidx = (int)handle - 1;
+    u32 before = (hidx >= 0 && hidx < 64 && m_files[hidx].in_use) ? m_files[hidx].offset : 0;
     u32 n = do_fread(buf, size, nmemb, handle);
     // Log: show offset-before-read, total bytes requested, first 4 magic bytes of result
     u32 total = size * nmemb;
@@ -1037,8 +1052,9 @@ void Syscalls::impl_fsys_fread() {
 }
 
 void Syscalls::impl_fsys_fclose() {
-    printf("[FCLOSE] handle=%u\n", arg(0));
-    close_file_handle(arg(0));
+    u32 handle = arg(0);
+    printf("[FCLOSE] handle=%u\n", handle);
+    close_file_handle((int)handle - 1);
     g_cpu_regs[2] = 0;
 }
 
@@ -1587,9 +1603,6 @@ void Syscalls::impl_OSSemPend() {
         switch_to_task(next);
     } else {
         // No other ready task - unblock and return OS_TIMEOUT to caller.
-        // The game uses OSSemPend synchronously within the game_main call
-        // chain (tasks are called inline, not as independent contexts), so
-        // there's never a background task to switch to.
         m_tasks[m_current_task].blocked = false;
         m_tasks[m_current_task].block_sem = 0;
         m_tasks[m_current_task].sem_err_ptr = 0;
@@ -1796,11 +1809,17 @@ void Syscalls::impl__sys_judge_event() {
     // the Dingoo A320 (no touchscreen) — reads the global key-state at 0x80242B40,
     // translates via a runtime table, and returns immediately.
 
-    // Check memory-based event queue first (startup sentinel 0x8BFC4D89)
+    // The value at EVENT_QUEUE_ADDR (0x80BFECD8) is pre-populated with the
+    // hardware-ready sentinel 0x8BFC4D89 for the game to read directly during
+    // audio init. Clear it silently when _sys_judge_event sees it — the game
+    // interprets 0x8BFC4D89 as an OS exit signal, causing premature shutdown.
     u32 event_val = m_mem.read_u32(EVENT_QUEUE_ADDR);
-    if (event_val) {
+    if (event_val == 0x8BFC4D89u) {
         m_mem.write_u32(EVENT_QUEUE_ADDR, 0);
-        printf("[INPUT] _sys_judge_event(a0=0x%08X) -> 0x%08X (sentinel/hw)\n", a0, event_val);
+        event_val = 0;
+    } else if (event_val) {
+        m_mem.write_u32(EVENT_QUEUE_ADDR, 0);
+        printf("[INPUT] _sys_judge_event(a0=0x%08X) -> 0x%08X (queued event)\n", a0, event_val);
         g_cpu_regs[2] = event_val;
         return;
     }
@@ -1893,8 +1912,8 @@ void Syscalls::impl_fsys_fopenW() {
             m_files[idx].is_host = true;
             m_files[idx].host_file = f;
             printf("[fopenW] '%s' mode='%s' -> handle %d (app binary)\n",
-                   path.c_str(), mode.c_str(), idx);
-            g_cpu_regs[2] = (u32)idx;
+                   path.c_str(), mode.c_str(), idx + 1);
+            g_cpu_regs[2] = (u32)idx + 1;
             return;
         }
         m_files[idx].in_use = false;
@@ -1944,8 +1963,8 @@ void Syscalls::impl_fsys_fopenW() {
             m_files[idx].archive_entry = entry;
             m_files[idx].offset = 0;
             printf("[fopenW] '%s' mode='%s' -> handle %d (archive, %u bytes)\n",
-                   search_path.c_str(), mode.c_str(), idx, (u32)entry->size);
-            g_cpu_regs[2] = (u32)idx;
+                   search_path.c_str(), mode.c_str(), idx + 1, (u32)entry->size);
+            g_cpu_regs[2] = (u32)idx + 1;
             return;
         }
     }
@@ -1961,8 +1980,8 @@ void Syscalls::impl_fsys_fopenW() {
             m_files[idx].is_host = true;
             m_files[idx].host_file = f;
             printf("[fopenW] '%s' mode='%s' -> handle %d (host write)\n",
-                   path.c_str(), mode.c_str(), idx);
-            g_cpu_regs[2] = (u32)idx;
+                   path.c_str(), mode.c_str(), idx + 1);
+            g_cpu_regs[2] = (u32)idx + 1;
             return;
         }
     }
@@ -1975,8 +1994,8 @@ void Syscalls::impl_fsys_fopenW() {
             m_files[idx].is_host = true;
             m_files[idx].host_file = f;
             printf("[fopenW] '%s' mode='%s' -> handle %d (host read)\n",
-                   path.c_str(), mode.c_str(), idx);
-            g_cpu_regs[2] = (u32)idx;
+                   path.c_str(), mode.c_str(), idx + 1);
+            g_cpu_regs[2] = (u32)idx + 1;
             return;
         }
     }
@@ -2176,15 +2195,9 @@ void Syscalls::impl_lcd_get_frame() {
 }
 
 void Syscalls::impl_lcd_get_bpp() {
-    u32 fmt_mirror = m_mem.read_u32(0x80508FC0);
-    u32 pal_flag   = m_mem.read_u32(0x806A1DDC);
-    if (pal_flag != 0) {
-        g_cpu_regs[2] = 8;
-    } else if (fmt_mirror >= 4) {
-        g_cpu_regs[2] = 32;
-    } else {
-        g_cpu_regs[2] = 16;
-    }
+    if (m_lcd_bpp == 1) g_cpu_regs[2] = 8;
+    else if (m_lcd_bpp >= 4) g_cpu_regs[2] = 32;
+    else g_cpu_regs[2] = 16;
 }
 
 void Syscalls::impl_LCD_GetXSize() {
@@ -2229,16 +2242,29 @@ void Syscalls::impl_open_gui_key_msg() {
 
 // === VSYNC simulation ===
 
+void Syscalls::register_main_context(u32 pc, u32 a0, u8 prio) {
+    if (m_task_count >= MAX_TASKS) return;
+    int idx = m_task_count++;
+    Task& t = m_tasks[idx];
+    memset(&t, 0, sizeof(t));
+    t.active    = true;
+    t.blocked   = false;
+    t.task_prio = prio;
+    t.task_arg  = a0;
+    t.pc        = pc;
+    // regs[] populated by save_current_task() on first preemption/block
+    m_current_task      = idx;
+    m_scheduler_started = true;
+    printf("[SCHEDULER] Registered AppMain as task %d (prio %u) at 0x%08X\n", idx, prio, pc);
+}
+
 bool Syscalls::simulate_vsync() {
     bool switched = false;
 
-    // Auto-start the scheduler: register tasks but keep inline execution.
-    // The game calls task functions (like the audio task at 0x80A06400)
-    // directly from game_main through vtable pointers — µC/OS-II task
-    // switching is never used. OSTaskCreate + Pend/Post are used purely
-    // as synchronization primitives within the inline call chain.
-    // We set m_current_task so Pend/Post bookkeeping works, but do NOT
-    // switch context — game_main continues as the active execution context.
+    // Auto-start the scheduler: on the first vsync after tasks are registered,
+    // perform a real context switch to the highest-priority task.
+    // The caller (AppMain / dl_main) has finished its setup work by this point;
+    // we save its context as idle so OSTaskDel can fall back to it if needed.
     if (m_current_task < 0 && m_task_count > 0 && !m_scheduler_started) {
         int highest = -1;
         u8 best_prio = 255;
@@ -2249,16 +2275,16 @@ bool Syscalls::simulate_vsync() {
             }
         }
         if (highest >= 0) {
-            // Save the current (game_main) context as the idle context.
             memcpy(m_idle_regs, g_cpu_regs, sizeof(g_cpu_regs));
             m_idle_pc = g_cpu_pc;
             m_idle_hi = g_cpu_hi;
             m_idle_lo = g_cpu_lo;
 
             m_scheduler_started = true;
-            m_current_task = highest;  // for Pend/Post bookkeeping
-            printf("[SCHEDULER] Tasks registered: task %d (prio %u) inline\n",
-                   highest, best_prio);
+            switch_to_task(highest);
+            printf("[SCHEDULER] Starting task %d (prio %u) at 0x%08X\n",
+                   highest, best_prio, g_cpu_pc);
+            return true;
         }
     }
 

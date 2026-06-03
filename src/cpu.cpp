@@ -578,26 +578,33 @@ void CPU::execute_one() {
     insn_count++;
 }
 
+void CPU::run_until_pc(u32 stop_pc, u32 max_insns) {
+    for (u32 i = 0; i < max_insns && running && pc != stop_pc; i++) {
+        execute_one();
+    }
+}
+
+void CPU::do_vsync() {
+    if (!syscalls) return;
+    memcpy(g_cpu_regs, regs, sizeof(g_cpu_regs));
+    g_cpu_pc = pc;
+    g_cpu_hi = hi;
+    g_cpu_lo = lo;
+
+    syscalls->clear_task_switched();
+    bool switched = syscalls->simulate_vsync();
+
+    memcpy(regs, g_cpu_regs, sizeof(regs));
+    hi = g_cpu_hi;
+    lo = g_cpu_lo;
+    if (switched) {
+        pc = g_cpu_pc;
+    }
+}
+
 void CPU::run_frame(u32 max_insns) {
     for (u32 i = 0; i < max_insns && running; i++) {
         execute_one();
     }
-    // Simulate VSYNC once per frame
-    if (syscalls) {
-        // Sync current CPU state to globals so save_current_task() works correctly
-        memcpy(g_cpu_regs, regs, sizeof(g_cpu_regs));
-        g_cpu_pc = pc;
-        g_cpu_hi = hi;
-        g_cpu_lo = lo;
-
-        syscalls->clear_task_switched();
-        bool switched = syscalls->simulate_vsync();
-
-        memcpy(regs, g_cpu_regs, sizeof(regs));
-        hi = g_cpu_hi;
-        lo = g_cpu_lo;
-        if (switched) {
-            pc = g_cpu_pc;  // use dedicated saved task PC, not $ra
-        }
-    }
+    do_vsync();
 }
