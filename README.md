@@ -23,7 +23,7 @@ Runs any standard `.app` binary with Dingoo OS syscall interception, SDL2 displa
 │  │                                                          │   │
 │  │  ┌──────────────────────────────────────────────────┐   │   │
 │  │  │           Dingoo OS Syscall Interception         │   │   │
-│  │  │ 72+ high-level function implementations via host  │   │   │
+│  │  │ 87 high-level function implementations via host   │   │   │
 │  │  └──────────────────────────────────────────────────┘   │   │
 │  │                                                          │   │
 │  │  ┌──────────────────────────────────────────────────┐   │   │
@@ -92,8 +92,6 @@ make
 Options:
   --frames <n>        Stop after n CPU frames (0 = unlimited)
   --save-screenshots  Save BMP screenshots periodically
-  --no-sound          Disable audio
-  --quiet             Suppress diagnostic output (log only errors)
 ```
 
 ### Examples
@@ -208,35 +206,53 @@ Guest memory layout:
 
 ### Syscall API Coverage
 
-The emulator intercepts all GOT trampoline calls from the guest binary. Of ~77 possible imports:
+The emulator intercepts all GOT trampoline calls from the guest binary. The dispatch table covers indices 0–86 (87 entries):
 
-- **52 implemented** — real implementations (malloc, printf, LCD, audio, input, timer, unicode, directory search, SR, etc.)
-- **20 stubbed** — return constants (abort, cache ops, USB, volume, etc.)
+- **64 implemented** — real implementations (malloc, printf, LCD, audio, input, timer, unicode, directory search, SR, etc.)
+- **16 pure stubs** — return constants with no side effects (cache ops, USB, free_irq, etc.)
+- **7 listed as stubs but actually implemented** — `fsys_findfirst/findnext/findclose`, `waveout_set_volume`, `HP_Mute_sw`, `__to_unicode_le`, `__to_locale_ansi` (should be removed from `got_is_stub`)
 - **0 unknown** for standard 72-entry GOT apps
-- **38 unknown** for Yi-Chi King Fighter (uncommon µC/GUI imports)
+- **Apps with non-standard GOT** (Yi-Chi King Fighter, Overlord-Fighter, Life, StopWatch, dicer) have imports beyond index 86 with different layouts — not dispatched
 
 ---
 
 ## App Compatibility
 
-Tested with 14 `.app` files:
+Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dummy timeout 20`.
 
 | App | Status |
 |-----|--------|
-| 7days (HellStriker) | ✅ Boots to gameplay, dialogue, menu |
-| hsingtin | ✅ Loads and runs |
-| Decollation Warrior | ✅ Loads and runs |
-| Hell Striker II | ✅ Loads and runs |
-| candy | ✅ Loads and runs |
-| linkemup | ✅ Loads and runs |
-| tetris | ✅ Loads and runs |
-| ultimate_drift | ✅ Loads and runs |
-| Zhao Yun Chuan | ✅ Loads and runs |
-| brick | ✅ Loads and runs |
-| snake | ✅ Loads and runs |
-| Puzzle Bobble | ✅ Loads and runs |
-| Landlord | ✅ Loads and runs |
-| Yi-Chi King Fighter | ⚠️ 38 unknown imports (GUI framework) |
+| 7days (HellStriker) | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| AliBaba | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Block Breaker | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Candy | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| CPU-430 | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Decollation Warrior | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| dicer | ⏳ Hits `=== Starting emulation ===`, then nothing (GAP) |
+| Fomula-One | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Hell Striker II | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Landlord | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Life | ⏳ Hits `=== Starting emulation ===`, then nothing (GAP) |
+| Link'em Up | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Manic-Miner | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Mine Sweeper | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Mojo | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Mushroom Roulette | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Nose Breaker | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Overlord-Fighter | 💥 Non-standard GOT layout (96 imports, first = cmGetSysVersion) |
+| Platinum Sudoku | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| PoPo Bash | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Puzzle Bobble | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Rick-Dangerous | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Rubido | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| snake | ⏳ Loads resources from binary, then loops on NOT FOUND (timeout) |
+| StopWatch | ⏳ Hits `=== Starting emulation ===`, then nothing (GAP) |
+| tetris | ✅ Boots fully, renders 11 frames (archive SPK found, audio, tasks, exit via sentinel) |
+| ultimate_drift | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Yi-Chi King Fighter | 💥 Non-standard GOT layout (96 imports) |
+| Zhao Yun Chuan | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+
+Most games show **0 frames rendered** — tetris is the first to reach the main rendering loop (11 frames).
 
 ---
 
@@ -253,26 +269,43 @@ Tested with 14 `.app` files:
 
 | Issue | Status |
 |-------|--------|
-| Prologue CG backgrounds may appear black | 🔍 Decompression format investigation pending |
+| **tetris renders** (11 frames), most others stop before rendering loop | 🔍 tetris boots fully; others stall on missing resources, audio spins, or early exit |
 | Save file write path not implemented | ⚠️ Medium priority |
 | No frame rate cap (runs as fast as emulator can go) | ⚠️ Low priority |
 | MXU audio mixing correctness unverified | ⚠️ Low priority |
 | `get_current_language` hardcoded to English | ⚠️ Low priority — may affect Chinese UI locale |
+| Non‑standard GOT apps (Yi‑Chi, Overlord‑Fighter, Life, StopWatch, dicer) not dispatched | ⚠️ Medium priority — need per‑app GOT table detection |
 
 ---
 
-## Stubbed / Unimplemented APIs
+## Remaining Stubs (15 entries)
 
-### Quick‑win stubs (implementable with modest effort)
+All return constants with no side effects. None block the 72‑import apps from reaching gameplay.
 
-| GOT | API | Minimal implementation |
-|-----|-----|-----------------------|
-| 72 | `get_dl_handle` | Allocate dummy handle referencing current Archive |
-| 73–76 | `dl_res_*` | Thin wrappers around `Archive::find` |
+| GOT | API | Notes |
+|-----|-----|-------|
+| 12 | `vxGoHome` | OS home‑screen navigation; safe stub |
+| 14 | `free_irq` | Free IRQ handler; safe stub |
+| 15 | `fsys_RefreshCache` | Flush FS cache; safe stub |
+| 22 | `__icache_invalidate_all` | No cache in emulator; safe stub |
+| 23 | `__dcache_writeback_all` | No cache in emulator; safe stub |
+| 24 | `TaskMediaFunStop` | Stop media player task; safe stub |
+| 27 | `serial_getc` | Should return −1 when no data |
+| 37 | `fsys_remove` | Should use host `remove()`; stub returns −1 |
+| 38 | `fsys_rename` | Should use host `rename()`; stub returns −1 |
+| 45 | `fsys_flush_cache` | FS cache flush; safe stub |
+| 46 | `USB_Connect` | USB connect event; safe stub |
+| 47 | `udc_attached` | USB device attached; safe stub |
+| 48 | `USB_No_Connect` | USB disconnect event; safe stub |
+| 57 | `pcm_ioctl` | Should handle `PCM_SET_SAMPLE_RATE`, `PCM_GET_SPACE`, etc. |
+| 86 | `open_gui_key_msg` | µC/GUI; Yi‑Chi / Overlord‑Fighter only |
 
-### Harmless hardware stubs (20 entries)
+### Non‑standard GOT apps (no dispatch)
 
-Compete list in [`unimplemented.md`](unimplemented.md). All return constants with no side effects.
+| App | Imports | Problem |
+|-----|---------|---------|
+| Yi‑Chi King Fighter, Overlord‑Fighter | 96 | Different GOT layout (index 0 = `cmGetSysVersion`); indices 87–95 unknown |
+| Life, StopWatch, dicer | 172 | `av_*` multimedia framework + µC/GUI + extra µC/OS-II; indices ≥96 exceed `MAX_GOT_ENTRIES` |
 
 ---
 
@@ -299,14 +332,13 @@ Compete list in [`unimplemented.md`](unimplemented.md). All return constants wit
 | `src/mxu.cpp` | MXU/COP2 custom DSP opcodes |
 | `src/memory.cpp` | Memory map, address translation, LCD/DMA/IPU register logging |
 | `src/memory.h` | Memory class interface |
-| `src/syscalls.cpp` | All 77 GOT handlers, µC/OS-II stubs, LCD format mirror, frame buffer pool |
+| `src/syscalls.cpp` | All 87 GOT handlers (indices 0–86), µC/OS-II stubs, LCD format mirror, frame buffer pool |
 | `src/syscalls.h` | Syscall dispatch declarations |
 | `src/display.cpp` | SDL2 window, LCD framebuffer, format conversion, key mapping |
 | `src/display.h` | Dingoo key codes, Display class |
 | `src/archive.cpp` | SPK archive parser |
 | `src/app_parser.cpp` | CCDL/IMPT/EXPT/RAWD header parser |
-| `unimplemented.md` | API coverage gaps (missing + stubbed GOT entries) |
-| `STUBS.md` | Quick-win stub implementation ideas |
+| *(—)* | GOT coverage gaps tracked in this README's "Remaining Stubs" table |
 
 ---
 

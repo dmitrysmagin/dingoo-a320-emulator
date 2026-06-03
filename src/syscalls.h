@@ -195,6 +195,9 @@ private:
     void release_fb(u32 phys);
     void argb8888_to_rgb565(const u8* src, u8* dst, u32 pixel_count);
 
+    // get_dl_handle counter (incrementing handle allocator)
+    u32 m_dl_handle_counter = 1;
+
     // dl_res handle tracking (for brick.app etc.)
     static constexpr int MAX_DL_RES = 32;
     struct DlResHandle {

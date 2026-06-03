@@ -220,7 +220,7 @@ bool Syscalls::got_is_stub(int index) const {
     case 12: case 14: case 15: case 22: case 23: case 24:
     case 27: case 37: case 38: case 42:
     case 43: case 44: case 45: case 46: case 47: case 48:
-    case 52: case 53: case 57: case 69: case 70: case 72:
+    case 52: case 53: case 57: case 69: case 70:
     case 86:
         return true;
     default:
@@ -2090,8 +2090,16 @@ void Syscalls::free_dl_res_handle(int idx) {
 }
 
 void Syscalls::impl_get_dl_handle() {
-    printf("[STUB] get_dl_handle\n");
-    g_cpu_regs[2] = 0;
+    // dl_load stores module metadata and returns a handle — that return value IS the handle.
+    // Since dl_res_* functions use the Archive directly (not module handles), we return a
+    // dummy non-zero handle.  The real implementation would look up the calling module's
+    // entry in the module resource database at 0x8057F168+ (12-byte entries with 24-bit keys),
+    // but the OS never wired this GOT slot up (func pointer is NULL in the binary).
+    u32 handle = m_dl_handle_counter;
+    if (handle == 0) { handle = 1; m_dl_handle_counter = 2; }
+    else m_dl_handle_counter++;
+    printf("[DL] get_dl_handle -> %u\n", handle);
+    g_cpu_regs[2] = handle;
 }
 
 void Syscalls::impl_dl_res_open() {
