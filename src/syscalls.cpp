@@ -223,6 +223,8 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     , m_audio_open(false)
     , m_audio_device_open(false)
     , m_audio_write_count(0)
+    , m_audio_sample_rate(44100)
+    , m_audio_channels(2)
     , m_audio_device(0)
     , m_audio_mutex(nullptr)
     , m_volume(1.0f)
@@ -1353,6 +1355,10 @@ void Syscalls::impl_waveout_open() {
     if (channels <= 0 || channels > 2) channels = 2;  // force mono/stereo
     if (bits <= 0) bits = 16;
 
+    // Store for use by waveout_write throttle
+    m_audio_sample_rate = (u32)sample_rate;
+    m_audio_channels    = (u32)channels;
+
     // Create mutex if not yet created
     if (!m_audio_mutex) {
         m_audio_mutex = SDL_CreateMutex();
@@ -1454,11 +1460,10 @@ void Syscalls::impl_waveout_write() {
         s16 s = (s16)(samples[i] * m_volume);
         m_audio_queue.push(s);
     }
-    // Discard excess samples if queue is full.
     SDL_UnlockMutex(m_audio_mutex);
 
-    g_cpu_regs[2] = size; // return byte count as before
     m_audio_write_count++;
+    g_cpu_regs[2] = size; // return byte count written
 }
 
 void Syscalls::impl_waveout_can_write() {
@@ -2658,63 +2663,63 @@ bool Syscalls::simulate_vsync() {
 
 // ── Stubs for remaining Dingoo OS APIs ───────────────────────────────────
 
-void Syscalls::impl_Custom_Memsic_test(){}
-void Syscalls::impl_GUI_TIMER_Exec(){}
-void Syscalls::impl_Get_X(){}
-void Syscalls::impl_Get_Y(){}
-void Syscalls::impl_Memsic_SerialCommInit(){}
-void Syscalls::impl_Read_Acc(){}
-void Syscalls::impl_Read_Acc0(){}
-void Syscalls::impl_SysDisableBkLight(){}
-void Syscalls::impl__tcscmp(){}
-void Syscalls::impl__tcscpy(){}
-void Syscalls::impl__waveout_open(){}
-void Syscalls::impl__waveout_set_volume(){}
-void Syscalls::impl_av_begin_thread(){}
-void Syscalls::impl_av_create_flag(){}
-void Syscalls::impl_av_create_sem(){}
-void Syscalls::impl_av_delay(){}
-void Syscalls::impl_av_destroy_flag(){}
-void Syscalls::impl_av_destroy_sem(){}
-void Syscalls::impl_av_end_thread(){}
-void Syscalls::impl_av_give_flag(){}
-void Syscalls::impl_av_give_sem(){}
-void Syscalls::impl_av_queue_abort(){}
-void Syscalls::impl_av_queue_end(){}
-void Syscalls::impl_av_queue_flush(){}
-void Syscalls::impl_av_queue_get(){}
-void Syscalls::impl_av_queue_init(){}
-void Syscalls::impl_av_queue_put(){}
-void Syscalls::impl_av_reg_object(){}
-void Syscalls::impl_av_resize_packet(){}
-void Syscalls::impl_av_uft8_2_unicode(){}
-void Syscalls::impl_av_unreg_object(){}
-void Syscalls::impl_av_upper_4cc(){}
-void Syscalls::impl_av_wait_flag(){}
-void Syscalls::impl_av_wait_sem(){}
-void Syscalls::impl_av_wait_sem2(){}
-void Syscalls::impl_delay_ms(){}
-void Syscalls::impl_detect_clock(){}
-void Syscalls::impl_dl_get_proc(){}
-void Syscalls::impl_fsys_fcloseW(){}
-void Syscalls::impl_fsys_fclose_flash(){}
-void Syscalls::impl_fsys_fopen_flash(){}
-void Syscalls::impl_fsys_mkdir(){}
-void Syscalls::impl_fsys_removeW(){}
-void Syscalls::impl_fsys_renameW(){}
-void Syscalls::impl_isTVON(){}
-void Syscalls::impl_memcpy(){}
-void Syscalls::impl_memset(){}
-void Syscalls::impl_serial_puts(){}
-void Syscalls::impl_sscanf(){}
-void Syscalls::impl_sys_get_ccpmp_config(){}
-void Syscalls::impl_tv_close(){}
-void Syscalls::impl_tv_disable_switch(){}
-void Syscalls::impl_tv_enable_switch(){}
-void Syscalls::impl_tv_get_closeflag(){}
-void Syscalls::impl_tv_get_openflag(){}
-void Syscalls::impl_tv_open(){}
-void Syscalls::impl_tv_set_closeflag(){}
-void Syscalls::impl_tv_set_openflag(){}
-void Syscalls::impl_udelay(){}
-void Syscalls::impl_vsprintf(){}
+void Syscalls::impl_Custom_Memsic_test()    { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_GUI_TIMER_Exec()        { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_Get_X()                 { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_Get_Y()                 { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_Memsic_SerialCommInit() { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_Read_Acc()              { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_Read_Acc0()             { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_SysDisableBkLight()     { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl__tcscmp()               { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl__tcscpy()               { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl__waveout_open()         { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl__waveout_set_volume()   { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_begin_thread()       { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_create_flag()        { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_create_sem()         { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_delay()              { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_destroy_flag()       { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_destroy_sem()        { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_end_thread()         { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_give_flag()          { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_give_sem()           { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_queue_abort()        { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_queue_end()          { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_queue_flush()        { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_queue_get()          { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_queue_init()         { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_queue_put()          { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_reg_object()         { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_resize_packet()      { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_uft8_2_unicode()     { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_unreg_object()       { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_upper_4cc()          { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_wait_flag()          { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_wait_sem()           { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_wait_sem2()          { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_delay_ms()              { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_detect_clock()          { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_dl_get_proc()           { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_fsys_fcloseW()          { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_fsys_fclose_flash()     { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_fsys_fopen_flash()      { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_fsys_mkdir()            { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_fsys_removeW()          { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_fsys_renameW()          { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_isTVON()                { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_memcpy()                { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_memset()                { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_serial_puts()           { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_sscanf()                { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_sys_get_ccpmp_config()  { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_tv_close()              { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_tv_disable_switch()     { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_tv_enable_switch()      { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_tv_get_closeflag()      { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_tv_get_openflag()       { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_tv_open()               { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_tv_set_closeflag()      { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_tv_set_openflag()       { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_udelay()                { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_vsprintf()              { printf("[STUB] %s\n", __func__); }

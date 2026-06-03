@@ -269,6 +269,8 @@ private:
     bool m_audio_open;
     bool m_audio_device_open;
     u32 m_audio_write_count;
+    u32 m_audio_sample_rate;  // set by waveout_open; used for waveout_write throttle
+    u32 m_audio_channels;     // set by waveout_open; 1=mono, 2=stereo
     SDL_AudioDeviceID m_audio_device;
     SDL_mutex* m_audio_mutex;
     std::queue<s16> m_audio_queue;
