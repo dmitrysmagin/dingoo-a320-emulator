@@ -69,11 +69,13 @@ public:
         else      m_dingoo_keys &= ~key;
     }
 
-    // Input event queue for _sys_judge_event / _kbd_get_key
+    // Input event queues
     static constexpr u32 EVT_KEY_DOWN = 0x01;
     static constexpr u32 EVT_KEY_UP   = 0x02;
     bool has_input_event() const { return !m_input_events.empty(); }
     u32  pop_input_event();
+    bool has_key_event() const { return !m_key_events.empty(); }
+    u32  pop_key_event();
 
     // Convert DKEY_ bitmask to Dingoo SDK key code (A=1..RIGHT=12)
     static u32 bitmask_to_keycode(u32 bitmask);
@@ -95,6 +97,7 @@ private:
     u32 m_hw_keys;
     u32 m_prev_dingoo_keys;
     std::queue<u32> m_input_events;
+    std::queue<u32> m_key_events;
     static constexpr size_t MAX_INPUT_EVENTS = 64;
 };
 

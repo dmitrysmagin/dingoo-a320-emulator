@@ -999,21 +999,14 @@ void Syscalls::impl_get_game_vol() {
 }
 
 void Syscalls::impl__kbd_get_key() {
-    // Return the Dingoo SDK key code (0x01-0x0C) for the highest-priority
-    // pressed key, or 0 if no key is held.
-    u32 keys = m_display.get_dingoo_keys();
-    static const u32 priority[] = {
-        DKEY_UP, DKEY_DOWN, DKEY_LEFT, DKEY_RIGHT,
-        DKEY_A, DKEY_B, DKEY_X, DKEY_Y,
-        DKEY_L, DKEY_R, DKEY_START, DKEY_SELECT,
-    };
-    for (u32 mask : priority) {
-        if (keys & mask) {
-            u32 code = bitmask_to_keycode(mask);
-            printf("[INPUT] _kbd_get_key -> 0x%02X (code=%u)\n", code, code);
-            g_cpu_regs[2] = code;
-            return;
-        }
+    // Return the Dingoo SDK key code (0x01-0x0C) from the key event FIFO,
+    // or 0 if no event is queued.   Both key-down and key-up are returned
+    // as the same key code — one event per press/release.
+    if (m_display.has_key_event()) {
+        u32 code = m_display.pop_key_event();
+        printf("[INPUT] _kbd_get_key -> 0x%02X (code=%u)\n", code, code);
+        g_cpu_regs[2] = code;
+        return;
     }
     g_cpu_regs[2] = 0;
 }

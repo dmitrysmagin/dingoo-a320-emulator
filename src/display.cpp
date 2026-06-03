@@ -285,6 +285,13 @@ u32 Display::pop_input_event() {
     return ev;
 }
 
+u32 Display::pop_key_event() {
+    if (m_key_events.empty()) return 0;
+    u32 ev = m_key_events.front();
+    m_key_events.pop();
+    return ev;
+}
+
 bool Display::pump_events() {
     static int screenshot_idx = 0;
     SDL_Event event;
@@ -300,7 +307,11 @@ bool Display::pump_events() {
             u32 dk = sdl_to_dingoo(event.key.keysym.sym);
             if (dk && !(m_dingoo_keys & dk) && m_input_events.size() < MAX_INPUT_EVENTS) {
                 u32 code = bitmask_to_keycode(dk);
-                if (code) m_input_events.push((EVT_KEY_DOWN << 8) | code);
+                if (code) {
+                    u32 ev = (EVT_KEY_DOWN << 8) | code;
+                    m_input_events.push(ev);
+                    m_key_events.push(code);
+                }
             }
             m_dingoo_keys |= dk;
             m_hw_keys |= sdl_to_game_hw(event.key.keysym.sym);
@@ -309,7 +320,11 @@ bool Display::pump_events() {
             u32 dk = sdl_to_dingoo(event.key.keysym.sym);
             if (dk && (m_dingoo_keys & dk) && m_input_events.size() < MAX_INPUT_EVENTS) {
                 u32 code = bitmask_to_keycode(dk);
-                if (code) m_input_events.push((EVT_KEY_UP << 8) | code);
+                if (code) {
+                    u32 ev = (EVT_KEY_UP << 8) | code;
+                    m_input_events.push(ev);
+                    m_key_events.push(code);
+                }
             }
             m_dingoo_keys &= ~dk;
             m_hw_keys &= ~sdl_to_game_hw(event.key.keysym.sym);
