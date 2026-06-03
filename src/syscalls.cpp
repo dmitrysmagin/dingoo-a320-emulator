@@ -218,9 +218,9 @@ const char* Syscalls::got_name(int index) const {
 bool Syscalls::got_is_stub(int index) const {
     switch (index) {
     case 12: case 14: case 15: case 22: case 23: case 24:
-    case 27: case 37: case 38: case 42:
+    case 27: case 42:
     case 43: case 44: case 45: case 46: case 47: case 48:
-    case 52: case 53: case 57: case 69: case 70:
+    case 52: case 53: case 69: case 70:
     case 86:
         return true;
     default:
@@ -1074,12 +1074,35 @@ void Syscalls::impl_fsys_ftell() {
 }
 
 void Syscalls::impl_fsys_remove() {
-    printf("[FSYS] remove() - stub\n");
+    u32 path_addr = arg(0);
+    if (!path_addr) { g_cpu_regs[2] = (u32)-1; return; }
+    std::string path = guest_string(path_addr);
+    printf("[FSYS] remove('%s')\n", path.c_str());
+
+    // Try save/ prefix first (games write to save/ directory)
+    std::string host_path = "save/" + path;
+    if (remove(host_path.c_str()) == 0) { g_cpu_regs[2] = 0; return; }
+
+    // Fallback: try path as-is
+    if (remove(path.c_str()) == 0) { g_cpu_regs[2] = 0; return; }
+
     g_cpu_regs[2] = (u32)-1;
 }
 
 void Syscalls::impl_fsys_rename() {
-    printf("[FSYS] rename() - stub\n");
+    u32 old_addr = arg(0);
+    u32 new_addr = arg(1);
+    if (!old_addr || !new_addr) { g_cpu_regs[2] = (u32)-1; return; }
+    std::string old_path = guest_string(old_addr);
+    std::string new_path = guest_string(new_addr);
+    printf("[FSYS] rename('%s' -> '%s')\n", old_path.c_str(), new_path.c_str());
+
+    // Try save/ prefix first, then fallback to as-is
+    std::string host_old = "save/" + old_path;
+    std::string host_new = "save/" + new_path;
+    if (rename(host_old.c_str(), host_new.c_str()) == 0) { g_cpu_regs[2] = 0; return; }
+    if (rename(old_path.c_str(), new_path.c_str()) == 0) { g_cpu_regs[2] = 0; return; }
+
     g_cpu_regs[2] = (u32)-1;
 }
 
@@ -1431,8 +1454,61 @@ void Syscalls::impl_pcm_can_write() {
 }
 
 void Syscalls::impl_pcm_ioctl() {
-    printf("[STUB] pcm_ioctl\n");
-    g_cpu_regs[2] = 0;
+    // pcm_ioctl(cmd, arg) — Dingoo SDK signature
+    u32 cmd = arg(0);
+    u32 arg_val = arg(1);
+    (void)arg_val; // not all cmds use arg_val
+
+    switch (cmd) {
+#define PCM_SET_SAMPLE_RATE  0
+#define PCM_SET_CHANNEL      1
+#define PCM_SET_FORMAT       2
+#define PCM_SET_VOL          3
+#define PCM_GET_VOL          4
+#define PCM_GET_SPACE        5
+#define PCM_SET_HP_VOL       6
+#define PCM_GET_HP_VOL       7
+#define PCM_SET_PAUSE        8
+#define PCM_SET_PLAY         9
+#define PCM_RESET            10
+#define PCM_SET_MUTE         13
+    case PCM_GET_SPACE: {
+        // arg is pointer to int; write available write space
+        constexpr size_t MAX_QUEUE_SAMPLES = 8192;
+        SDL_LockMutex(m_audio_mutex);
+        size_t queued = m_audio_queue.size();
+        SDL_UnlockMutex(m_audio_mutex);
+        u32 free_bytes = static_cast<u32>((queued >= MAX_QUEUE_SAMPLES) ? 0 : (MAX_QUEUE_SAMPLES - queued) * 2);
+        if (free_bytes == 0) free_bytes = 4096; // never return 0 so audio loops don't busy-spin
+        if (arg_val) m_mem.write_u32(arg_val, free_bytes);
+        printf("[PCM] ioctl GET_SPACE -> %u bytes\n", free_bytes);
+        g_cpu_regs[2] = 0; // success
+        break;
+    }
+    case PCM_SET_SAMPLE_RATE:
+    case PCM_SET_CHANNEL:
+    case PCM_SET_FORMAT:
+    case PCM_SET_HP_VOL:
+    case PCM_SET_PAUSE:
+    case PCM_SET_PLAY:
+    case PCM_SET_MUTE:
+    case PCM_RESET:
+        // Accepted silently
+        g_cpu_regs[2] = 0;
+        break;
+    case PCM_SET_VOL:
+        m_pcm_volume = arg_val;
+        g_cpu_regs[2] = 0;
+        break;
+    case PCM_GET_VOL:
+    case PCM_GET_HP_VOL:
+        g_cpu_regs[2] = m_pcm_volume;
+        break;
+    default:
+        printf("[PCM] ioctl unknown cmd=%u arg=0x%08X\n", cmd, arg_val);
+        g_cpu_regs[2] = 0;
+        break;
+    }
 }
 
 // === GOT 58-67: RTOS ===

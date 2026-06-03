@@ -278,7 +278,7 @@ Most games show **0 frames rendered** — tetris is the first to reach the main 
 
 ---
 
-## Remaining Stubs (15 entries)
+## Remaining Stubs (12 entries)
 
 All return constants with no side effects. None block the 72‑import apps from reaching gameplay.
 
@@ -290,15 +290,11 @@ All return constants with no side effects. None block the 72‑import apps from 
 | 22 | `__icache_invalidate_all` | No cache in emulator; safe stub |
 | 23 | `__dcache_writeback_all` | No cache in emulator; safe stub |
 | 24 | `TaskMediaFunStop` | Stop media player task; safe stub |
-| 27 | `serial_getc` | Should return −1 when no data |
-| 37 | `fsys_remove` | Should use host `remove()`; stub returns −1 |
-| 38 | `fsys_rename` | Should use host `rename()`; stub returns −1 |
-| 45 | `fsys_flush_cache` | FS cache flush; safe stub |
-| 46 | `USB_Connect` | USB connect event; safe stub |
-| 47 | `udc_attached` | USB device attached; safe stub |
-| 48 | `USB_No_Connect` | USB disconnect event; safe stub |
-| 57 | `pcm_ioctl` | Should handle `PCM_SET_SAMPLE_RATE`, `PCM_GET_SPACE`, etc. |
-| 86 | `open_gui_key_msg` | µC/GUI; Yi‑Chi / Overlord‑Fighter only |
+ | 27 | `serial_getc` | Should return −1 when no data || 45 | `fsys_flush_cache` | FS cache flush; safe stub |
+ | 46 | `USB_Connect` | USB connect event; safe stub |
+ | 47 | `udc_attached` | USB device attached; safe stub |
+ | 48 | `USB_No_Connect` | USB disconnect event; safe stub |
+ | 86 | `open_gui_key_msg` | µC/GUI; Yi‑Chi / Overlord‑Fighter only |
 
 ### Non‑standard GOT apps (no dispatch)
 
