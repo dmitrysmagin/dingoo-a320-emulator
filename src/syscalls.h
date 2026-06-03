@@ -163,6 +163,68 @@ private:
     void impl_U8TOU16();
     void impl_U8TOU32();
 
+    // Stubs for remaining OS APIs
+    void impl_Custom_Memsic_test();
+    void impl_GUI_TIMER_Exec();
+    void impl_Get_X();
+    void impl_Get_Y();
+    void impl_Memsic_SerialCommInit();
+    void impl_Read_Acc();
+    void impl_Read_Acc0();
+    void impl_SysDisableBkLight();
+    void impl__tcscmp();
+    void impl__tcscpy();
+    void impl__waveout_open();
+    void impl__waveout_set_volume();
+    void impl_av_begin_thread();
+    void impl_av_create_flag();
+    void impl_av_create_sem();
+    void impl_av_delay();
+    void impl_av_destroy_flag();
+    void impl_av_destroy_sem();
+    void impl_av_end_thread();
+    void impl_av_give_flag();
+    void impl_av_give_sem();
+    void impl_av_queue_abort();
+    void impl_av_queue_end();
+    void impl_av_queue_flush();
+    void impl_av_queue_get();
+    void impl_av_queue_init();
+    void impl_av_queue_put();
+    void impl_av_reg_object();
+    void impl_av_resize_packet();
+    void impl_av_uft8_2_unicode();
+    void impl_av_unreg_object();
+    void impl_av_upper_4cc();
+    void impl_av_wait_flag();
+    void impl_av_wait_sem();
+    void impl_av_wait_sem2();
+    void impl_delay_ms();
+    void impl_detect_clock();
+    void impl_dl_get_proc();
+    void impl_fsys_fcloseW();
+    void impl_fsys_fclose_flash();
+    void impl_fsys_fopen_flash();
+    void impl_fsys_mkdir();
+    void impl_fsys_removeW();
+    void impl_fsys_renameW();
+    void impl_isTVON();
+    void impl_memcpy();
+    void impl_memset();
+    void impl_serial_puts();
+    void impl_sscanf();
+    void impl_sys_get_ccpmp_config();
+    void impl_tv_close();
+    void impl_tv_disable_switch();
+    void impl_tv_enable_switch();
+    void impl_tv_get_closeflag();
+    void impl_tv_get_openflag();
+    void impl_tv_open();
+    void impl_tv_set_closeflag();
+    void impl_tv_set_openflag();
+    void impl_udelay();
+    void impl_vsprintf();
+
     std::string format_string(const std::string& fmt, int first_arg);
 
     // Internal helpers
@@ -207,6 +269,8 @@ private:
     bool m_audio_open;
     bool m_audio_device_open;
     u32 m_audio_write_count;
+    u32 m_audio_sample_rate;   // set by waveout_open; used for waveout_write throttle
+    u32 m_audio_channels;      // set by waveout_open; 1=mono, 2=stereo
     SDL_AudioDeviceID m_audio_device;
     SDL_mutex* m_audio_mutex;
     std::queue<s16> m_audio_queue;
