@@ -202,14 +202,14 @@ Guest memory layout:
 | Path normalization (`.\dir\file.ext` → `dir/file.ext`) | ✅ Complete |
 | Save file writes (`slot*.sav`, `config.sdt`, `state.sdt`) | ❌ Returns NOT FOUND (game handles gracefully) |
 | `fsys_findfirst`/`findnext` | ✅ Real implementation (`opendir`/`readdir` on host) |
-| `fsys_remove`/`rename` | ⚠️ Stubbed (returns -1) |
+| `fsys_remove`/`rename` | ✅ Real host `remove()`/`rename()` with `save/` prefix |
 
 ### Syscall API Coverage
 
 The emulator intercepts all GOT trampoline calls from the guest binary. The dispatch table covers indices 0–86 (87 entries):
 
-- **64 implemented** — real implementations (malloc, printf, LCD, audio, input, timer, unicode, directory search, SR, etc.)
-- **16 pure stubs** — return constants with no side effects (cache ops, USB, free_irq, etc.)
+- **67 implemented** — real implementations (malloc, printf, LCD, audio, input, timer, unicode, directory search, file remove/rename, PCM ioctl, SR, etc.)
+- **12 pure stubs** — return constants with no side effects (cache ops, USB, free_irq, etc.)
 - **7 listed as stubs but actually implemented** — `fsys_findfirst/findnext/findclose`, `waveout_set_volume`, `HP_Mute_sw`, `__to_unicode_le`, `__to_locale_ansi` (should be removed from `got_is_stub`)
 - **0 unknown** for standard 72-entry GOT apps
 - **Apps with non-standard GOT** (Yi-Chi King Fighter, Overlord-Fighter, Life, StopWatch, dicer) have imports beyond index 86 with different layouts — not dispatched
