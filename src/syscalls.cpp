@@ -2590,23 +2590,23 @@ bool Syscalls::simulate_vsync() {
         }
     }
 
-    // µC/OS-II tick counter (one tick per vsync ≈ 60 Hz).
-    // The game uses OSTimeGet for animation timing, so ticks must advance
-    // at display-frame rate even when the emulator runs faster than real-time.
-    m_os_ticks += 1;
-
-    // Wake tasks whose OSTimeDly or OSSemPend timeout has expired.
-    for (int i = 0; i < m_task_count; i++) {
-        if (m_tasks[i].blocked && m_tasks[i].wake_tick > 0 && m_os_ticks >= m_tasks[i].wake_tick) {
-            if (m_tasks[i].block_sem) {
-                m_tasks[i].regs[2] = 10;  // OS_TIMEOUT in v0
-                if (m_tasks[i].sem_err_ptr)
-                    m_mem.write_u8(m_tasks[i].sem_err_ptr, 10);  // OS_TIMEOUT
-                m_tasks[i].sem_err_ptr = 0;
-                m_tasks[i].block_sem = 0;
+    // µC/OS-II tick counter at 60 Hz wall-clock rate.
+    u32 now = SDL_GetTicks();
+    u32 expected_ticks = (now - m_start_tick) * 60 / 1000;
+    while (m_os_ticks < expected_ticks) {
+        m_os_ticks++;
+        for (int i = 0; i < m_task_count; i++) {
+            if (m_tasks[i].blocked && m_tasks[i].wake_tick > 0 && m_os_ticks >= m_tasks[i].wake_tick) {
+                if (m_tasks[i].block_sem) {
+                    m_tasks[i].regs[2] = 10;  // OS_TIMEOUT in v0
+                    if (m_tasks[i].sem_err_ptr)
+                        m_mem.write_u8(m_tasks[i].sem_err_ptr, 10);  // OS_TIMEOUT
+                    m_tasks[i].sem_err_ptr = 0;
+                    m_tasks[i].block_sem = 0;
+                }
+                m_tasks[i].blocked = false;
+                m_tasks[i].wake_tick = 0;
             }
-            m_tasks[i].blocked = false;
-            m_tasks[i].wake_tick = 0;
         }
     }
 

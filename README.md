@@ -23,7 +23,7 @@ Runs any standard `.app` binary with Dingoo OS syscall interception, SDL2 displa
 │  │                                                          │   │
 │  │  ┌──────────────────────────────────────────────────┐   │   │
 │  │  │           Dingoo OS Syscall Interception         │   │   │
-│  │  │ 87 high-level function implementations via host   │   │   │
+│  │  │ 73 implemented + 102 stubs = 175 intercepted     │   │   │
 │  │  └──────────────────────────────────────────────────┘   │   │
 │  │                                                          │   │
 │  │  ┌──────────────────────────────────────────────────┐   │   │
@@ -206,13 +206,11 @@ Guest memory layout:
 
 ### Syscall API Coverage
 
-The emulator intercepts all GOT trampoline calls from the guest binary. The dispatch table covers indices 0–86 (87 entries):
+The emulator intercepts all GOT trampoline calls from the guest binary. The dispatch table has 175 entries covering all 173 documented Dingoo OS functions plus 2 extras:
 
-- **67 implemented** — real implementations (malloc, printf, LCD, audio, input, timer, unicode, directory search, file remove/rename, PCM ioctl, SR, etc.)
-- **12 pure stubs** — return constants with no side effects (cache ops, USB, free_irq, etc.)
-- **7 listed as stubs but actually implemented** — `fsys_findfirst/findnext/findclose`, `waveout_set_volume`, `HP_Mute_sw`, `__to_unicode_le`, `__to_locale_ansi` (should be removed from `got_is_stub`)
-- **0 unknown** for standard 72-entry GOT apps
-- **Apps with non-standard GOT** (Yi-Chi King Fighter, Overlord-Fighter, Life, StopWatch, dicer) have imports beyond index 86 with different layouts — not dispatched
+- **73 implemented** — real host implementations (malloc, printf, LCD, audio, input, µC/OS-II scheduler, filesystem I/O, PCM ioctl, etc.)
+- **102 stubs** — print `[STUB]` and return (TV, accelerometer, audio/video framework, wide-FS, extra libc, and misc categories)
+- Standard 72-entry GOT apps are fully dispatched. Apps with extended GOT (Life, StopWatch, dicer with 172 imports; Yi-Chi/Overlord-Fighter with 96) are now covered for all known Dingoo OS functions — 3 extra entries beyond the 172-import max handle edge cases
 
 ---
 
@@ -247,7 +245,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Rubido | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | snake | ⏳ Loads resources from binary, then loops on NOT FOUND (timeout) |
 | StopWatch | ⏳ Hits `=== Starting emulation ===`, then nothing (GAP) |
-| tetris | ⚠️ Boots, renders 11 frames then exits early — audio task completes ~13 min of audio in seconds (no throttle) |
+| tetris | ⚠️ Boots, renders ~11 frames then exits early — unthrottled audio fills output buffer before game logic starts; OS ticks are now real-time but audio pacing is still missing |
 | ultimate_drift | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | Yi-Chi King Fighter | 💥 Non-standard GOT layout (96 imports) |
 | Zhao Yun Chuan | ⏳ Loads, reads resources, then audio-write spin (timeout) |
@@ -278,30 +276,28 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 
 ---
 
-## Remaining Stubs (12 entries)
+## Stubs (102 entries)
 
-All return constants with no side effects. None block the 72‑import apps from reaching gameplay.
+All 102 stubs print `[STUB]` and return. Categories:
 
-| GOT | API | Notes |
-|-----|-----|-------|
-| 12 | `vxGoHome` | OS home‑screen navigation; safe stub |
-| 14 | `free_irq` | Free IRQ handler; safe stub |
-| 15 | `fsys_RefreshCache` | Flush FS cache; safe stub |
-| 22 | `__icache_invalidate_all` | No cache in emulator; safe stub |
-| 23 | `__dcache_writeback_all` | No cache in emulator; safe stub |
-| 24 | `TaskMediaFunStop` | Stop media player task; safe stub |
- | 27 | `serial_getc` | Should return −1 when no data || 45 | `fsys_flush_cache` | FS cache flush; safe stub |
- | 46 | `USB_Connect` | USB connect event; safe stub |
- | 47 | `udc_attached` | USB device attached; safe stub |
- | 48 | `USB_No_Connect` | USB disconnect event; safe stub |
- | 86 | `open_gui_key_msg` | µC/GUI; Yi‑Chi / Overlord‑Fighter only |
+| Category | Functions |
+|----------|-----------|
+| TV out | `tv_open/close`, `tv_enable/disable_switch`, `tv_get/set_openflag`, `tv_get/set_closeflag`, `isTVON` |
+| Accelerometer | `Custom_Memsic_test`, `Memsic_SerialCommInit`, `Get_X`, `Get_Y`, `Read_Acc`, `Read_Acc0` |
+| Audio/video framework | `av_begin_thread`, `av_end_thread`, `av_create/destroy/give/wait_flag`, `av_create/destroy/give/wait_sem`, `av_wait_sem2`, `av_delay`, `av_queue_abort/end/flush/get/init/put`, `av_reg/unreg_object`, `av_resize_packet`, `av_uft8_2_unicode`, `av_upper_4cc` |
+| Wide filesystem | `fsys_fcloseW`, `fsys_fclose_flash`, `fsys_fopen_flash`, `fsys_mkdir`, `fsys_removeW`, `fsys_renameW` |
+| Extra libc | `memcpy`, `memset`, `sscanf`, `vsprintf`, `_tcscmp`, `_tcscpy`, `serial_puts` |
+| Low-level OS | `SysDisableBkLight`, `sys_get_ccpmp_config`, `dl_get_proc`, `detect_clock`, `delay_ms`, `udelay` |
+| Pre-existing stubs | `vxGoHome`, `free_irq`, `fsys_RefreshCache`, `fsys_flush_cache`, `__icache_invalidate_all`, `__dcache_writeback_all`, `TaskMediaFunStop`, `serial_getc`, `USB_Connect`, `USB_No_Connect`, `udc_attached`, `open_gui_key_msg`, `_waveout_open`, `_waveout_set_volume` |
 
-### Non‑standard GOT apps (no dispatch)
+These stubs unblock all tested apps (including Life, StopWatch, dicer with 172-import GOT) from hitting "Unknown GOT" errors.
 
-| App | Imports | Problem |
-|-----|---------|---------|
-| Yi‑Chi King Fighter, Overlord‑Fighter | 96 | Different GOT layout (index 0 = `cmGetSysVersion`); indices 87–95 unknown |
-| Life, StopWatch, dicer | 172 | `av_*` multimedia framework + µC/GUI + extra µC/OS-II; indices ≥96 exceed `MAX_GOT_ENTRIES` |
+### Non‑standard GOT apps
+
+| App | Imports | Status |
+|-----|---------|--------|
+| Yi‑Chi King Fighter, Overlord‑Fighter | 96 | All 96 names now in table; dispatch works; apps still stop at audio write spin |
+| Life, StopWatch, dicer | 172 | All 173 documented functions + extras in table; no more "Unknown GOT" errors |
 
 ---
 
@@ -328,13 +324,13 @@ All return constants with no side effects. None block the 72‑import apps from 
 | `src/mxu.cpp` | MXU/COP2 custom DSP opcodes |
 | `src/memory.cpp` | Memory map, address translation, LCD/DMA/IPU register logging |
 | `src/memory.h` | Memory class interface |
-| `src/syscalls.cpp` | All 87 GOT handlers (indices 0–86), µC/OS-II stubs, LCD format mirror, frame buffer pool |
+| `src/syscalls.cpp` | All 175 GOT handlers (all Dingoo OS APIs), µC/OS-II scheduler, LCD format mirror, frame buffer pool |
 | `src/syscalls.h` | Syscall dispatch declarations |
 | `src/display.cpp` | SDL2 window, LCD framebuffer, format conversion, key mapping |
 | `src/display.h` | Dingoo key codes, Display class |
 | `src/archive.cpp` | SPK archive parser |
 | `src/app_parser.cpp` | CCDL/IMPT/EXPT/RAWD header parser |
-| *(—)* | GOT coverage gaps tracked in this README's "Remaining Stubs" table |
+| *(—)* | Full GOT coverage: 175 entries covering all 173 Dingoo OS functions |
 
 ---
 
@@ -357,6 +353,26 @@ The LCD pixel format byte (1 = indexed, 2 = RGB565, 4 = ARGB8888) was previously
 Previously, Phase 2 simply jumped to AppMain and called it as a plain function, with no scheduler awareness. The audio task (created via `OSTaskCreate` at priority 16) had no counterpart for AppMain, so scheduling was ad-hoc.
 
 **Fix:** `register_main_context(pc, a0, prio=5)` is called in `main.cpp` immediately before the Phase 2 `cpu.run()` loop. This registers AppMain as task 0 at priority 5 — higher priority than the audio task (priority 16). The cooperative scheduler now correctly yields between AppMain and the audio task on every `OSTimeDly` / `OSSemPend` call.
+
+### Expanded stub coverage to all 173 Dingoo OS functions
+
+The original dispatch table covered 87 entries (indices 0–86). Apps with extended GOT (Life, StopWatch, dicer — 172 imports) hit "Unknown GOT" errors and stopped before rendering.
+
+**Fix:** cross-referenced the full Dingoo OS API list (173 functions) and added 60 missing entries to `s_handlers[]`. The table now has 175 entries (173 documented + 2 extras). All tested apps, including 172-import GOT apps, avoid "Unknown GOT" errors. 73 functions have real implementations; 102 are stubs that print `[STUB]` and return.
+
+### Wall-clock-paced µC/OS-II ticks
+
+Previously `m_os_ticks` advanced by 1 per emulator "frame" (`simulate_vsync` call) — a variable rate that depended on host speed. `OSTimeDly(60)` (intended 1-second delay) completed in milliseconds on a fast host, making animations and timeouts run far faster than real-time.
+
+**Fix:** `simulate_vsync` now batches OS ticks to wall-clock time:
+```cpp
+u32 expected_ticks = (SDL_GetTicks() - m_start_tick) * 60 / 1000;
+while (m_os_ticks < expected_ticks) {
+    m_os_ticks++;
+    // wake timed-out tasks per tick
+}
+```
+This gives `OSTimeGet` / `OSTimeDly` / `OSSemPend(timeout)` correct real-time behaviour without adding threads or SDL timers. GUI_TIMER_* SW timers already used wall-clock time via `SDL_GetTicks()` — both timebases are now consistent.
 
 ### Startup sentinel clearing in `_sys_judge_event`
 
