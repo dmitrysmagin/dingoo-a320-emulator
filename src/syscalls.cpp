@@ -17,6 +17,144 @@ extern u32 g_cpu_regs[32];
 extern u32 g_cpu_pc;
 extern u32 g_cpu_hi;
 extern u32 g_cpu_lo;
+
+// ── Static handler registry (class members) ──────────────────────────────
+
+const Syscalls::GOTHandler Syscalls::s_handlers[] = {
+    {"GUI_Exec",              &Syscalls::impl_GUI_Exec,              true},
+    {"GUI_Lock",              &Syscalls::impl_GUI_Lock,              false},
+    {"GUI_TIMER_Create",      &Syscalls::impl_GUI_TIMER_Create,      true},
+    {"GUI_TIMER_Delete",      &Syscalls::impl_GUI_TIMER_Delete,      true},
+    {"GUI_TIMER_Restart",     &Syscalls::impl_GUI_TIMER_Restart,     true},
+    {"GUI_TIMER_SetPeriod",   &Syscalls::impl_GUI_TIMER_SetPeriod,   true},
+    {"GUI_Unlock",            &Syscalls::impl_GUI_Unlock,            false},
+    {"GetTickCount",          &Syscalls::impl_GetTickCount,          false},
+    {"HP_Mute_sw",            &Syscalls::impl_HP_Mute_sw,            true},
+    {"LCD_Color2Index",       &Syscalls::impl_LCD_Color2Index,       false},
+    {"LCD_GetXSize",          &Syscalls::impl_LCD_GetXSize,          false},
+    {"LCD_GetYSize",          &Syscalls::impl_LCD_GetYSize,          false},
+    {"LcdGetDisMode",         &Syscalls::impl_LcdGetDisMode,         false},
+    {"OSCPURestoreSR",        &Syscalls::impl_OSCPURestoreSR,        false},
+    {"OSCPUSaveSR",           &Syscalls::impl_OSCPUSaveSR,           false},
+    {"OSFlagPost",            &Syscalls::impl_OSFlagPost,            true},
+    {"OSQCreate",             &Syscalls::impl_OSQCreate,             true},
+    {"OSSemCreate",           &Syscalls::impl_OSSemCreate,           false},
+    {"OSSemDel",              &Syscalls::impl_OSSemDel,              false},
+    {"OSSemPend",             &Syscalls::impl_OSSemPend,             false},
+    {"OSSemPost",             &Syscalls::impl_OSSemPost,             false},
+    {"OSTaskCreate",          &Syscalls::impl_OSTaskCreate,          false},
+    {"OSTaskDel",             &Syscalls::impl_OSTaskDel,             false},
+    {"OSTimeDly",             &Syscalls::impl_OSTimeDly,             false},
+    {"OSTimeGet",             &Syscalls::impl_OSTimeGet,             false},
+    {"StartSwTimer",          &Syscalls::impl_StartSwTimer,          false},
+    {"SysDisableCloseBkLight",&Syscalls::impl_SysDisableCloseBkLight,true},
+    {"SysEnableShutDownPower",&Syscalls::impl_SysEnableShutDownPower,true},
+    {"TaskMediaFunStop",      &Syscalls::impl_TaskMediaFunStop,      true},
+    {"U8TOU16",               &Syscalls::impl_U8TOU16,               true},
+    {"U8TOU32",               &Syscalls::impl_U8TOU32,               true},
+    {"USB_Connect",           &Syscalls::impl_USB_Connect,           true},
+    {"USB_No_Connect",        &Syscalls::impl_USB_No_Connect,        true},
+    {"WM_CreateWindow",       &Syscalls::impl_WM_CreateWindow,       true},
+    {"WM_DefaultProc",        &Syscalls::impl_WM_DefaultProc,        true},
+    {"WM_DeleteWindow",       &Syscalls::impl_WM_DeleteWindow,       true},
+    {"WM_SelectWindow",       &Syscalls::impl_WM_SelectWindow,       true},
+    {"WM_SetFocus",           &Syscalls::impl_WM_SetFocus,           true},
+    {"WM__SendMessage",       &Syscalls::impl_WM__SendMessage,       true},
+    {"__dcache_writeback_all",&Syscalls::impl___dcache_writeback_all,true},
+    {"__icache_invalidate_all",&Syscalls::impl___icache_invalidate_all,true},
+    {"__to_locale_ansi",      &Syscalls::impl___to_locale_ansi,      false},
+    {"__to_unicode_le",       &Syscalls::impl___to_unicode_le,       false},
+    {"_kbd_get_key",          &Syscalls::impl__kbd_get_key,          false},
+    {"_kbd_get_status",       &Syscalls::impl__kbd_get_status,       false},
+    {"_lcd_get_frame",        &Syscalls::impl__lcd_get_frame,        false},
+    {"_lcd_set_frame",        &Syscalls::impl__lcd_set_frame,        false},
+    {"_sys_judge_event",      &Syscalls::impl__sys_judge_event,      false},
+    {"abort",                 &Syscalls::impl_abort,                 false},
+    {"ap_lcd_set_frame",      &Syscalls::impl_ap_lcd_set_frame,      false},
+    {"cmGetSysModel",         &Syscalls::impl_cmGetSysModel,         true},
+    {"cmGetSysVersion",       &Syscalls::impl_cmGetSysVersion,       true},
+    {"dl_free",               &Syscalls::impl_dl_free,               true},
+    {"dl_load",               &Syscalls::impl_dl_load,               true},
+    {"dl_res_close",          &Syscalls::impl_dl_res_close,          false},
+    {"dl_res_get_data",       &Syscalls::impl_dl_res_get_data,       false},
+    {"dl_res_get_size",       &Syscalls::impl_dl_res_get_size,       false},
+    {"dl_res_open",           &Syscalls::impl_dl_res_open,           false},
+    {"fprintf",               &Syscalls::impl_fprintf,               false},
+    {"fread",                 &Syscalls::impl_fread,                 false},
+    {"free",                  &Syscalls::impl_free,                  false},
+    {"free_irq",              &Syscalls::impl_free_irq,              true},
+    {"fseek",                 &Syscalls::impl_fseek,                 false},
+    {"fsys_RefreshCache",     &Syscalls::impl_fsys_RefreshCache,     true},
+    {"fsys_clearerr",         &Syscalls::impl_fsys_clearerr,         true},
+    {"fsys_fclose",           &Syscalls::impl_fsys_fclose,           false},
+    {"fsys_feof",             &Syscalls::impl_fsys_feof,             false},
+    {"fsys_ferror",           &Syscalls::impl_fsys_ferror,           false},
+    {"fsys_findclose",        &Syscalls::impl_fsys_findclose,        true},
+    {"fsys_findfirst",        &Syscalls::impl_fsys_findfirst,        true},
+    {"fsys_findnext",         &Syscalls::impl_fsys_findnext,         true},
+    {"fsys_flush_cache",      &Syscalls::impl_fsys_flush_cache,      true},
+    {"fsys_fopen",            &Syscalls::impl_fsys_fopen,            false},
+    {"fsys_fopenW",           &Syscalls::impl_fsys_fopenW,           false},
+    {"fsys_fread",            &Syscalls::impl_fsys_fread,            false},
+    {"fsys_fseek",            &Syscalls::impl_fsys_fseek,            false},
+    {"fsys_ftell",            &Syscalls::impl_fsys_ftell,            false},
+    {"fsys_fwrite",           &Syscalls::impl_fsys_fwrite,           false},
+    {"fsys_remove",           &Syscalls::impl_fsys_remove,           false},
+    {"fsys_rename",           &Syscalls::impl_fsys_rename,           false},
+    {"fwrite",                &Syscalls::impl_fwrite,                false},
+    {"get_current_language",  &Syscalls::impl_get_current_language,  false},
+    {"get_dl_handle",         &Syscalls::impl_get_dl_handle,         false},
+    {"get_game_vol",          &Syscalls::impl_get_game_vol,          false},
+    {"jz_pm_pllconvert",      &Syscalls::impl_jz_pm_pllconvert,      true},
+    {"kbd_get_key",           &Syscalls::impl_kbd_get_key,           false},
+    {"kbd_get_status",        &Syscalls::impl_kbd_get_status,        false},
+    {"lcd_flip",              &Syscalls::impl_lcd_flip,              false},
+    {"lcd_get_bpp",           &Syscalls::impl_lcd_get_bpp,           false},
+    {"lcd_get_cframe",        &Syscalls::impl_lcd_get_cframe,        false},
+    {"lcd_get_frame",         &Syscalls::impl_lcd_get_frame,         false},
+    {"lcd_set_frame",         &Syscalls::impl_lcd_set_frame,         false},
+    {"malloc",                &Syscalls::impl_malloc,                false},
+    {"mdelay",                &Syscalls::impl_mdelay,                false},
+    {"open_gui_key_msg",      &Syscalls::impl_open_gui_key_msg,      true},
+    {"pcm_can_write",         &Syscalls::impl_pcm_can_write,         false},
+    {"pcm_ioctl",             &Syscalls::impl_pcm_ioctl,             false},
+    {"printf",                &Syscalls::impl_printf,                false},
+    {"realloc",               &Syscalls::impl_realloc,               false},
+    {"serial_getc",           &Syscalls::impl_serial_getc,           true},
+    {"serial_putc",           &Syscalls::impl_serial_putc,           false},
+    {"spin_lock_irqsave",     &Syscalls::impl_spin_lock_irqsave,     true},
+    {"spin_unlock_irqrestore",&Syscalls::impl_spin_unlock_irqrestore,true},
+    {"sprintf",               &Syscalls::impl_sprintf,               false},
+    {"strlen",                &Syscalls::impl_strlen,                false},
+    {"strncasecmp",           &Syscalls::impl_strncasecmp,           false},
+    {"sys_judge_event",       &Syscalls::impl_sys_judge_event,       false},
+    {"udc_attached",          &Syscalls::impl_udc_attached,          true},
+    {"vxGoHome",              &Syscalls::impl_vxGoHome,              true},
+    {"waveout_can_write",     &Syscalls::impl_waveout_can_write,     false},
+    {"waveout_close",         &Syscalls::impl_waveout_close,         false},
+    {"waveout_close_at_once", &Syscalls::impl_waveout_close_at_once, false},
+    {"waveout_open",          &Syscalls::impl_waveout_open,          false},
+    {"waveout_set_volume",    &Syscalls::impl_waveout_set_volume,    true},
+    {"waveout_write",         &Syscalls::impl_waveout_write,         false},
+};
+const int Syscalls::s_handler_count =
+    sizeof(Syscalls::s_handlers) / sizeof(Syscalls::s_handlers[0]);
+
+int Syscalls::find_handler(const char* name) {
+    for (int i = 0; i < s_handler_count; i++) {
+        if (strcmp(name, s_handlers[i].name) == 0) return i;
+    }
+    return -1;
+}
+
+void Syscalls::init_slot_handlers(const std::vector<ImportEntry>& imports) {
+    m_slot_handlers.reserve(imports.size());
+    for (size_t i = 0; i < imports.size(); i++) {
+        int hi = find_handler(imports[i].name.c_str());
+        m_slot_handlers.push_back(hi);
+    }
+}
+
 Syscalls::Syscalls(Memory& mem, Display& display)
     : m_mem(mem)
     , m_display(display)
@@ -122,207 +260,33 @@ std::string Syscalls::guest_string(u32 vaddr) {
 }
 
 const char* Syscalls::got_name(int index) const {
-    static const char* names[] = {
-        "abort",                 //  0: 0x80AD67E0
-        "printf",                //  1: 0x80AD67E8
-        "sprintf",               //  2: 0x80AD67F0
-        "fprintf",               //  3: 0x80AD67F8
-        "strncasecmp",           //  4: 0x80AD6800
-        "malloc",                //  5: 0x80AD6808
-        "realloc",               //  6: 0x80AD6810
-        "free",                  //  7: 0x80AD6818
-        "fread",                 //  8: 0x80AD6820
-        "fwrite",                //  9: 0x80AD6828
-        "fseek",                 // 10: 0x80AD6830
-        "LcdGetDisMode",         // 11: 0x80AD6838
-        "vxGoHome",              // 12: 0x80AD6840
-        "StartSwTimer",          // 13: 0x80AD6848
-        "free_irq",              // 14: 0x80AD6850
-        "fsys_RefreshCache",     // 15: 0x80AD6858
-        "strlen",                // 16: 0x80AD6860
-        "_lcd_set_frame",        // 17: 0x80AD6868
-        "_lcd_get_frame",        // 18: 0x80AD6870
-        "lcd_get_cframe",        // 19: 0x80AD6878
-        "ap_lcd_set_frame",      // 20: 0x80AD6880
-        "lcd_flip",              // 21: 0x80AD6888
-        "__icache_invalidate_all",//22: 0x80AD6890
-        "__dcache_writeback_all",// 23: 0x80AD6898
-        "TaskMediaFunStop",      // 24: 0x80AD68A0
-        "OSCPUSaveSR",           // 25: 0x80AD68A8
-        "OSCPURestoreSR",        // 26: 0x80AD68B0
-        "serial_getc",           // 27: 0x80AD68B8
-        "serial_putc",           // 28: 0x80AD68C0
-        "_kbd_get_status",       // 29: 0x80AD68C8
-        "get_game_vol",          // 30: 0x80AD68D0
-        "_kbd_get_key",          // 31: 0x80AD68D8
-        "fsys_fopen",            // 32: 0x80AD68E0
-        "fsys_fread",            // 33: 0x80AD68E8
-        "fsys_fclose",           // 34: 0x80AD68F0
-        "fsys_fseek",            // 35: 0x80AD68F8
-        "fsys_ftell",            // 36: 0x80AD6900
-        "fsys_remove",           // 37: 0x80AD6908
-        "fsys_rename",           // 38: 0x80AD6910
-        "fsys_ferror",           // 39: 0x80AD6918
-        "fsys_feof",             // 40: 0x80AD6920
-        "fsys_fwrite",           // 41: 0x80AD6928
-        "fsys_findfirst",        // 42: 0x80AD6930
-        "fsys_findnext",         // 43: 0x80AD6938
-        "fsys_findclose",        // 44: 0x80AD6940
-        "fsys_flush_cache",      // 45: 0x80AD6948
-        "USB_Connect",           // 46: 0x80AD6950
-        "udc_attached",          // 47: 0x80AD6958
-        "USB_No_Connect",        // 48: 0x80AD6960
-        "waveout_open",          // 49: 0x80AD6968
-        "waveout_close",         // 50: 0x80AD6970
-        "waveout_close_at_once", // 51: 0x80AD6978
-        "waveout_set_volume",    // 52: 0x80AD6980
-        "HP_Mute_sw",            // 53: 0x80AD6988
-        "waveout_can_write",     // 54: 0x80AD6990
-        "waveout_write",         // 55: 0x80AD6998
-        "pcm_can_write",         // 56: 0x80AD69A0
-        "pcm_ioctl",             // 57: 0x80AD69A8
-        "OSTimeGet",             // 58: 0x80AD69B0
-        "OSTimeDly",             // 59: 0x80AD69B8
-        "OSSemPend",             // 60: 0x80AD69C0
-        "OSSemPost",             // 61: 0x80AD69C8
-        "OSSemCreate",           // 62: 0x80AD69D0
-        "OSTaskCreate",          // 63: 0x80AD69D8
-        "OSSemDel",              // 64: 0x80AD69E0
-        "OSTaskDel",             // 65: 0x80AD69E8
-        "GetTickCount",          // 66: 0x80AD69F0
-        "_sys_judge_event",      // 67: 0x80AD69F8
-        "fsys_fopenW",           // 68: 0x80AD6A00
-        "__to_unicode_le",       // 69: 0x80AD6A08
-        "__to_locale_ansi",      // 70: 0x80AD6A10
-        "get_current_language",  // 71: 0x80AD6A18
-        "get_dl_handle",         // 72
-        "dl_res_open",           // 73
-        "dl_res_get_size",       // 74
-        "dl_res_get_data",       // 75
-        "dl_res_close",          // 76
-        "lcd_set_frame",         // 77
-        "lcd_get_frame",         // 78
-        "lcd_get_bpp",           // 79
-        "LCD_GetXSize",          // 80
-        "LCD_GetYSize",          // 81
-        "LCD_Color2Index",       // 82
-        "kbd_get_key",           // 83
-        "kbd_get_status",        // 84
-        "sys_judge_event",       // 85
-        "open_gui_key_msg",      // 86
-    };
-    if (index >= 0 && index < 87) return names[index];
+    if (index >= 0 && index < (int)m_slot_handlers.size()) {
+        int hi = m_slot_handlers[index];
+        if (hi >= 0) return s_handlers[hi].name;
+    }
     return "unknown";
 }
 
 bool Syscalls::got_is_stub(int index) const {
-    switch (index) {
-    case 12: case 14: case 15: case 22: case 23: case 24:
-    case 27: case 42:
-    case 43: case 44: case 45: case 46: case 47: case 48:
-    case 52: case 53: case 69: case 70:
-    case 86:
-        return true;
-    default:
-        return false;
+    if (index >= 0 && index < (int)m_slot_handlers.size()) {
+        int hi = m_slot_handlers[index];
+        if (hi >= 0) return s_handlers[hi].is_stub;
     }
+    return true;  // unknown = stub (no implementation available)
 }
 
 void Syscalls::dispatch(int got_index, u32 /*return_addr*/) {
     m_got_call_count++;
-    if (got_index >= 0 && got_index < (int)MAX_GOT_ENTRIES) m_got_call_counts[got_index]++;
-    switch (got_index) {
-    case  0: impl_abort(); break;
-    case  1: impl_printf(); break;
-    case  2: impl_sprintf(); break;
-    case  3: impl_fprintf(); break;
-    case  4: impl_strncasecmp(); break;
-    case  5: impl_malloc(); break;
-    case  6: impl_realloc(); break;
-    case  7: impl_free(); break;
-    case  8: impl_fread(); break;
-    case  9: impl_fwrite(); break;
-    case 10: impl_fseek(); break;
-    case 11: impl_LcdGetDisMode(); break;
-    case 12: impl_vxGoHome(); break;
-    case 13: impl_StartSwTimer(); break;
-    case 14: impl_free_irq(); break;
-    case 15: impl_fsys_RefreshCache(); break;
-    case 16: impl_strlen(); break;
-    case 17: impl__lcd_set_frame(); break;
-    case 18: impl__lcd_get_frame(); break;
-    case 19: impl_lcd_get_cframe(); break;
-    case 20: impl_ap_lcd_set_frame(); break;
-    case 21: impl_lcd_flip(); break;
-    case 22: impl___icache_invalidate_all(); break;
-    case 23: impl___dcache_writeback_all(); break;
-    case 24: impl_TaskMediaFunStop(); break;
-    case 25: impl_OSCPUSaveSR(); break;
-    case 26: impl_OSCPURestoreSR(); break;
-    case 27: impl_serial_getc(); break;
-    case 28: impl_serial_putc(); break;
-    case 29: impl__kbd_get_status(); break;
-    case 30: impl_get_game_vol(); break;
-    case 31: impl__kbd_get_key(); break;
-    case 32: impl_fsys_fopen(); break;
-    case 33: impl_fsys_fread(); break;
-    case 34: impl_fsys_fclose(); break;
-    case 35: impl_fsys_fseek(); break;
-    case 36: impl_fsys_ftell(); break;
-    case 37: impl_fsys_remove(); break;
-    case 38: impl_fsys_rename(); break;
-    case 39: impl_fsys_ferror(); break;
-    case 40: impl_fsys_feof(); break;
-    case 41: impl_fsys_fwrite(); break;
-    case 42: impl_fsys_findfirst(); break;
-    case 43: impl_fsys_findnext(); break;
-    case 44: impl_fsys_findclose(); break;
-    case 45: impl_fsys_flush_cache(); break;
-    case 46: impl_USB_Connect(); break;
-    case 47: impl_udc_attached(); break;
-    case 48: impl_USB_No_Connect(); break;
-    case 49: impl_waveout_open(); break;
-    case 50: impl_waveout_close(); break;
-    case 51: impl_waveout_close_at_once(); break;
-    case 52: impl_waveout_set_volume(); break;
-    case 53: impl_HP_Mute_sw(); break;
-    case 54: impl_waveout_can_write(); break;
-    case 55: impl_waveout_write(); break;
-    case 56: impl_pcm_can_write(); break;
-    case 57: impl_pcm_ioctl(); break;
-    case 58: impl_OSTimeGet(); break;
-    case 59: impl_OSTimeDly(); break;
-    case 60: impl_OSSemPend(); break;
-    case 61: impl_OSSemPost(); break;
-    case 62: impl_OSSemCreate(); break;
-    case 63: impl_OSTaskCreate(); break;
-    case 64: impl_OSSemDel(); break;
-    case 65: impl_OSTaskDel(); break;
-    case 66: impl_GetTickCount(); break;
-    case 67: impl__sys_judge_event(); break;
-    case 68: impl_fsys_fopenW(); break;
-    case 69: impl___to_unicode_le(); break;
-    case 70: impl___to_locale_ansi(); break;
-    case 71: impl_get_current_language(); break;
-    case 72: impl_get_dl_handle(); break;
-    case 73: impl_dl_res_open(); break;
-    case 74: impl_dl_res_get_size(); break;
-    case 75: impl_dl_res_get_data(); break;
-    case 76: impl_dl_res_close(); break;
-    case 77: impl_lcd_set_frame(); break;
-    case 78: impl_lcd_get_frame(); break;
-    case 79: impl_lcd_get_bpp(); break;
-    case 80: impl_LCD_GetXSize(); break;
-    case 81: impl_LCD_GetYSize(); break;
-    case 82: impl_LCD_Color2Index(); break;
-    case 83: impl_kbd_get_key(); break;
-    case 84: impl_kbd_get_status(); break;
-    case 85: impl_sys_judge_event(); break;
-    case 86: impl_open_gui_key_msg(); break;
-    default:
-        printf("[SYSCALL] Unknown GOT index %d\n", got_index);
-        break;
+    if (got_index >= 0 && got_index < (int)MAX_GOT_ENTRIES)
+        m_got_call_counts[got_index]++;
+    if (got_index >= 0 && got_index < (int)m_slot_handlers.size()) {
+        int hi = m_slot_handlers[got_index];
+        if (hi >= 0) {
+            (this->*s_handlers[hi].handler)();
+            return;
+        }
     }
+    printf("[SYSCALL] Unknown GOT index %d\n", got_index);
     // NOTE: regs[31] is set by dispatch caller from g_cpu_regs after dispatch returns.
     // Do NOT set g_cpu_regs[31] here - it would override task context switches.
 }
@@ -2113,6 +2077,9 @@ void Syscalls::impl___to_unicode_le() {
 
 void Syscalls::impl___to_locale_ansi() {
     u32 src = arg(0);
+    u32 dst_arg = arg(1);
+    u32 max_len = arg(2);
+    printf("[UNICODE] __to_locale_ansi(src=0x%08X dst=0x%08X max=%u)\n", src, dst_arg, max_len);
     if (!src) { g_cpu_regs[2] = 0; return; }
 
     // Read UTF-16LE source
@@ -2123,7 +2090,7 @@ void Syscalls::impl___to_locale_ansi() {
         wide[i] = c;
         if (c == 0) { len = i; break; }
     }
-    if (len == 0) { g_cpu_regs[2] = 0; return; }
+    if (len == 0) { printf("[UNICODE] __to_locale_ansi: src has no content (all zero?)\n"); g_cpu_regs[2] = 0; return; }
 
     // Allocate ASCII buffer in guest heap
     u32 dst = heap_alloc(len + 1);
@@ -2321,6 +2288,192 @@ void Syscalls::impl_sys_judge_event() {
 void Syscalls::impl_open_gui_key_msg() {
     // µC/GUI-specific; only imported by Yi-Chi King Fighter
     printf("[STUB] open_gui_key_msg\n");
+    g_cpu_regs[2] = 0;
+}
+
+// === Non‑standard GOT app functions (Yi‑Chi, Overlord‑Fighter) ===
+
+void Syscalls::impl_cmGetSysVersion() {
+    // Return pointer to version string "V1.0" in guest memory
+    static u32 s_version_addr = 0;
+    static const char* version = "V1.0";
+    if (s_version_addr == 0) {
+        // Allocate from a scratch area (above kernel data, safe in KSEG0)
+        s_version_addr = 0x80C0FF00;
+        for (int i = 0; version[i]; i++)
+            m_mem.write_u8(s_version_addr + (u32)i, (u8)version[i]);
+        m_mem.write_u8(s_version_addr + (u32)strlen(version), 0);
+    }
+    g_cpu_regs[2] = s_version_addr;
+}
+
+void Syscalls::impl_cmGetSysModel() {
+    // Return pointer to model string "A320" in guest memory
+    static u32 s_model_addr = 0;
+    static const char* model = "A320";
+    if (s_model_addr == 0) {
+        s_model_addr = 0x80C0FF20;
+        for (int i = 0; model[i]; i++)
+            m_mem.write_u8(s_model_addr + (u32)i, (u8)model[i]);
+        m_mem.write_u8(s_model_addr + (u32)strlen(model), 0);
+    }
+    g_cpu_regs[2] = s_model_addr;
+}
+
+void Syscalls::impl_mdelay() {
+    // Sleep for arg(0) milliseconds
+    u32 ms = arg(0);
+    if (ms > 0) SDL_Delay(ms);
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_fsys_clearerr() {
+    u32 handle = arg(0);
+    printf("[FSYS] clearerr(%u)\n", handle);
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_OSQCreate() {
+    u32 size = arg(0);
+    u32 ecb = heap_alloc(56);
+    printf("[OS] OSQCreate(size=%u) -> ecb=0x%08X\n", size, ecb);
+    g_cpu_regs[2] = ecb ? ecb : (u32)-1;
+}
+
+void Syscalls::impl_OSFlagPost() {
+    u32 grp = arg(0);
+    u32 flags = arg(1);
+    u32 opt = arg(2);
+    u32 err_ptr = arg(3);
+    printf("[OS] OSFlagPost(grp=0x%08X flags=0x%08X opt=%u)\n", grp, flags, opt);
+    if (err_ptr) m_mem.write_u8(err_ptr, 0);
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_SysEnableShutDownPower() {
+    printf("[STUB] SysEnableShutDownPower\n");
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_SysDisableCloseBkLight() {
+    printf("[STUB] SysDisableCloseBkLight\n");
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_GUI_Lock() {
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_GUI_Unlock() {
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_GUI_TIMER_SetPeriod() {
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_GUI_TIMER_Restart() {
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_GUI_TIMER_Delete() {
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_WM__SendMessage() {
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_WM_DefaultProc() {
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_GUI_TIMER_Create() {
+    u32 period = arg(0);
+    u32 cb = arg(1);
+    u32 context = arg(2);
+    printf("[µC/GUI] GUI_TIMER_Create(period=%u cb=0x%08X ctx=0x%08X)\n", period, cb, context);
+    g_cpu_regs[2] = 1; // timer handle
+}
+
+void Syscalls::impl_WM_SelectWindow() {
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_WM_CreateWindow() {
+    // WM_CreateWindow(x0,y0,x1,y1,style,flags,cb,client): returns WM_HWIN
+    u32 x0 = arg(0), y0 = arg(1), x1 = arg(2), y1 = arg(3);
+    u32 cb = arg(6);
+    printf("[µC/GUI] WM_CreateWindow(%u,%u,%u,%u cb=0x%08X)\n", x0, y0, x1, y1, cb);
+    g_cpu_regs[2] = 1; // window handle
+}
+
+void Syscalls::impl_WM_DeleteWindow() {
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_GUI_Exec() {
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_WM_SetFocus() {
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_spin_lock_irqsave() {
+    g_cpu_regs[2] = 0; // return previous SR (dummy)
+}
+
+void Syscalls::impl_spin_unlock_irqrestore() {
+    // arg(0) = flags (ignored)
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_jz_pm_pllconvert() {
+    printf("[STUB] jz_pm_pllconvert\n");
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_dl_load() {
+    // dl_load(name) — load another .app module; return handle
+    u32 name_ptr = arg(0);
+    std::string name = name_ptr ? guest_string(name_ptr) : "?";
+    printf("[DL] dl_load('%s') -> stub\n", name.c_str());
+    // On real hardware this loads a separate module; just return a dummy handle
+    g_cpu_regs[2] = m_dl_handle_counter++;
+}
+
+void Syscalls::impl_dl_free() {
+    u32 handle = arg(0);
+    printf("[DL] dl_free(%u) -> stub\n", handle);
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_U8TOU16() {
+    u32 dst = arg(0);
+    u32 src = arg(1);
+    u32 len = arg(2);
+    if (src && dst) {
+        std::string src_str = guest_string(src);
+        for (u32 i = 0; i < len && i < src_str.size(); i++) {
+            m_mem.write_u16(dst + i * 2, (u16)(u8)src_str[i]);
+        }
+    }
+    printf("[U8TOU16] '%s' -> len=%u\n", src ? guest_string(src).c_str() : "?", len);
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_U8TOU32() {
+    u32 dst = arg(0);
+    u32 src = arg(1);
+    u32 len = arg(2);
+    if (src && dst) {
+        std::string src_str = guest_string(src);
+        for (u32 i = 0; i < len && i < src_str.size(); i++) {
+            m_mem.write_u32(dst + i * 4, (u32)(u8)src_str[i]);
+        }
+    }
+    printf("[U8TOU32] '%s' -> len=%u\n", src ? guest_string(src).c_str() : "?", len);
     g_cpu_regs[2] = 0;
 }
 

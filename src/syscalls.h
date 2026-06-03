@@ -4,6 +4,7 @@
 #include "types.h"
 #include "memory.h"
 #include "cop0.h"
+#include "app_parser.h"
 #include <vector>
 #include "display.h"
 #include "archive.h"
@@ -20,6 +21,7 @@ public:
     void dispatch(int got_index, u32 return_addr);
     const char* got_name(int index) const;
     bool got_is_stub(int index) const;
+    void init_slot_handlers(const std::vector<ImportEntry>& imports);
     void set_archive(Archive* archive) { m_archive = archive; }
     void set_app_path(const char* path) { m_app_path = path ? path : ""; }
     void set_cop0(COP0* cop0) { m_cop0 = cop0; }
@@ -131,6 +133,36 @@ private:
     void impl_sys_judge_event();
     void impl_open_gui_key_msg();
 
+    // Non‑standard GOT apps (Yi‑Chi, Overlord‑Fighter, etc.)
+    void impl_cmGetSysVersion();
+    void impl_cmGetSysModel();
+    void impl_mdelay();
+    void impl_fsys_clearerr();
+    void impl_OSQCreate();
+    void impl_OSFlagPost();
+    void impl_SysEnableShutDownPower();
+    void impl_SysDisableCloseBkLight();
+    void impl_GUI_Lock();
+    void impl_GUI_Unlock();
+    void impl_GUI_TIMER_SetPeriod();
+    void impl_GUI_TIMER_Restart();
+    void impl_GUI_TIMER_Delete();
+    void impl_WM__SendMessage();
+    void impl_WM_DefaultProc();
+    void impl_GUI_TIMER_Create();
+    void impl_WM_SelectWindow();
+    void impl_WM_CreateWindow();
+    void impl_WM_DeleteWindow();
+    void impl_GUI_Exec();
+    void impl_WM_SetFocus();
+    void impl_spin_lock_irqsave();
+    void impl_spin_unlock_irqrestore();
+    void impl_jz_pm_pllconvert();
+    void impl_dl_load();
+    void impl_dl_free();
+    void impl_U8TOU16();
+    void impl_U8TOU32();
+
     std::string format_string(const std::string& fmt, int first_arg);
 
     // Internal helpers
@@ -208,6 +240,19 @@ private:
     DlResHandle m_dl_res[MAX_DL_RES];
     int alloc_dl_res_handle();
     void free_dl_res_handle(int idx);
+
+    // Per-slot handler index: maps GOT slot → index into static s_handlers[]
+    std::vector<int> m_slot_handlers;
+
+    // Static handler registry (sorted by name, binary-searched at init)
+    struct GOTHandler {
+        const char* name;
+        void (Syscalls::*handler)();
+        bool is_stub;
+    };
+    static const GOTHandler s_handlers[];
+    static const int s_handler_count;
+    static int find_handler(const char* name);
 
     // Dingoo key code table (input.md reference: A=0x01..RIGHT=0x0C)
     static u32 bitmask_to_keycode(u32 bitmask);

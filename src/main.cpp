@@ -172,6 +172,9 @@ int main(int argc, char* argv[]) {
     syscalls.set_archive(&archive);
     syscalls.set_app_path(app_path);
 
+    // Resolve GOT slot handlers by name (works for all app formats)
+    syscalls.init_slot_handlers(app.imports);
+
     // Initialize CPU
     CPU cpu;
     cpu.mem = &mem;
@@ -201,8 +204,9 @@ int main(int argc, char* argv[]) {
     printf("[INIT] Display: %dx%d (scale %d)\n", Display::WIDTH, Display::HEIGHT, Display::SCALE);
     printf("[INIT] Imported APIs:\n");
     for (u32 i = 0; i < (u32)app.imports.size() && i < MAX_GOT_ENTRIES; i++) {
-        const char* impl = syscalls.got_is_stub((int)i) ? "stub" : "implemented";
-        printf("  [%2u] %-30s %s\n", i, syscalls.got_name((int)i), impl);
+        const char* name = app.imports[i].name.c_str();
+        printf("  [%2u] %-30s %s\n", i, name,
+               syscalls.got_is_stub((int)i) ? "stub" : "implemented");
     }
 
     srand((u32)time(NULL));

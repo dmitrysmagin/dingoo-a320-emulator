@@ -48,7 +48,7 @@ Runs any standard `.app` binary with Dingoo OS syscall interception, SDL2 displa
 | COP0 | `cop0.cpp`, `cop0.h` | MIPS32 CP0 register handling, TLB-emulation-free mode |
 | MXU (COP2) | `mxu.cpp`, `cpu.cpp` | Dingoo DSP coprocessor (30+ ops for audio mixing, fixed-point math) |
 | Memory manager | `memory.cpp`, `memory.h` | Flat KSEG0/KSEG1 address map, identity-mapped KUSEG |
-| Syscall dispatch | `syscalls.cpp`, `syscalls.h` | Intercepts GOT trampoline calls → host implementations |
+| Syscall dispatch | `syscalls.cpp`, `syscalls.h` | Intercepts GOT trampoline calls → host implementations; owns µC/OS-II task scheduler |
 | Display | `display.cpp`, `display.h` | SDL2 window, LCD framebuffer, format conversion, key mapping |
 | Archive loader | `archive.cpp`, `archive.h` | Parses Dingoo `.spk` archive format |
 | App parser | `app_parser.cpp`, `app_parser.h` | Parses `.app` file header (CCDL/IMPT/EXPT/RAWD) |
@@ -140,7 +140,7 @@ Key bit positions within `KEY_STATUS.status` follow the Dingoo SDK convention
 | COP1 (FPU) | ❌ Not needed (0 real instructions in any tested app) |
 | COP2 / MXU (30+ DSP ops) | ✅ All encountered ops implemented |
 | Delay slots | ✅ Full support |
-| µC/OS-II task model | ✅ Cooperative single-threaded (tasks registered but not preemptively scheduled) |
+| µC/OS-II task model | ✅ Priority-based cooperative scheduler; AppMain registered as task (prio 5), audio as task (prio 16) |
 
 ### Memory Map
 
@@ -164,7 +164,7 @@ Guest memory layout:
 | RGB565 direct rendering | ✅ Complete |
 | ARGB8888 → RGB565 conversion | ✅ Complete |
 | 8-bit indexed palette + CLUT (256×32-bit at phys 0x13050100) | ✅ Complete |
-| Format mirror detection (reads pixel format from OS runtime data) | ✅ Complete |
+| Pixel format tracking (`m_lcd_bpp`) stored in C++ member, never guest RAM | ✅ Complete — prevents heap corruption of the format byte |
 | Double-buffering (front/back via `_lcd_set_frame` / `_lcd_get_frame`) | ✅ Complete |
 | Palette CLUT write handler at 0x13050100 | ✅ Complete |
 | DMA controller logging (phys 0x10042000) | ✅ Complete |
@@ -197,7 +197,7 @@ Guest memory layout:
 
 | Feature | Status |
 |---------|--------|
-| `fsys_fopenW`/`fread`/`fseek`/`ftell`/`fclose` | ✅ Complete |
+| `fsys_fopenW`/`fread`/`fseek`/`ftell`/`fclose` | ✅ Complete — handles are 1-based (0 = failure/NULL, 1+ = valid) |
 | Resource archive parsing (.spk, up to 3216 entries) | ✅ Complete |
 | Path normalization (`.\dir\file.ext` → `dir/file.ext`) | ✅ Complete |
 | Save file writes (`slot*.sav`, `config.sdt`, `state.sdt`) | ❌ Returns NOT FOUND (game handles gracefully) |
@@ -222,7 +222,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 
 | App | Status |
 |-----|--------|
-| 7days (HellStriker) | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| 7days (HellStriker) | ✅ Boots, loads all resources, renders title screen (75,030 non-white pixels), audio plays |
 | AliBaba | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | Block Breaker | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | Candy | ⏳ Loads, reads resources, then audio-write spin (timeout) |
@@ -247,12 +247,12 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Rubido | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | snake | ⏳ Loads resources from binary, then loops on NOT FOUND (timeout) |
 | StopWatch | ⏳ Hits `=== Starting emulation ===`, then nothing (GAP) |
-| tetris | ✅ Boots fully, renders 11 frames (archive SPK found, audio, tasks, exit via sentinel) |
+| tetris | ⚠️ Boots, renders 11 frames then exits early — audio task completes ~13 min of audio in seconds (no throttle) |
 | ultimate_drift | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | Yi-Chi King Fighter | 💥 Non-standard GOT layout (96 imports) |
 | Zhao Yun Chuan | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 
-Most games show **0 frames rendered** — tetris is the first to reach the main rendering loop (11 frames).
+**7days** is the primary verified title — boots to a rendered title screen with real sprite content and active audio. **tetris** boots and renders correctly but exits prematurely due to unthrottled audio (see Known Limitations).
 
 ---
 
@@ -269,9 +269,9 @@ Most games show **0 frames rendered** — tetris is the first to reach the main 
 
 | Issue | Status |
 |-------|--------|
-| **tetris renders** (11 frames), most others stop before rendering loop | 🔍 tetris boots fully; others stall on missing resources, audio spins, or early exit |
+| **`waveout_write` not throttled to real time** | 🔍 Audio task runs ~210× faster than real time; tetris completes its full audio track in seconds and exits. Fix: block in `waveout_write` when SDL audio queue depth exceeds ~200 ms of buffered samples |
+| Most games stop before rendering loop | 🔍 Root cause varies: missing resources, GOT gaps, or early exit from unthrottled audio |
 | Save file write path not implemented | ⚠️ Medium priority |
-| No frame rate cap (runs as fast as emulator can go) | ⚠️ Low priority |
 | MXU audio mixing correctness unverified | ⚠️ Low priority |
 | `get_current_language` hardcoded to English | ⚠️ Low priority — may affect Chinese UI locale |
 | Non‑standard GOT apps (Yi‑Chi, Overlord‑Fighter, Life, StopWatch, dicer) not dispatched | ⚠️ Medium priority — need per‑app GOT table detection |
@@ -335,6 +335,34 @@ All return constants with no side effects. None block the 72‑import apps from 
 | `src/archive.cpp` | SPK archive parser |
 | `src/app_parser.cpp` | CCDL/IMPT/EXPT/RAWD header parser |
 | *(—)* | GOT coverage gaps tracked in this README's "Remaining Stubs" table |
+
+---
+
+## Recent Architectural Changes
+
+### 1-based file handles (fsys_fopenW / fsys_fopen)
+
+Previously `alloc_file_handle()` returned 0 for the first free slot. Both `fsys_fopen` and `fsys_fopenW` returned this raw index directly to the guest. Because the Dingoo SDK treats a return value of 0 as `NULL` (open failed), the game silently skipped every resource read — resulting in a white screen with no sprite content.
+
+**Fix:** all open functions now return `idx + 1` to the guest. All internal consumers (`do_fread`, `do_fwrite`, `do_fseek`, `do_ftell`, `do_feof`, `do_ferror`, `close_file_handle`) subtract 1 before indexing into `m_files[]`. Guest handle 0 is unambiguously "failure"; guest handle ≥ 1 is a valid open file. This unlocked full resource loading for 7days and tetris.
+
+### Pixel format out of guest RAM (`m_lcd_bpp`)
+
+The LCD pixel format byte (1 = indexed, 2 = RGB565, 4 = ARGB8888) was previously written to a fixed guest physical address (`0x00508FC0`) so that `_lcd_set_frame` could read it back. That address fell inside the heap zone, and the game's own `malloc` calls silently overwrote it — producing `bpp = 0xFFFFFFFF`, a buffer-size overflow, and every frame being discarded.
+
+**Fix:** pixel format is now tracked exclusively in the C++ member `m_lcd_bpp` (initialised to 2 = RGB565). It is never written to guest RAM. `_lcd_set_frame` and `lcd_get_bpp` read `m_lcd_bpp` directly.
+
+### AppMain registered as a µC/OS-II task
+
+Previously, Phase 2 simply jumped to AppMain and called it as a plain function, with no scheduler awareness. The audio task (created via `OSTaskCreate` at priority 16) had no counterpart for AppMain, so scheduling was ad-hoc.
+
+**Fix:** `register_main_context(pc, a0, prio=5)` is called in `main.cpp` immediately before the Phase 2 `cpu.run()` loop. This registers AppMain as task 0 at priority 5 — higher priority than the audio task (priority 16). The cooperative scheduler now correctly yields between AppMain and the audio task on every `OSTimeDly` / `OSSemPend` call.
+
+### Startup sentinel clearing in `_sys_judge_event`
+
+The kernel pre-populates `EVENT_QUEUE_ADDR` (0x80BFECD8) with `0x8BFC4D89` as a hardware-ready flag before dl_main runs. When `_sys_judge_event` read this value and returned it to the game, the game interpreted it as an OS exit signal — triggering immediate audio teardown and shutdown after two frames.
+
+**Fix:** `_sys_judge_event` silently clears the sentinel value (`0x8BFC4D89 → 0`) without returning it to the game. Any other non-zero queued event is still returned normally.
 
 ---
 
