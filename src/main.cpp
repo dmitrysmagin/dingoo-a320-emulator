@@ -79,12 +79,19 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Determine GOT base from imports (minimum trampoline address)
-    u32 got_base = 0x80AD67E0; // fallback to 7days default
+    // Determine GOT base from imports (minimum trampoline address).
+    // IMPORTANT: start from 0 so that ANY import address wins over the fallback.
+    // Using a 7days-specific hardcoded fallback here caused Hell Striker II (GOT at
+    // 0x80B005E0) to go undetected because all its import addresses are > 0x80AD67E0.
+    u32 got_base = 0;
     for (const auto& imp : app.imports) {
         if (imp.address >= 0x80000000 && (got_base == 0 || imp.address < got_base)) {
             got_base = imp.address;
         }
+    }
+    if (got_base == 0) {
+        got_base = 0x80AD67E0; // genuine fallback when no imports have valid addresses
+        printf("[WARN] No valid import addresses found; using default GOT base 0x%08X\n", got_base);
     }
     printf("[INIT] GOT base: 0x%08X (%u entries)\n", got_base, (u32)app.imports.size());
     mem.set_got_range(got_base, (u32)app.imports.size());
