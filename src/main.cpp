@@ -120,11 +120,16 @@ int main(int argc, char* argv[]) {
     // and resources are streamed from NAND storage via filesystem APIs, not memory-mapped.
     // The Archive class (host-side) serves all fsys_fopen/fsys_fread calls independently.
 
-    // Zero the stack area
-    // Stack starts at 0x80C00000, use 64KB window
-    u32 stack_phys = 0x80C00000 & 0x1FFFFFFF;
-    mem.zero_region(stack_phys - 0x1000, 0x11000);
-    printf("[INIT] Zeroed stack area: phys 0x%08X-0x%08X\n", stack_phys - 0x1000, stack_phys + 0x10000);
+    // Zero the stack area.
+    // Stack sits near the TOP of 32MB RAM (0x81FF0000, phys 0x01FF0000) so the
+    // heap can grow freely upward from BSS without colliding with it.  Placing
+    // the stack at 0x80C00000 (12 MB) left only ~1.4 MB between BSS and the
+    // stack — games with large framebuffer mallocs (e.g. Block Breaker: 153 KB
+    // at 0x80BEA7FE) would overwrite the stack and corrupt $ra with pixel data.
+    const u32 STACK_TOP = 0x81FF0000;   // phys 0x01FF0000; 64 KB below 32MB ceiling
+    u32 stack_phys = STACK_TOP & 0x1FFFFFFF;
+    mem.zero_region(stack_phys - 0x10000, 0x10000);  // zero 64 KB below stack top
+    printf("[INIT] Zeroed stack area: phys 0x%08X-0x%08X\n", stack_phys - 0x10000, stack_phys);
 
     // Pre-populate the event queue exactly as the real Dingoo A320 OS does before launching
     // an app.  Phys 0x00BFECD8 falls inside the resource archive (loaded at 0x00B50000+), so
@@ -224,8 +229,8 @@ int main(int argc, char* argv[]) {
     // and detect its return by watching for DL_MAIN_SENTINEL.
     // =========================================================
     cpu.pc = app.entry_point;
-    cpu.regs[29] = 0x80C00000;
-    cpu.regs[30] = 0x80C00000;
+    cpu.regs[29] = STACK_TOP;
+    cpu.regs[30] = STACK_TOP;
     cpu.regs[31] = DL_MAIN_SENTINEL;
     cpu.regs[4] = 0;   // a0 = argc = 0
     cpu.regs[5] = 0;   // a1 = argv = NULL (first-time init)

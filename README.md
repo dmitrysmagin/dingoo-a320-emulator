@@ -221,12 +221,11 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 
 | App | Status |
 |-----|--------|
-| 7days (HellStriker) | ✅ Boots, loads all resources, renders title screen (75,030 non-white pixels), audio plays |
-| AliBaba | ⏳ Loads, reads resources, then audio-write spin (timeout) |
-| Block Breaker | ⏳ Loads, reads resources, then audio-write spin (timeout) |
-| Candy | ⏳ Loads, reads resources, then audio-write spin (timeout) |
-| CPU-430 | ⏳ Loads, reads resources, then audio-write spin (timeout) |
-| Decollation Warrior | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| 7days (HellStriker) | Loads, stuck on choose audio screen, input not working |
+| AliBaba | Exits, dl_res_open() |
+| Block Breaker | Exits |
+| Candy | Playable, with sound |
+| Decollation Warrior | Black screen, stuck, can't fopenW itself |
 | dicer | ⏳ Hits `=== Starting emulation ===`, then nothing (GAP) |
 | Fomula-One | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | Hell Striker II | ⏳ Loads, reads resources, then audio-write spin (timeout) |

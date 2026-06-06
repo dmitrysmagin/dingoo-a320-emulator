@@ -147,7 +147,7 @@ const Syscalls::GOTHandler Syscalls::s_handlers[] = {
     {"fsys_renameW",            &Syscalls::impl_fsys_renameW,            true},
     {"fwrite",                  &Syscalls::impl_fwrite,                  false},
     {"get_current_language",    &Syscalls::impl_get_current_language,    false},
-    {"get_dl_handle",           &Syscalls::impl_get_dl_handle,           false},
+    {"get_dl_handle",           &Syscalls::impl_get_dl_handle,           true},
     {"get_game_vol",            &Syscalls::impl_get_game_vol,            false},
     {"isTVON",                  &Syscalls::impl_isTVON,                  true},
     {"jz_pm_pllconvert",        &Syscalls::impl_jz_pm_pllconvert,        true},
@@ -2191,32 +2191,30 @@ void Syscalls::impl_get_current_language() {
 // void Syscalls::free_dl_res_handle(int) {}
 
 void Syscalls::impl_get_dl_handle() {
-    // dl_load stores module metadata and returns a handle — that return value IS the handle.
-    u32 handle = m_dl_handle_counter;
-    if (handle == 0) { handle = 1; m_dl_handle_counter = 2; }
-    else m_dl_handle_counter++;
-    printf("[DL] get_dl_handle -> %u\n", handle);
-    g_cpu_regs[2] = handle;
+    // firmware: 2nd API #17 has func=0x00000000 (NULL — never implemented).
+    // Any module that imported this and called it would jump to address 0 on real hardware.
+    // Return 0 so callers' null-handle guards fire cleanly.
+    g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_dl_res_open() {
-    u32 name_addr = arg(0);
-    printf("[dl_res_open] 0x%08X -> DISABLED (archive removed)\n", name_addr);
+    // Accesses in-memory resource DB at 0x8057xxxx (firmware BSS, not present in emulator).
+    // DB module count is 0 → no entries → open always fails. Return 0 (not found).
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_dl_res_get_size() {
-    printf("[STUB] dl_res_get_size (archive disabled)\n");
+    // No resource was opened (dl_res_open always returns 0).
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_dl_res_get_data() {
-    printf("[STUB] dl_res_get_data (archive disabled)\n");
-    g_cpu_regs[2] = (u32)-1;
+    // No resource was opened. Return NULL (0), not 0xFFFFFFFF — callers may
+    // dereference this value without a null check, and 0xFFFFFFFF is outside guest RAM.
+    g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_dl_res_close() {
-    printf("[STUB] dl_res_close (archive disabled)\n");
     g_cpu_regs[2] = 0;
 }
 

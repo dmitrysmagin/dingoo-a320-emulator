@@ -1,10 +1,11 @@
-TMPDIR := /c/Users/user/AppData/Local/Temp
-CXX = g++
+CXX      = g++
 CXXFLAGS = -pipe -std=c++17 -Wall -Wextra -O2 -g
 SDL_CFLAGS = -IC:/Users/user/msys64/ucrt64/include/SDL2 -Dmain=SDL_main
-SDL_LIBS = -LC:/Users/user/msys64/ucrt64/lib -lmingw32 -lSDL2main -lSDL2
+SDL_LIBS   = -LC:/Users/user/msys64/ucrt64/lib -lmingw32 -lSDL2main -lSDL2
 
 SRCDIR = src
+OBJDIR = obj
+
 SOURCES = $(SRCDIR)/main.cpp \
           $(SRCDIR)/app_parser.cpp \
           $(SRCDIR)/memory.cpp \
@@ -15,17 +16,25 @@ SOURCES = $(SRCDIR)/main.cpp \
           $(SRCDIR)/display.cpp \
           $(SRCDIR)/archive.cpp
 
+OBJECTS = $(patsubst $(SRCDIR)/%.cpp,$(OBJDIR)/%.o,$(SOURCES))
+
 TARGET = emulator.exe
 
 all: $(TARGET)
 
-$(TARGET): $(SOURCES)
-	TMPDIR=/c/Users/user/AppData/Local/Temp TMP=/c/Users/user/AppData/Local/Temp TEMP=/c/Users/user/AppData/Local/Temp $(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -o $@ $^ $(SDL_LIBS)
+$(OBJDIR):
+	mkdir -p $(OBJDIR)
+
+$(OBJDIR)/%.o: $(SRCDIR)/%.cpp | $(OBJDIR)
+	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -c $< -o $@
+
+$(TARGET): $(OBJECTS)
+	TMPDIR=/c/Users/user/AppData/Local/Temp TMP=/c/Users/user/AppData/Local/Temp TEMP=/c/Users/user/AppData/Local/Temp $(CXX) $(CXXFLAGS) -o $@ $^ $(SDL_LIBS)
 
 run: $(TARGET)
 	./$(TARGET) ../7days.app
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET) $(OBJDIR)/*.o
 
 .PHONY: all run clean
