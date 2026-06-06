@@ -219,7 +219,8 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     : m_mem(mem)
     , m_display(display)
     , m_heap_top(0x00020000)  // phys: zone1 above exception vectors, zone2 at 0x04000000 (above archive)
-    , m_lcd_bpp(2)       // default RGB565 — updated by LcdGetDisMode/rgb_user_init
+    , m_lcd_bpp(2)       // default RGB565 — updated by rgb_user_init
+    , m_lcd_back(false)
     , m_nosound(false)
     , m_audio_open(false)
     , m_audio_device_open(false)
@@ -263,16 +264,7 @@ Syscalls::Syscalls(Memory& mem, Display& display)
         m_fb_pool[i].size = 0;
         m_fb_pool[i].in_use = false;
     }
-    // Populate OS LCD size mirror (direct-read by game code that bypasses GOT).
-    // phys 0x0056F16A: canonical LCD width  (read by LCD_GetXSize / direct access)
-    // phys 0x0056F16C: canonical LCD height (read by LCD_GetYSize / direct access)
-    // pixel format (bpp) is kept in m_lcd_bpp — not in guest RAM — to prevent
-    // the game's heap from corrupting it.
-    {
-        u8* raw = m_mem.get_raw_ptr();
-        *(u16*)(raw + 0x0056F16A) = Display::WIDTH;
-        *(u16*)(raw + 0x0056F16C) = Display::HEIGHT;
-    }
+    m_lcd_hw_buf[0] = m_lcd_hw_buf[1] = 0;  // allocated lazily on first _lcd_get_frame call
     // for (int i = 0; i < MAX_DL_RES; i++) {
     //     m_dl_res[i].in_use = false;
     // }
@@ -682,7 +674,9 @@ void Syscalls::impl_fseek() {
 // === GOT 11-23: display / cache ===
 
 void Syscalls::impl_LcdGetDisMode() {
-    g_cpu_regs[2] = m_display.is_display_on() ? 1 : 0;
+    // Orientation flag lives in the LCD driver layer, not the app API.
+    // Not accessible from app level — return 0 (landscape default).
+    g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_vxGoHome() {
@@ -812,6 +806,9 @@ void Syscalls::argb8888_to_rgb565(const u8* src, u8* dst, u32 pixel_count) {
 }
 
 void Syscalls::impl__lcd_set_frame() {
+    // _lcd_set_frame is a mid-routine label (inherits $s0–$s7 from parent frame).
+    // arg(0) = end_ptr: the address one buf_size past the start of the rendered frame.
+    // render start = end_ptr - buf_size.
     static constexpr u32 PIXEL_COUNT = Display::WIDTH * Display::HEIGHT;  // 76800
 
     u32 end_ptr = arg(0) & 0x1FFFFFFF;
@@ -884,14 +881,30 @@ void Syscalls::impl__lcd_set_frame() {
         if (old_front != display_addr && old_front != 0)
             m_display.set_back_addr(old_front);
         m_display.flip(ram, m_mem.size());
+
+        // Advance which buffer is "back" so _lcd_get_frame alternates correctly.
+        m_lcd_back = !m_lcd_back;
     }
 }
 
 void Syscalls::impl__lcd_get_frame() {
-    u32 back = m_display.get_back_addr();
-    // If no back buffer known, allocate from guest heap
-    if (!back || back == m_display.get_frame_addr())
-        back = allocate_fb(Display::WIDTH * Display::HEIGHT * 4) & 0x1FFFFFFF;
+    // Allocate two HW frame buffers on first call (each buf_size bytes).
+    // Returns the start of whichever buffer is currently the back buffer.
+    // The game renders into [start, start+buf_size) and passes start+buf_size
+    // to _lcd_set_frame; we compute start = end_ptr - buf_size to display.
+    static constexpr u32 PIXEL_COUNT  = Display::WIDTH * Display::HEIGHT;
+    static constexpr u32 BUF_SIZE_RGB = PIXEL_COUNT * 2;   // 153 600 bytes (RGB565)
+
+    if (!m_lcd_hw_buf[0]) {
+        u32 pa = heap_alloc(BUF_SIZE_RGB) & 0x1FFFFFFF;
+        u32 pb = heap_alloc(BUF_SIZE_RGB) & 0x1FFFFFFF;
+        m_lcd_hw_buf[0] = pa;
+        m_lcd_hw_buf[1] = pb;
+        printf("[LCD] HW frame buffers: buf0=0x%08X buf1=0x%08X\n",
+               m_lcd_hw_buf[0], m_lcd_hw_buf[1]);
+    }
+
+    u32 back = m_lcd_hw_buf[m_lcd_back ? 1 : 0];
     g_cpu_regs[2] = back ? (back | 0xA0000000u) : 0;
 }
 

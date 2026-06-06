@@ -265,7 +265,9 @@ private:
     //Archive* m_archive;
     COP0* m_cop0 = nullptr;
     std::string m_app_path;
-    u32 m_lcd_bpp;       // 1=indexed, 2=RGB565, 4=ARGB8888; never stored in guest RAM
+    u32 m_lcd_bpp;        // 1=indexed, 2=RGB565, 4=ARGB8888; never stored in guest RAM
+    u32 m_lcd_hw_buf[2]; // phys start of the two HW frame buffers (0 = unallocated)
+    bool m_lcd_back;      // which buffer is currently the back buffer
     bool m_nosound;
     bool m_audio_open;
     bool m_audio_device_open;

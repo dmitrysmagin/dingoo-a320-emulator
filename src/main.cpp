@@ -106,7 +106,7 @@ int main(int argc, char* argv[]) {
     // Write game name as wide string just above the program's BSS, in free RAM.
     // prog_end_vaddr is the first byte past the program image; no game symbols live there.
     u32 name_addr = (prog_end_vaddr + 15u) & ~15u;
-    for (size_t i = 0; i < game_name.size() && i < 32; i++) {
+    for (size_t i = 0; i < game_name.size(); i++) {
         mem.write_u16(name_addr + (u32)i * 2, (u16)(unsigned char)game_name[i]);
     }
     mem.write_u16(name_addr + (u32)game_name.size() * 2, 0); // null terminator

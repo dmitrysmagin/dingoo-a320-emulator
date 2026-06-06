@@ -225,8 +225,8 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | AliBaba | Exits, dl_res_open() |
 | Block Breaker | Exits |
 | Candy | Playable, with sound |
-| Decollation Warrior | Black screen, stuck, can't fopenW itself |
-| dicer | ⏳ Hits `=== Starting emulation ===`, then nothing (GAP) |
+| Decollation Warrior | Playable, with sound |
+| dicer | Stuck at Phase 1, lots of stubs: av_*** |
 | Fomula-One | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | Hell Striker II | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | Landlord | ⏳ Loads, reads resources, then audio-write spin (timeout) |
@@ -245,7 +245,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Rubido | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | snake | ⏳ Loads resources from binary, then loops on NOT FOUND (timeout) |
 | StopWatch | ⏳ Hits `=== Starting emulation ===`, then nothing (GAP) |
-| tetris | ⚠️ Boots, renders ~11 frames then exits early — unthrottled audio fills output buffer before game logic starts; OS ticks are now real-time but audio pacing is still missing |
+| tetris | Starts, shows garbled graphics and exits |
 | ultimate_drift | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | Yi-Chi King Fighter | 💥 Non-standard GOT layout (96 imports) |
 | Zhao Yun Chuan | ⏳ Loads, reads resources, then audio-write spin (timeout) |
