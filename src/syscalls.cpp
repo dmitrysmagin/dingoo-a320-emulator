@@ -1381,6 +1381,12 @@ void Syscalls::impl_waveout_open() {
         m_audio_device_open = true;
         printf("[AUDIO] waveout_open: %dHz %dch %dbit -> device=%u (got %dHz %dch)\n",
                sample_rate, channels, bits, m_audio_device, want.freq, want.channels);
+        // Write OS audio state variables so games that read firmware RAM directly
+        // see the correct state (enable=1, busy=1, stop=0, state=1).
+        m_mem.write_u32(0x80242AE4, 1);
+        m_mem.write_u32(0x80242558, 1);
+        m_mem.write_u32(0x80242560, 0);
+        m_mem.write_u32(0x80242580, 1);
         g_cpu_regs[2] = 1;  // return non-zero instance handle
     } else {
         printf("[AUDIO] waveout_open FAILED: %s\n", SDL_GetError());
@@ -1401,6 +1407,11 @@ void Syscalls::impl_waveout_close() {
     SDL_LockMutex(m_audio_mutex);
     m_ring_write = m_ring_read = 0;
     SDL_UnlockMutex(m_audio_mutex);
+    // Clear OS audio state variables (enable=0, busy=0, stop=1, state=0).
+    m_mem.write_u32(0x80242AE4, 0);
+    m_mem.write_u32(0x80242558, 0);
+    m_mem.write_u32(0x80242560, 1);
+    m_mem.write_u32(0x80242580, 0);
     g_cpu_regs[2] = 0;
 }
 
