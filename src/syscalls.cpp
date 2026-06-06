@@ -220,6 +220,7 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     , m_display(display)
     , m_heap_top(0x00020000)  // phys: zone1 above exception vectors, zone2 at 0x04000000 (above archive)
     , m_lcd_bpp(2)       // default RGB565 — updated by LcdGetDisMode/rgb_user_init
+    , m_nosound(false)
     , m_audio_open(false)
     , m_audio_device_open(false)
     , m_audio_write_count(0)
@@ -275,7 +276,6 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     // }
     //m_archive = nullptr;
     m_audio_open = false;
-    m_audio_mutex = SDL_CreateMutex();
 }
 
 void Syscalls::shutdown_audio() {
@@ -292,6 +292,8 @@ void Syscalls::shutdown_audio() {
     }
     m_audio_open = false;
     m_audio_device_open = false;
+    if (SDL_WasInit(SDL_INIT_AUDIO))
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
 
 void SDLCALL Syscalls::audio_callback(void* userdata, Uint8* stream, int len) {
@@ -1306,6 +1308,7 @@ void Syscalls::impl_USB_No_Connect() {
 // === GOT 49-57: audio ===
 
 void Syscalls::impl_waveout_open() {
+    if (m_nosound) { g_cpu_regs[2] = 1; return; }
     u32 a0 = arg(0), a1 = arg(1), a2 = arg(2);
     printf("[AUDIO] waveout_open raw args: a0=0x%08X a1=0x%08X a2=0x%08X\n", a0, a1, a2);
 
@@ -1338,6 +1341,11 @@ void Syscalls::impl_waveout_open() {
     // Store for use by waveout_write throttle
     m_audio_sample_rate = (u32)sample_rate;
     m_audio_channels    = (u32)channels;
+
+    // Initialise the SDL audio subsystem on first real open (not done at startup
+    // so that --nosound mode never touches the audio driver at all).
+    if (!SDL_WasInit(SDL_INIT_AUDIO))
+        SDL_InitSubSystem(SDL_INIT_AUDIO);
 
     // Create mutex if not yet created
     if (!m_audio_mutex) {
@@ -1395,6 +1403,7 @@ void Syscalls::impl_waveout_open() {
 }
 
 void Syscalls::impl_waveout_close() {
+    if (m_nosound) { g_cpu_regs[2] = 0; return; }
     if (m_audio_device > 0) {
         SDL_CloseAudioDevice(m_audio_device);
         m_audio_device = 0;
@@ -1417,6 +1426,7 @@ void Syscalls::impl_waveout_close_at_once() {
 }
 
 void Syscalls::impl_waveout_set_volume() {
+    if (m_nosound) { g_cpu_regs[2] = 0; return; }
     // SDK: int waveout_set_volume(waveout_inst* inst, int vol)  vol = 0-100
     u32 vol = arg(1);
     m_volume = (float)vol / 100.0f;
@@ -1427,6 +1437,7 @@ void Syscalls::impl_waveout_set_volume() {
 }
 
 void Syscalls::impl_HP_Mute_sw() {
+    if (m_nosound) { g_cpu_regs[2] = 0; return; }
     printf("[AUDIO] HP_Mute_sw -> muted\n");
     m_volume = 0.0f;
     g_cpu_regs[2] = 0;
@@ -1435,6 +1446,8 @@ void Syscalls::impl_HP_Mute_sw() {
 void Syscalls::impl_waveout_write() {
     u32 buf_addr = arg(1);
     u32 size = arg(2);
+
+    if (m_nosound) { g_cpu_regs[2] = size; return; }
 
     if (size == 0 || !buf_addr) {
         g_cpu_regs[2] = 0;
@@ -1481,6 +1494,7 @@ void Syscalls::impl_waveout_write() {
 }
 
 void Syscalls::impl_waveout_can_write() {
+    if (m_nosound) { g_cpu_regs[2] = 65536; return; }
     // Return available write space in bytes (max 8192 samples, subtract queued)
     constexpr size_t MAX_QUEUE_SAMPLES = 8192;
     SDL_LockMutex(m_audio_mutex);
@@ -1501,6 +1515,19 @@ void Syscalls::impl_pcm_ioctl() {
     u32 cmd = arg(0);
     u32 arg_val = arg(1);
     (void)arg_val; // not all cmds use arg_val
+
+    if (m_nosound) {
+        // Return harmless values: space queries report unlimited capacity
+        if (cmd == 5 /* PCM_GET_SPACE */) {
+            if (arg_val) m_mem.write_u32(arg_val, 65536);
+            g_cpu_regs[2] = 0;
+        } else if (cmd == 4 /* PCM_GET_VOL */ || cmd == 7 /* PCM_GET_HP_VOL */) {
+            g_cpu_regs[2] = m_pcm_volume;
+        } else {
+            g_cpu_regs[2] = 0;
+        }
+        return;
+    }
 
     switch (cmd) {
 #define PCM_SET_SAMPLE_RATE  0

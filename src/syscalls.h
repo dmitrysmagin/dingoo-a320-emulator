@@ -25,6 +25,7 @@ public:
     //void set_archive(Archive* archive) { m_archive = archive; }
     void set_app_path(const char* path) { m_app_path = path ? path : ""; }
     void set_cop0(COP0* cop0) { m_cop0 = cop0; }
+    void set_nosound(bool v) { m_nosound = v; }
 
 private:
     Memory& m_mem;
@@ -266,6 +267,7 @@ private:
     COP0* m_cop0 = nullptr;
     std::string m_app_path;
     u32 m_lcd_bpp;       // 1=indexed, 2=RGB565, 4=ARGB8888; never stored in guest RAM
+    bool m_nosound;
     bool m_audio_open;
     bool m_audio_device_open;
     u32 m_audio_write_count;

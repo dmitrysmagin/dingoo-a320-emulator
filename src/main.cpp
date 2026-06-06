@@ -14,23 +14,26 @@ int main(int argc, char* argv[]) {
     const char* app_path = nullptr;
     u32 arg_max_frames = 0;  // 0 = unlimited
     bool save_screenshots = false;
+    bool nosound = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
             arg_max_frames = (u32)atoi(argv[++i]);
         } else if (strcmp(argv[i], "--save-screenshots") == 0) {
             save_screenshots = true;
+        } else if (strcmp(argv[i], "--nosound") == 0) {
+            nosound = true;
         } else if (argv[i][0] != '-') {
             app_path = argv[i];
         } else {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
-            fprintf(stderr, "Usage: %s [--frames <n>] [--save-screenshots] <7days.app>\n", argv[0]);
+            fprintf(stderr, "Usage: %s [--frames <n>] [--save-screenshots] [--nosound] <app>\n", argv[0]);
             return 1;
         }
     }
 
     if (!app_path) {
-        fprintf(stderr, "Usage: %s [--frames <n>] [--save-screenshots] <7days.app>\n", argv[0]);
+        fprintf(stderr, "Usage: %s [--frames <n>] [--save-screenshots] [--nosound] <app>\n", argv[0]);
         return 1;
     }
     printf("=== 7days Dingoo A320 Emulator (Phase 2) ===\n\n");
@@ -170,6 +173,7 @@ int main(int argc, char* argv[]) {
     Syscalls syscalls(mem, display);
     //syscalls.set_archive(&archive);
     syscalls.set_app_path(app_path);
+    syscalls.set_nosound(nosound);
 
     // Resolve GOT slot handlers by name (works for all app formats)
     syscalls.init_slot_handlers(app.imports);
