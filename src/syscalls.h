@@ -10,7 +10,6 @@
 //#include "archive.h"
 #include <string>
 #include <vector>
-#include <queue>
 #include <SDL2/SDL.h>
 #include <dirent.h>
 
@@ -275,9 +274,12 @@ private:
     u32 m_audio_channels;     // set by waveout_open; 1=mono, 2=stereo
     SDL_AudioDeviceID m_audio_device;
     SDL_mutex* m_audio_mutex;
-    std::queue<s16> m_audio_queue;
-    u64 m_audio_samples_written;   // total samples written by waveout_write
-    volatile u64 m_audio_samples_consumed;  // total samples consumed by SDL callback (written from audio thread)
+    // Fixed ring buffer — producer (main thread) writes, consumer (SDL callback) reads.
+    // Capacity chosen to hold ~512ms at 16kHz mono; waveout_can_write reports exact free bytes.
+    static constexpr int AUDIO_RING_CAP = 8192;  // samples
+    s16 m_ring_buf[AUDIO_RING_CAP];
+    int m_ring_write;   // next write index (main thread)
+    int m_ring_read;    // next read  index (SDL callback thread)
     float m_volume;
     u32 m_pcm_volume = 128;
     u32 m_got_call_count;

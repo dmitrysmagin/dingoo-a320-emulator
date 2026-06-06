@@ -228,6 +228,8 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     , m_audio_channels(2)
     , m_audio_device(0)
     , m_audio_mutex(nullptr)
+    , m_ring_write(0)
+    , m_ring_read(0)
     , m_volume(1.0f)
     , m_got_call_count(0)
     , m_current_task(-1)
@@ -285,7 +287,7 @@ void Syscalls::shutdown_audio() {
     }
     if (m_audio_mutex) {
         SDL_LockMutex(m_audio_mutex);
-        while (!m_audio_queue.empty()) m_audio_queue.pop();
+        m_ring_write = m_ring_read = 0;
         SDL_UnlockMutex(m_audio_mutex);
         SDL_DestroyMutex(m_audio_mutex);
         m_audio_mutex = nullptr;
@@ -302,13 +304,14 @@ void SDLCALL Syscalls::audio_callback(void* userdata, Uint8* stream, int len) {
     s16* buf = reinterpret_cast<s16*>(stream);
     int samples = len / 2;
     SDL_LockMutex(sys->m_audio_mutex);
-    int i = 0;
-    while (i < samples && !sys->m_audio_queue.empty()) {
-        buf[i++] = sys->m_audio_queue.front();
-        sys->m_audio_queue.pop();
+    for (int i = 0; i < samples; i++) {
+        if (sys->m_ring_write != sys->m_ring_read) {
+            buf[i] = sys->m_ring_buf[sys->m_ring_read];
+            sys->m_ring_read = (sys->m_ring_read + 1) % AUDIO_RING_CAP;
+        } else {
+            buf[i] = 0;  // underrun — ring empty
+        }
     }
-    while (i < samples) buf[i++] = 0;
-    sys->m_audio_samples_consumed += i;
     SDL_UnlockMutex(sys->m_audio_mutex);
 }
 
@@ -1353,8 +1356,9 @@ void Syscalls::impl_waveout_open() {
         printf("[AUDIO] Created audio mutex: %p\n", (void*)m_audio_mutex);
     }
 
-    m_audio_samples_written = 0;
-    m_audio_samples_consumed = 0;
+    SDL_LockMutex(m_audio_mutex);
+    m_ring_write = m_ring_read = 0;
+    SDL_UnlockMutex(m_audio_mutex);
 
     if (m_audio_device > 0) {
         SDL_CloseAudioDevice(m_audio_device);
@@ -1366,7 +1370,7 @@ void Syscalls::impl_waveout_open() {
     want.freq = sample_rate;
     want.format = AUDIO_S16SYS;
     want.channels = (Uint8)channels;
-    want.samples = 2048;
+    want.samples = 4096;
     want.callback = audio_callback;
     want.userdata = this;
 
@@ -1395,10 +1399,8 @@ void Syscalls::impl_waveout_close() {
     m_audio_open = false;
     m_audio_device_open = false;
     SDL_LockMutex(m_audio_mutex);
-    while (!m_audio_queue.empty()) m_audio_queue.pop();
-    m_audio_samples_consumed = 0;
+    m_ring_write = m_ring_read = 0;
     SDL_UnlockMutex(m_audio_mutex);
-    m_audio_samples_written = 0;
     g_cpu_regs[2] = 0;
 }
 
@@ -1445,38 +1447,31 @@ void Syscalls::impl_waveout_write() {
         printf("[AUDIO] waveout_write: subsequent calls suppressed\n");
     }
 
-    // waveout_write is a non-blocking data push — no sem_pend here.
-    // Calling sem_pend inside a GOT handler is unsafe: it can trigger a task
-    // switch that swaps g_cpu_regs mid-handler, and the subsequent
-    // g_cpu_regs[2] = size then corrupts the new task's v0 register.
-    // Flow control is the caller's responsibility via waveout_can_write.
-    // Cap queue at 16384 samples to avoid unbounded growth; SDL drains it.
+    // Non-blocking push into the fixed ring buffer.
+    // If the ring is full the excess is silently dropped — the game should have
+    // checked waveout_can_write first, matching real hardware behaviour.
     std::vector<s16> buf(samples);
     m_mem.read_block(buf_addr, (u8*)buf.data(), size);
 
     SDL_LockMutex(m_audio_mutex);
-    if (m_audio_queue.size() < 16384) {
-        for (u32 i = 0; i < samples; i++)
-            m_audio_queue.push((s16)(buf[i] * m_volume));
+    int free_samples = (m_ring_read - m_ring_write - 1 + AUDIO_RING_CAP) % AUDIO_RING_CAP;
+    int to_push = (samples < (u32)free_samples) ? (int)samples : free_samples;
+    for (int i = 0; i < to_push; i++) {
+        m_ring_buf[m_ring_write] = (s16)(buf[i] * m_volume);
+        m_ring_write = (m_ring_write + 1) % AUDIO_RING_CAP;
     }
-    m_audio_samples_written += samples;
     SDL_UnlockMutex(m_audio_mutex);
 
     m_audio_write_count++;
-    g_cpu_regs[2] = size;
+    g_cpu_regs[2] = (u32)to_push * 2;  // bytes actually written
 }
 
 void Syscalls::impl_waveout_can_write() {
     if (m_nosound) { g_cpu_regs[2] = 65536; return; }
-    // Return available write space in bytes (max 8192 samples, subtract queued)
-    constexpr size_t MAX_QUEUE_SAMPLES = 8192;
     SDL_LockMutex(m_audio_mutex);
-    size_t queued = m_audio_queue.size();
+    int free_samples = (m_ring_read - m_ring_write - 1 + AUDIO_RING_CAP) % AUDIO_RING_CAP;
     SDL_UnlockMutex(m_audio_mutex);
-    size_t free_samples = (queued >= MAX_QUEUE_SAMPLES) ? 0 : (MAX_QUEUE_SAMPLES - queued);
-    u32 free_bytes = static_cast<u32>(free_samples * 2);
-    // Return at least a small buffer so callers don't think audio is dead.
-    g_cpu_regs[2] = free_bytes ? free_bytes : 4096;
+    g_cpu_regs[2] = (u32)free_samples * 2;  // bytes, matches real hardware semantics
 }
 
 void Syscalls::impl_pcm_can_write() {
@@ -1490,9 +1485,8 @@ void Syscalls::impl_pcm_ioctl() {
     (void)arg_val; // not all cmds use arg_val
 
     if (m_nosound) {
-        // Return harmless values: space queries report unlimited capacity
         if (cmd == 5 /* PCM_GET_SPACE */) {
-            if (arg_val) m_mem.write_u32(arg_val, 65536);
+            if (arg_val) m_mem.write_u32(arg_val, (u32)(AUDIO_RING_CAP - 1) * 2);
             g_cpu_regs[2] = 0;
         } else if (cmd == 4 /* PCM_GET_VOL */ || cmd == 7 /* PCM_GET_HP_VOL */) {
             g_cpu_regs[2] = m_pcm_volume;
@@ -1516,16 +1510,12 @@ void Syscalls::impl_pcm_ioctl() {
 #define PCM_RESET            10
 #define PCM_SET_MUTE         13
     case PCM_GET_SPACE: {
-        // arg is pointer to int; write available write space
-        constexpr size_t MAX_QUEUE_SAMPLES = 8192;
         SDL_LockMutex(m_audio_mutex);
-        size_t queued = m_audio_queue.size();
+        int free_samples = (m_ring_read - m_ring_write - 1 + AUDIO_RING_CAP) % AUDIO_RING_CAP;
         SDL_UnlockMutex(m_audio_mutex);
-        u32 free_bytes = static_cast<u32>((queued >= MAX_QUEUE_SAMPLES) ? 0 : (MAX_QUEUE_SAMPLES - queued) * 2);
-        if (free_bytes == 0) free_bytes = 4096; // never return 0 so audio loops don't busy-spin
+        u32 free_bytes = (u32)free_samples * 2;
         if (arg_val) m_mem.write_u32(arg_val, free_bytes);
-        printf("[PCM] ioctl GET_SPACE -> %u bytes\n", free_bytes);
-        g_cpu_regs[2] = 0; // success
+        g_cpu_regs[2] = 0;
         break;
     }
     case PCM_SET_SAMPLE_RATE:
