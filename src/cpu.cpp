@@ -66,7 +66,7 @@ void CPU::exec_special(u32 insn) {
     case 0x04: if (rd) regs[rd] = regs[rt] << (regs[rs] & 0x1F); break;
     case 0x06: if (rd) regs[rd] = regs[rt] >> (regs[rs] & 0x1F); break;
     case 0x07: if (rd) regs[rd] = (u32)((s32)regs[rt] >> (regs[rs] & 0x1F)); break;
-    case 0x08: pc = regs[rs]; if (rs == 31 && regs[31] == 0) pc = 0x80AD6B1C; break;
+    case 0x08: pc = regs[rs]; break;  // JR
     case 0x09: { u32 t = regs[rs]; regs[rd] = pc + 4; pc = t; break; }  // JALR (read rs first in case rs==rd)
     case 0x0A: if (rd && regs[rt] == 0) regs[rd] = regs[rs]; break;  // MOVZ
     case 0x0B: if (rd && regs[rt] != 0) regs[rd] = regs[rs]; break;  // MOVN
@@ -608,28 +608,6 @@ void CPU::print_trace() {
 }
 
 void CPU::execute_one() {
-    // Memset accelerator: execute the memset function at 0x80AE1070
-    // in a single host memset() call to avoid 97%+ CPU time in the inner loop.
-    if (pc == 0x80AE1070) {
-        u32 dst = regs[4];
-        u8 fill = regs[5] & 0xFF;
-        u32 size = regs[6];
-        u32 dst_phys = dst & 0x1FFFFFFF;
-        if (size > 0 && dst_phys + size <= mem->size()) {
-            memset(mem->get_raw_ptr() + dst_phys, fill, size);
-        }
-        regs[2] = dst;  // v0 = return value
-        // Estimate: ~6 insns per 16 bytes in main loop + ~15 for setup/remainder
-        insn_count += (size / 16) * 6 + 15;
-        for (u32 j = 0; j < (size / 16) * 6 + 15; j++) cop0.tick();
-        pc = regs[31];  // return to caller (use $31 set by JAL at call site)
-        memcpy(g_cpu_regs, regs, sizeof(regs));
-        g_cpu_pc = pc;
-        g_cpu_hi = hi;
-        g_cpu_lo = lo;
-        return;
-    }
-
     u32 insn = fetch();
     trace_add(pc, insn);
     u32 next_pc = pc + 4;

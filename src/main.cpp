@@ -69,14 +69,18 @@ int main(int argc, char* argv[]) {
         printf("[INIT] Game name: '%s'\n", game_name.c_str());
     }
 
-    // Look up AppMain from export table
-    u32 app_main_addr = 0x80AD6B1C; // fallback to known 7days value
+    // Look up AppMain from export table — mandatory; all .app files must export it.
+    u32 app_main_addr = 0;
     for (const auto& exp : app.exports) {
         if (exp.name == "AppMain" || exp.name == "app_main") {
             app_main_addr = exp.address;
             printf("[INIT] Found AppMain at 0x%08X from exports\n", app_main_addr);
             break;
         }
+    }
+    if (!app_main_addr) {
+        fprintf(stderr, "[ERROR] No AppMain export found in %s — cannot run\n", app_path);
+        return 1;
     }
 
     // Determine GOT base from imports (minimum trampoline address).
@@ -96,21 +100,9 @@ int main(int argc, char* argv[]) {
     printf("[INIT] GOT base: 0x%08X (%u entries)\n", got_base, (u32)app.imports.size());
     mem.set_got_range(got_base, (u32)app.imports.size());
 
-    // Patch: fix SLTI bug at 0x80ADE0DC - compares $zero instead of $s0,
-    // causing the event loop to never exit. Change 0x2A0200B0 to 0x2A1000B0.
-    /*{
-        u32 patch_vaddr = 0x80ADE0DC;
-        u32 current = mem.read_u32(patch_vaddr);
-        if (current == 0x2A0200B0) {
-            mem.write_u32(patch_vaddr, 0x2A1000B0);
-            printf("[PATCH] Fixed SLTI at 0x%08X: 0x%08X -> 0x2A1000B0\n", patch_vaddr, current);
-        } else {
-            printf("[PATCH] SLTI at 0x%08X = 0x%08X (not 7days, not patching)\n", patch_vaddr, current);
-        }
-    }*/
-
-    // Write game name as wide string at 0x80B44FE0 (for AppMain a0 argument)
-    u32 name_addr = 0x80B44FE0;
+    // Write game name as wide string just above the program's BSS, in free RAM.
+    // prog_end_vaddr is the first byte past the program image; no game symbols live there.
+    u32 name_addr = (prog_end_vaddr + 15u) & ~15u;
     for (size_t i = 0; i < game_name.size() && i < 32; i++) {
         mem.write_u16(name_addr + (u32)i * 2, (u16)(unsigned char)game_name[i]);
     }

@@ -1918,12 +1918,14 @@ void Syscalls::impl__sys_judge_event() {
     // the Dingoo A320 (no touchscreen) — reads the global key-state at 0x80242B40,
     // translates via a runtime table, and returns immediately.
 
-    // The value at EVENT_QUEUE_ADDR (0x80BFECD8) is pre-populated with the
-    // hardware-ready sentinel 0x8BFC4D89 for the game to read directly during
-    // audio init. Clear it silently when _sys_judge_event sees it — the game
-    // interprets 0x8BFC4D89 as an OS exit signal, causing premature shutdown.
+    // EVENT_QUEUE_ADDR (0x80BFECD8) is pre-populated by the loader with a
+    // hardware-ready sentinel (bit 31 set) that the game reads directly during
+    // audio init.  If _sys_judge_event ever sees it, clear it silently — games
+    // treat any bit-31 value here as an OS exit/state signal, not a normal event.
+    // Checking bit 31 rather than one empirically-observed value (0x8BFC4D89)
+    // covers all Dingoo apps regardless of the exact sentinel written.
     u32 event_val = m_mem.read_u32(EVENT_QUEUE_ADDR);
-    if (event_val == 0x8BFC4D89u) {
+    if (event_val & 0x80000000u) {
         m_mem.write_u32(EVENT_QUEUE_ADDR, 0);
         event_val = 0;
     } else if (event_val) {
