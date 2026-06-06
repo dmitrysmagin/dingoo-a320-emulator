@@ -276,7 +276,6 @@ private:
     SDL_AudioDeviceID m_audio_device;
     SDL_mutex* m_audio_mutex;
     std::queue<s16> m_audio_queue;
-    u32 m_audio_sem;               // µC/OS-II semaphore for flow control
     u64 m_audio_samples_written;   // total samples written by waveout_write
     volatile u64 m_audio_samples_consumed;  // total samples consumed by SDL callback (written from audio thread)
     float m_volume;

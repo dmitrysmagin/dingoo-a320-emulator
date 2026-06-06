@@ -1353,22 +1353,6 @@ void Syscalls::impl_waveout_open() {
         printf("[AUDIO] Created audio mutex: %p\n", (void*)m_audio_mutex);
     }
 
-    // Create audio flow-control semaphore (credits for SDL-backed ring buffer)
-    // Each credit represents AUDIO_CREDIT_SAMPLES samples; max = 8 credits.
-    if (!m_audio_sem) {
-        m_audio_sem = heap_alloc(68);
-        m_mem.write_u8 (m_audio_sem + 0,  3);          // OSEventType = SEM
-        m_mem.write_u32(m_audio_sem + 4,  0);
-        m_mem.write_u16(m_audio_sem + 8,  8);          // OSEventCnt = 8 credits
-        m_mem.write_u16(m_audio_sem + 10, 0);
-        for (int i = 0; i < 16; i++) m_mem.write_u16(m_audio_sem + 12 + i*2, 0);
-        m_mem.write_u32(m_audio_sem + 44, 0);
-        m_mem.write_u32(m_audio_sem + 48, 0);
-        m_mem.write_u8 (m_audio_sem + 52, 'A');
-        m_mem.write_u8 (m_audio_sem + 53, 0);
-        m_semaphores.push_back(m_audio_sem);
-        printf("[AUDIO] Created flow-control semaphore at 0x%08X (8 credits)\n", m_audio_sem);
-    }
     m_audio_samples_written = 0;
     m_audio_samples_consumed = 0;
 
@@ -1415,9 +1399,6 @@ void Syscalls::impl_waveout_close() {
     m_audio_samples_consumed = 0;
     SDL_UnlockMutex(m_audio_mutex);
     m_audio_samples_written = 0;
-    // Reset semaphore to full credits
-    if (m_audio_sem)
-        m_mem.write_u16(m_audio_sem + 8, 8);
     g_cpu_regs[2] = 0;
 }
 
@@ -1464,28 +1445,20 @@ void Syscalls::impl_waveout_write() {
         printf("[AUDIO] waveout_write: subsequent calls suppressed\n");
     }
 
-    // Audio flow control: Pend on the audio semaphore to acquire one credit.
-    // Each credit represents ~2048 samples of SDL-backend capacity.
-    // When all credits are exhausted (SDL queue full), the audio task blocks
-    // and main AppMain runs.  simulate_vsync restores credits as SDL consumes.
-    if (m_audio_sem) {
-        static int block_count = 0;
-        u16 cnt = m_mem.read_u16(m_audio_sem + 8);
-        if (cnt == 0 && block_count < 3) {
-            printf("[AUDIO] waveout_write blocking (0 credits, queue=%zu)\n",
-                   m_audio_queue.size());
-            block_count++;
-        }
-        sem_pend(m_audio_sem, 0, 0);
-    }
-
-    // Read audio data from emulated memory
+    // waveout_write is a non-blocking data push — no sem_pend here.
+    // Calling sem_pend inside a GOT handler is unsafe: it can trigger a task
+    // switch that swaps g_cpu_regs mid-handler, and the subsequent
+    // g_cpu_regs[2] = size then corrupts the new task's v0 register.
+    // Flow control is the caller's responsibility via waveout_can_write.
+    // Cap queue at 16384 samples to avoid unbounded growth; SDL drains it.
     std::vector<s16> buf(samples);
     m_mem.read_block(buf_addr, (u8*)buf.data(), size);
 
     SDL_LockMutex(m_audio_mutex);
-    for (u32 i = 0; i < samples; i++)
-        m_audio_queue.push((s16)(buf[i] * m_volume));
+    if (m_audio_queue.size() < 16384) {
+        for (u32 i = 0; i < samples; i++)
+            m_audio_queue.push((s16)(buf[i] * m_volume));
+    }
     m_audio_samples_written += samples;
     SDL_UnlockMutex(m_audio_mutex);
 
@@ -2553,38 +2526,6 @@ bool Syscalls::simulate_vsync() {
                 }
                 m_tasks[i].blocked = false;
                 m_tasks[i].wake_tick = 0;
-            }
-        }
-    }
-
-    // Audio flow control: restore semaphore credits as SDL consumes from the queue.
-    if (m_audio_sem) {
-        SDL_LockMutex(m_audio_mutex);
-        u64 consumed = m_audio_samples_consumed;
-        SDL_UnlockMutex(m_audio_mutex);
-        static constexpr u64 CREDIT_SAMPLES = 2048;
-        static u64 last_credited = 0;
-        while (last_credited + CREDIT_SAMPLES <= consumed) {
-            last_credited += CREDIT_SAMPLES;
-            u16 cnt = m_mem.read_u16(m_audio_sem + 8);
-            if (cnt < 8) {
-                m_mem.write_u16(m_audio_sem + 8, (u16)(cnt + 1));
-                // If a task is blocked on this sem, wake it (highest-prio waiter)
-                int waiter = -1;
-                u8 best_prio = 0xFF;
-                for (int i = 0; i < m_task_count; i++) {
-                    if (m_tasks[i].blocked && m_tasks[i].block_sem == m_audio_sem
-                        && m_tasks[i].task_prio < best_prio) {
-                        best_prio = m_tasks[i].task_prio;
-                        waiter = i;
-                    }
-                }
-                if (waiter >= 0) {
-                    m_tasks[waiter].blocked = false;
-                    m_tasks[waiter].block_sem = 0;
-                    m_tasks[waiter].wake_tick = 0;
-                    m_tasks[waiter].regs[2] = 0;
-                }
             }
         }
     }
