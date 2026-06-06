@@ -1765,15 +1765,16 @@ void Syscalls::impl_OSTimeDly() {
     int next = find_ready_task();
     if (next >= 0) {
         switch_to_task(next);
+        // g_cpu_regs now holds the next task's context — do NOT write to it here.
+        // The delayed task's return value (0) is already stored in its saved regs above.
     } else {
-        // No other task ready — yield to idle loop until vsync wakes this task
+        // No other task ready — yield to idle loop until vsync wakes this task.
         memcpy(g_cpu_regs, m_idle_regs, sizeof(g_cpu_regs));
         g_cpu_pc = m_idle_pc;
         g_cpu_hi = m_idle_hi;
         g_cpu_lo = m_idle_lo;
         m_task_switched = true;
     }
-    g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_OSSemDel() {
@@ -2296,9 +2297,11 @@ void Syscalls::impl_cmGetSysModel() {
 }
 
 void Syscalls::impl_mdelay() {
-    // Sleep for arg(0) milliseconds
-    u32 ms = arg(0);
-    if (ms > 0) SDL_Delay(ms);
+    // On real hardware this spins the CPU for arg(0) ms.
+    // In the emulator, wall-clock spinning would stall the SDL event loop and
+    // audio callback thread, and the emulator runs far from real-time anyway.
+    // Simply returning keeps guest execution flowing at emulator speed.
+    (void)arg(0);
     g_cpu_regs[2] = 0;
 }
 
@@ -2500,9 +2503,10 @@ bool Syscalls::simulate_vsync() {
         }
     }
 
-    // µC/OS-II tick counter at 60 Hz wall-clock rate.
+    // µC/OS-II tick counter at 100 Hz (standard OS_TICKS_PER_SEC default on JZ4740).
+    // Real firmware drives this via a hardware timer ISR at 100 Hz.
     u32 now = SDL_GetTicks();
-    u32 expected_ticks = (now - m_start_tick) * 60 / 1000;
+    u32 expected_ticks = (now - m_start_tick) * 100 / 1000;
     while (m_os_ticks < expected_ticks) {
         m_os_ticks++;
         for (int i = 0; i < m_task_count; i++) {
@@ -2608,7 +2612,7 @@ void Syscalls::impl_av_upper_4cc()          { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_av_wait_flag()          { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_av_wait_sem()           { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_av_wait_sem2()          { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_delay_ms()              { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_delay_ms()              { (void)arg(0); g_cpu_regs[2] = 0; }
 void Syscalls::impl_detect_clock()          { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_dl_get_proc()           { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_fsys_fcloseW()          { printf("[STUB] %s\n", __func__); }
@@ -2631,5 +2635,5 @@ void Syscalls::impl_tv_get_openflag()       { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_tv_open()               { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_tv_set_closeflag()      { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_tv_set_openflag()       { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_udelay()                { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_udelay()                { (void)arg(0); g_cpu_regs[2] = 0; }
 void Syscalls::impl_vsprintf()              { printf("[STUB] %s\n", __func__); }
