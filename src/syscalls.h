@@ -7,7 +7,7 @@
 #include "app_parser.h"
 #include <vector>
 #include "display.h"
-//#include "archive.h"
+#include "archive.h"
 #include <string>
 #include <vector>
 #include <SDL2/SDL.h>
@@ -21,7 +21,7 @@ public:
     const char* got_name(int index) const;
     bool got_is_stub(int index) const;
     void init_slot_handlers(const std::vector<ImportEntry>& imports);
-    //void set_archive(Archive* archive) { m_archive = archive; }
+    void set_archive(Archive* archive) { m_archive = archive; }
     void set_app_path(const char* path) { m_app_path = path ? path : ""; }
     void set_cop0(COP0* cop0) { m_cop0 = cop0; }
     void set_nosound(bool v) { m_nosound = v; }
@@ -32,6 +32,7 @@ private:
 
     u32 arg(int n);
     std::string guest_string(u32 vaddr);
+    std::string read_guest_path(u32 vaddr);
 
     // === 72 GOT dispatch implementations ===
     // 0-10: libc
@@ -243,10 +244,10 @@ private:
     struct FileHandle {
         bool in_use;
         bool is_host;
-        //bool is_archive;
+        bool is_archive;
         FILE* host_file;
-        //const Archive* archive;
-        //const ArchiveEntry* archive_entry;
+        const Archive* archive;
+        const ArchiveEntry* archive_entry;
         std::vector<u8> embedded_data;
         u32 offset;
     };
@@ -262,7 +263,7 @@ private:
     u32 do_feof(u32 file_handle);
     u32 do_ferror(u32 file_handle);
 
-    //Archive* m_archive;
+    Archive* m_archive;
     COP0* m_cop0 = nullptr;
     std::string m_app_path;
     u32 m_lcd_bpp;        // 1=indexed, 2=RGB565, 4=ARGB8888; never stored in guest RAM
@@ -304,15 +305,17 @@ private:
     // get_dl_handle counter (incrementing handle allocator)
     u32 m_dl_handle_counter = 1;
 
-    // // dl_res handle tracking (for brick.app etc.)
-    // static constexpr int MAX_DL_RES = 32;
-    // struct DlResHandle {
-    //     bool in_use;
-    //     //const ArchiveEntry* entry;
-    // };
-    // DlResHandle m_dl_res[MAX_DL_RES];
-    // int alloc_dl_res_handle();
-    // void free_dl_res_handle(int idx);
+    // dl_res handle tracking (SPK resources opened by path or 24-bit key)
+    static constexpr int MAX_DL_RES = 64;
+    struct DlResHandle {
+        bool in_use;
+        u32 guest_addr;
+        u32 size;
+    };
+    DlResHandle m_dl_res[MAX_DL_RES];
+    int alloc_dl_res_handle();
+    void free_dl_res_handle(int idx);
+    const ArchiveEntry* resolve_dl_res_entry(u32 key_or_path);
 
     void sem_pend(u32 sem_ptr, u32 timeout, u32 err_ptr);
 

@@ -254,10 +254,10 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     for (int i = 0; i < 64; i++) {
         m_files[i].in_use = false;
         m_files[i].is_host = false;
-        //m_files[i].is_archive = false;
+        m_files[i].is_archive = false;
         m_files[i].host_file = nullptr;
-        //m_files[i].archive = nullptr;
-        //m_files[i].archive_entry = nullptr;
+        m_files[i].archive = nullptr;
+        m_files[i].archive_entry = nullptr;
         m_files[i].offset = 0;
     }
     for (int i = 0; i < FB_POOL_SIZE; i++) {
@@ -266,10 +266,9 @@ Syscalls::Syscalls(Memory& mem, Display& display)
         m_fb_pool[i].in_use = false;
     }
     m_lcd_hw_buf[0] = m_lcd_hw_buf[1] = 0;  // allocated lazily on first _lcd_get_frame call
-    // for (int i = 0; i < MAX_DL_RES; i++) {
-    //     m_dl_res[i].in_use = false;
-    // }
-    //m_archive = nullptr;
+    for (int i = 0; i < MAX_DL_RES; i++)
+        m_dl_res[i].in_use = false;
+    m_archive = nullptr;
     m_audio_open = false;
 }
 
@@ -317,6 +316,21 @@ u32 Syscalls::arg(int n) {
 
 std::string Syscalls::guest_string(u32 vaddr) {
     return m_mem.read_string(vaddr);
+}
+
+std::string Syscalls::read_guest_path(u32 vaddr) {
+    if (vaddr == 0) return {};
+    std::string ascii = guest_string(vaddr);
+    if (!ascii.empty() && (unsigned char)ascii[0] >= 0x20)
+        return ascii;
+    std::string wide;
+    for (u32 i = 0; i < 512; i++) {
+        u16 c = m_mem.read_u16(vaddr + i * 2);
+        if (c == 0) break;
+        if (c < 128) wide += (char)c;
+        else wide += '?';
+    }
+    return wide;
 }
 
 const char* Syscalls::got_name(int index) const {
@@ -427,10 +441,10 @@ void Syscalls::close_file_handle(int idx) {
     }
     m_files[idx].in_use = false;
     m_files[idx].is_host = false;
-    //m_files[idx].is_archive = false;
+    m_files[idx].is_archive = false;
     m_files[idx].host_file = nullptr;
-    //m_files[idx].archive = nullptr;
-    //m_files[idx].archive_entry = nullptr;
+    m_files[idx].archive = nullptr;
+    m_files[idx].archive_entry = nullptr;
     m_files[idx].embedded_data.clear();
     m_files[idx].offset = 0;
 }
@@ -448,7 +462,17 @@ u32 Syscalls::do_fread(u32 ptr, u32 size, u32 nmemb, u32 file_handle) {
         m_files[idx].offset += (u32)read;
         return (u32)(read / size);
     }
-    // Archive: } else if (is_archive && archive_entry) { ... } — removed, games read from own binary
+    if (m_files[idx].is_archive && m_files[idx].archive && m_files[idx].archive_entry) {
+        u32 available = m_files[idx].archive_entry->size - m_files[idx].offset;
+        u32 to_read = std::min(total, available);
+        if (to_read > 0) {
+            const u8* src = m_files[idx].archive->get_data(*m_files[idx].archive_entry)
+                            + m_files[idx].offset;
+            m_mem.write_block(ptr, src, to_read);
+            m_files[idx].offset += to_read;
+        }
+        return size ? to_read / size : 0;
+    }
     {
         u32 available = (u32)m_files[idx].embedded_data.size() - m_files[idx].offset;
         u32 to_read = std::min(total, available);
@@ -482,7 +506,14 @@ u32 Syscalls::do_fseek(u32 file_handle, s32 offset, u32 whence) {
         if (ret == 0) m_files[idx].offset = (u32)ftell(m_files[idx].host_file);
         return ret;
     }
-    // Archive: } else if (is_archive && archive_entry) { ... } — removed
+    if (m_files[idx].is_archive && m_files[idx].archive_entry) {
+        u32 sz = m_files[idx].archive_entry->size;
+        if (whence == 0) m_files[idx].offset = (u32)offset;
+        else if (whence == 1) m_files[idx].offset = (u32)((s32)m_files[idx].offset + offset);
+        else if (whence == 2) m_files[idx].offset = (u32)((s32)sz + offset);
+        if (m_files[idx].offset > sz) m_files[idx].offset = sz;
+        return 0;
+    }
     {
         if (whence == 0) m_files[idx].offset = (u32)offset;
         else if (whence == 1) m_files[idx].offset += (u32)offset;
@@ -504,8 +535,8 @@ u32 Syscalls::do_feof(u32 file_handle) {
     if (idx < 0 || idx >= 64 || !m_files[idx].in_use) return 1;
     if (m_files[idx].is_host && m_files[idx].host_file)
         return (u32)feof(m_files[idx].host_file);
-    // if (m_files[idx].is_archive && m_files[idx].archive_entry)
-    //     return m_files[idx].offset >= m_files[idx].archive_entry->size ? 1 : 0;
+    if (m_files[idx].is_archive && m_files[idx].archive_entry)
+        return m_files[idx].offset >= m_files[idx].archive_entry->size ? 1 : 0;
     return m_files[idx].offset >= m_files[idx].embedded_data.size() ? 1 : 0;
 }
 
@@ -1018,20 +1049,19 @@ void Syscalls::impl_fsys_fopen() {
     std::string path = guest_string(path_addr);
     std::string mode = guest_string(mode_addr);
 
-    // // Archive lookup removed — games read from own binary
-    // if (m_archive) {
-    //     const ArchiveEntry* entry = m_archive->find(path);
-    //     if (entry) {
-    //         int idx = alloc_file_handle();
-    //         if (idx < 0) { g_cpu_regs[2] = 0; return; }
-    //         m_files[idx].is_archive = true;
-    //         m_files[idx].archive = m_archive;
-    //         m_files[idx].archive_entry = entry;
-    //         m_files[idx].offset = 0;
-    //         g_cpu_regs[2] = (u32)idx + 1;
-    //         return;
-    //     }
-    // }
+    if (m_archive) {
+        const ArchiveEntry* entry = m_archive->find(path);
+        if (entry) {
+            int idx = alloc_file_handle();
+            if (idx < 0) { g_cpu_regs[2] = 0; return; }
+            m_files[idx].is_archive = true;
+            m_files[idx].archive = m_archive;
+            m_files[idx].archive_entry = entry;
+            m_files[idx].offset = 0;
+            g_cpu_regs[2] = (u32)idx + 1;
+            return;
+        }
+    }
 
     // Try host file for write mode
     int idx = alloc_file_handle();
@@ -2058,33 +2088,32 @@ void Syscalls::impl_fsys_fopenW() {
         }
     }*/
 
-    // // Archive lookup removed — games read from own binary
-    // if (m_archive) {
-    //     const ArchiveEntry* entry = m_archive->find(search_path);
-    //     if (!entry && search_path.size() > 2 && search_path[0] == '.' &&
-    //         (search_path[1] == '\\' || search_path[1] == '/'))
-    //         entry = m_archive->find(search_path.substr(2));
-    //     if (!entry && search_path.size() > 4 &&
-    //         (search_path.substr(0, 4) == "res\\" || search_path.substr(0, 4) == "res/"))
-    //         entry = m_archive->find(search_path.substr(4));
-    //     if (!entry) {
-    //         size_t slash = search_path.find_last_of("/\\");
-    //         if (slash != std::string::npos)
-    //             entry = m_archive->find(search_path.substr(slash + 1));
-    //     }
-    //     if (entry) {
-    //         int idx = alloc_file_handle();
-    //         if (idx < 0) { g_cpu_regs[2] = 0; return; }
-    //         m_files[idx].is_archive = true;
-    //         m_files[idx].archive = m_archive;
-    //         m_files[idx].archive_entry = entry;
-    //         m_files[idx].offset = 0;
-    //         printf("[fopenW] '%s' mode='%s' -> handle %d (archive, %u bytes)\n",
-    //                search_path.c_str(), mode.c_str(), idx + 1, (u32)entry->size);
-    //         g_cpu_regs[2] = (u32)idx + 1;
-    //         return;
-    //     }
-    // }
+    if (m_archive) {
+        const ArchiveEntry* entry = m_archive->find(search_path);
+        if (!entry && search_path.size() > 2 && search_path[0] == '.' &&
+            (search_path[1] == '\\' || search_path[1] == '/'))
+            entry = m_archive->find(search_path.substr(2));
+        if (!entry && search_path.size() > 4 &&
+            (search_path.substr(0, 4) == "res\\" || search_path.substr(0, 4) == "res/"))
+            entry = m_archive->find(search_path.substr(4));
+        if (!entry) {
+            size_t slash = search_path.find_last_of("/\\");
+            if (slash != std::string::npos)
+                entry = m_archive->find(search_path.substr(slash + 1));
+        }
+        if (entry) {
+            int idx = alloc_file_handle();
+            if (idx < 0) { g_cpu_regs[2] = 0; return; }
+            m_files[idx].is_archive = true;
+            m_files[idx].archive = m_archive;
+            m_files[idx].archive_entry = entry;
+            m_files[idx].offset = 0;
+            printf("[fopenW] '%s' mode='%s' -> handle %d (archive, %u bytes)\n",
+                   search_path.c_str(), mode.c_str(), idx + 1, (u32)entry->size);
+            g_cpu_regs[2] = (u32)idx + 1;
+            return;
+        }
+    }
 
     // Try host filesystem for save files
     int idx = alloc_file_handle();
@@ -2191,11 +2220,47 @@ void Syscalls::impl_get_current_language() {
     g_cpu_regs[2] = lang; // Chinese (0=English)
 }
 
-// === dl_res resource API (brick.app only) ===
+// === dl_res resource API (SPK archive by path or 24-bit key) ===
 
-// // dl_res handle tracking disabled (archive removed)
-// int Syscalls::alloc_dl_res_handle() { return -1; }
-// void Syscalls::free_dl_res_handle(int) {}
+int Syscalls::alloc_dl_res_handle() {
+    for (int i = 0; i < MAX_DL_RES; i++) {
+        if (!m_dl_res[i].in_use)
+            return i;
+    }
+    return -1;
+}
+
+void Syscalls::free_dl_res_handle(int idx) {
+    if (idx < 0 || idx >= MAX_DL_RES) return;
+    m_dl_res[idx].in_use = false;
+    m_dl_res[idx].guest_addr = 0;
+    m_dl_res[idx].size = 0;
+}
+
+const ArchiveEntry* Syscalls::resolve_dl_res_entry(u32 key_or_path) {
+    if (!m_archive || m_archive->count() == 0)
+        return nullptr;
+
+    // Guest path pointer (SDK games pass path in $v0 when $a0==0)
+    if (key_or_path >= 0x80000000) {
+        std::string path = read_guest_path(key_or_path);
+        if (!path.empty()) {
+            if (const ArchiveEntry* e = m_archive->find(path))
+                return e;
+            size_t slash = path.find_last_of("/\\");
+            if (slash != std::string::npos) {
+                if (const ArchiveEntry* e = m_archive->find(path.substr(slash + 1)))
+                    return e;
+            }
+        }
+    }
+
+    // Numeric SPK directory index
+    if (key_or_path < m_archive->count())
+        return &m_archive->entry(key_or_path);
+
+    return nullptr;
+}
 
 void Syscalls::impl_get_dl_handle() {
     // firmware: 2nd API #17 has func=0x00000000 (NULL — never implemented).
@@ -2205,23 +2270,70 @@ void Syscalls::impl_get_dl_handle() {
 }
 
 void Syscalls::impl_dl_res_open() {
-    // Accesses in-memory resource DB at 0x8057xxxx (firmware BSS, not present in emulator).
-    // DB module count is 0 → no entries → open always fails. Return 0 (not found).
-    g_cpu_regs[2] = 0;
+    u32 path_ptr = arg(0);
+    if (path_ptr == 0)
+        path_ptr = g_cpu_regs[2]; // path in $v0 (Landlord and other SDK games)
+
+    const ArchiveEntry* entry = resolve_dl_res_entry(path_ptr);
+    if (!entry) {
+        if (path_ptr >= 0x80000000) {
+            static int fail_log = 0;
+            if (fail_log < 8)
+                printf("[dl_res] open failed: '%s'\n", read_guest_path(path_ptr).c_str());
+            fail_log++;
+        }
+        g_cpu_regs[2] = 0;
+        return;
+    }
+
+    int idx = alloc_dl_res_handle();
+    if (idx < 0) { g_cpu_regs[2] = 0; return; }
+
+    u32 guest = heap_alloc(entry->size);
+    if (!guest) {
+        free_dl_res_handle(idx);
+        g_cpu_regs[2] = 0;
+        return;
+    }
+
+    const u8* src = m_archive->get_data(*entry);
+    m_mem.write_block(guest, src, entry->size);
+
+    m_dl_res[idx].in_use = true;
+    m_dl_res[idx].guest_addr = guest;
+    m_dl_res[idx].size = entry->size;
+
+    static int ok_log = 0;
+    if (ok_log < 8)
+        printf("[dl_res] open '%s' -> handle %d (%u bytes @ 0x%08X)\n",
+               entry->name.c_str(), idx + 1, entry->size, guest);
+    ok_log++;
+
+    g_cpu_regs[2] = (u32)(idx + 1);
 }
 
 void Syscalls::impl_dl_res_get_size() {
-    // No resource was opened (dl_res_open always returns 0).
-    g_cpu_regs[2] = 0;
+    int idx = (int)arg(0) - 1;
+    if (idx < 0 || idx >= MAX_DL_RES || !m_dl_res[idx].in_use)
+        g_cpu_regs[2] = 0;
+    else
+        g_cpu_regs[2] = m_dl_res[idx].size;
 }
 
 void Syscalls::impl_dl_res_get_data() {
-    // No resource was opened. Return NULL (0), not 0xFFFFFFFF — callers may
-    // dereference this value without a null check, and 0xFFFFFFFF is outside guest RAM.
-    g_cpu_regs[2] = 0;
+    int idx = (int)arg(0) - 1;
+    if (idx < 0 || idx >= MAX_DL_RES || !m_dl_res[idx].in_use)
+        g_cpu_regs[2] = 0;
+    else
+        g_cpu_regs[2] = m_dl_res[idx].guest_addr;
 }
 
 void Syscalls::impl_dl_res_close() {
+    int idx = (int)arg(0) - 1;
+    if (idx >= 0 && idx < MAX_DL_RES && m_dl_res[idx].in_use) {
+        heap_free(m_dl_res[idx].guest_addr);
+        free_dl_res_handle(idx);
+    }
     g_cpu_regs[2] = 0;
 }
 

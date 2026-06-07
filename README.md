@@ -223,15 +223,15 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 |-----|--------|
 | 7days (HellStriker) | Loads, stuck on choose audio screen, input not working |
 | AliBaba | Exits, dl_res_open() |
-| Block Breaker | Exits |
+| Block Breaker | Playable |
 | Candy | Playable, with sound |
 | Decollation Warrior | Playable, with sound |
 | dicer | Stuck at Phase 1, lots of stubs: av_*** |
-| Fomula-One | ⏳ Loads, reads resources, then audio-write spin (timeout) |
-| Hell Striker II | ⏳ Loads, reads resources, then audio-write spin (timeout) |
-| Landlord | ⏳ Loads, reads resources, then audio-write spin (timeout) |
-| Life | ⏳ Hits `=== Starting emulation ===`, then nothing (GAP) |
-| Link'em Up | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Fomula-One | Black screen, stuck |
+| Hell Striker II | Playable. no sound |
+| Landlord | Black screen, crashes |
+| Life | Stuck at Phase 1 |
+| Link'em Up | Playable |
 | Manic-Miner | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | Mine Sweeper | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | Mojo | ⏳ Loads, reads resources, then audio-write spin (timeout) |
@@ -245,10 +245,10 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Rubido | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | snake | ⏳ Loads resources from binary, then loops on NOT FOUND (timeout) |
 | StopWatch | ⏳ Hits `=== Starting emulation ===`, then nothing (GAP) |
-| tetris | Starts, shows garbled graphics and exits |
-| ultimate_drift | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| tetris | Playable |
+| ultimate_drift | Playable |
 | Yi-Chi King Fighter | 💥 Non-standard GOT layout (96 imports) |
-| Zhao Yun Chuan | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Zhao Yun Chuan | Playable |
 
 **7days** is the primary verified title — boots to a rendered title screen with real sprite content and active audio. **tetris** boots and renders correctly but exits prematurely due to unthrottled audio (see Known Limitations).
 

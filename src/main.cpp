@@ -2,6 +2,7 @@
 #include "memory.h"
 #include "cpu.h"
 #include "display.h"
+#include "archive.h"
 #include "syscalls.h"
 #undef main
 #include <cstdio>
@@ -160,21 +161,23 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // // Load resource archive (disabled — games read resources from their own binary via self-open)
-    // Archive archive;
-    // if (app.resource_size > 0) {
-    //     if (!archive.load(app_path, app.resource_offset, app.resource_size)) {
-    //         fprintf(stderr, "Failed to load resource archive from %s\n", app_path);
-    //         return 1;
-    //     }
-    //     printf("[INIT] Resource archive loaded: %zu entries\n", archive.count());
-    // } else {
-    //     printf("[INIT] No resource archive present; skipping load\n");
-    // }
+    // Load SPK resource archive on the host (served via dl_res_* and fsys_fopenW).
+    Archive archive;
+    Archive* archive_ptr = nullptr;
+    if (app.resource_size > 0) {
+        if (archive.load(app_path, app.resource_offset, app.resource_size)) {
+            archive_ptr = &archive;
+            printf("[INIT] Resource archive loaded: %zu entries\n", archive.count());
+        } else {
+            fprintf(stderr, "[INIT] Warning: failed to parse resource archive from %s\n", app_path);
+        }
+    } else {
+        printf("[INIT] No resource archive present; skipping load\n");
+    }
 
     // Initialize syscalls
     Syscalls syscalls(mem, display);
-    //syscalls.set_archive(&archive);
+    syscalls.set_archive(archive_ptr);
     syscalls.set_app_path(app_path);
     syscalls.set_nosound(nosound);
 
