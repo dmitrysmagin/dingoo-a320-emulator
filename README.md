@@ -235,8 +235,8 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Manic-Miner | Black screen |
 | Mine Sweeper | Black screen, then playfield - GetTickCount |
 | Mojo | Playable |
-| Mushroom Roulette | ⏳ Loads, reads resources, then audio-write spin (timeout) |
-| Nose Breaker | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Mushroom Roulette | Black screen |
+| Nose Breaker | Black screen |
 | Overlord-Fighter | 💥 Non-standard GOT layout (96 imports, first = cmGetSysVersion) |
 | Platinum Sudoku | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | PoPo Bash | ⏳ Loads, reads resources, then audio-write spin (timeout) |

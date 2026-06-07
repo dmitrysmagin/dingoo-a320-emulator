@@ -16,7 +16,7 @@
 // Big-name version:  u32 entry_count (4 bytes), 0x1F4-byte name + u32 data_off per entry.
 //   Used by Puzzle Bobble - Popo Bash (Chinese).
 //
-// Interleaved (Landlord): u32 count + 0x1FC-byte entries (0x1F4 name + u32 data_off).
+// Interleaved (Landlord): u32 count + 0x1FC-byte entries (0x1F4 name + u32 size + u32 data_off).
 //   Data blobs live anywhere in the file; offsets are relative to the archive start.
 //   Used by Landlord.app and similar Chinese SDK games.
 //
@@ -36,15 +36,6 @@ static bool spk_name_looks_like_path(const u8* name, u32 len) {
         if (name[i] == '\\' || name[i] == '/') return true;
     }
     return false;
-}
-
-static u32 spk_interleaved_size(u32 data_off, const std::vector<u32>& all_offs, u32 resource_size) {
-    u32 best = resource_size > data_off ? resource_size - data_off : 0;
-    for (u32 o : all_offs) {
-        if (o > data_off && o - data_off < best)
-            best = o - data_off;
-    }
-    return best;
 }
 
 Archive::Archive() : m_loaded(false) {}
@@ -117,19 +108,31 @@ bool Archive::load(const std::string& app_path, u64 resource_offset, u64 resourc
                 valid = false;
                 break;
             }
-            u32 data_off;
             u32 off = entry_off + c.name_len;
-            if (off + 4 > m_resource_data.size()) { valid = false; break; }
-            memcpy(&data_off, &m_resource_data[off], 4);
-            if (data_off == 0) continue;
             if (c.interleaved) {
-                if (data_off + 4 > m_resource_data.size()) { valid = false; break; }
-            } else if (data_off < dir_sz || (u64)data_off + 4 > m_resource_data.size()) {
-                valid = false;
-                break;
+                if (off + 8 > m_resource_data.size()) { valid = false; break; }
+                u32 data_size, data_off;
+                memcpy(&data_size, &m_resource_data[off], 4);
+                memcpy(&data_off, &m_resource_data[off + 4], 4);
+                if (data_off == 0) continue;
+                if (data_size == 0 || data_off < dir_sz ||
+                    (u64)data_off + data_size > m_resource_data.size()) {
+                    valid = false;
+                    break;
+                }
+                found_nonzero = true;
+            } else {
+                u32 data_off;
+                if (off + 4 > m_resource_data.size()) { valid = false; break; }
+                memcpy(&data_off, &m_resource_data[off], 4);
+                if (data_off == 0) continue;
+                if (data_off < dir_sz || (u64)data_off + 4 > m_resource_data.size()) {
+                    valid = false;
+                    break;
+                }
+                if (!found_nonzero) { first_do = data_off; found_nonzero = true; }
+                else if (data_off == first_do) { valid = false; break; }
             }
-            if (!found_nonzero) { first_do = data_off; found_nonzero = true; }
-            else if (!c.interleaved && data_off == first_do) { valid = false; break; }
         }
         if (valid && found_nonzero) {
             entry_size = c.entry_sz;
@@ -156,9 +159,6 @@ bool Archive::load(const std::string& app_path, u64 resource_offset, u64 resourc
     m_entries.reserve(parsed_count);
     m_entries.resize(parsed_count);
 
-    std::vector<u32> all_data_offs;
-    all_data_offs.reserve(parsed_count);
-
     for (u32 i = 0; i < parsed_count; i++) {
         u32 entry_off = count_bytes + i * entry_size;
 
@@ -168,24 +168,28 @@ bool Archive::load(const std::string& app_path, u64 resource_offset, u64 resourc
         memcpy(name_buf.data(), &m_resource_data[entry_off], buf_len);
         name_buf[buf_len] = 0;
 
-        // Read 4-byte data offset
-        u32 data_off;
-        memcpy(&data_off, &m_resource_data[entry_off + name_len], 4);
+        u32 field_off = entry_off + name_len;
+        u32 data_size = 0;
+        u32 data_off = 0;
+        if (interleaved) {
+            memcpy(&data_size, &m_resource_data[field_off], 4);
+            memcpy(&data_off, &m_resource_data[field_off + 4], 4);
+        } else {
+            memcpy(&data_off, &m_resource_data[field_off], 4);
+        }
 
         std::string name(name_buf.data());
         m_entries[i].name = name;
         m_entries[i].offset = data_off;
-        all_data_offs.push_back(data_off);
 
-        // Size filled in below (interleaved) or from next directory entry (classic)
-        if (!interleaved) {
-            if (i + 1 < parsed_count) {
-                u32 next_off;
-                memcpy(&next_off, &m_resource_data[count_bytes + (i + 1) * entry_size + name_len], 4);
-                m_entries[i].size = next_off > data_off ? next_off - data_off : 0;
-            } else {
-                m_entries[i].size = (u32)resource_size - data_off;
-            }
+        if (interleaved) {
+            m_entries[i].size = data_size;
+        } else if (i + 1 < parsed_count) {
+            u32 next_off;
+            memcpy(&next_off, &m_resource_data[count_bytes + (i + 1) * entry_size + name_len], 4);
+            m_entries[i].size = next_off > data_off ? next_off - data_off : 0;
+        } else {
+            m_entries[i].size = (u32)resource_size - data_off;
         }
 
         // Store in hash table by various path forms
@@ -212,12 +216,6 @@ bool Archive::load(const std::string& app_path, u64 resource_offset, u64 resourc
         std::string lower = stripped;
         std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
         m_name_to_index[lower] = i;
-    }
-
-    if (interleaved) {
-        u32 res_sz = (u32)m_resource_data.size();
-        for (u32 i = 0; i < parsed_count; i++)
-            m_entries[i].size = spk_interleaved_size(m_entries[i].offset, all_data_offs, res_sz);
     }
 
     printf("[ARCHIVE] Loaded %u entries from SPK archive\n", parsed_count);

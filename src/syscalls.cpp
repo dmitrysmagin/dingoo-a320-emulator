@@ -367,25 +367,28 @@ void Syscalls::dispatch(int got_index, u32 /*return_addr*/) {
 
 // === Heap ===
 
+static constexpr u32 HEAP_MAX_SINGLE = 16u * 1024u * 1024u;
+
 u32 Syscalls::heap_alloc(u32 size) {
     if (size == 0) size = 1;
     size = (size + 7) & ~7;
-    for (auto& block : m_heap) {
-        if (block.free && block.size >= size) {
-            block.free = false;
-            return block.addr | 0x80000000u;  // return KSEG0 virt, same as fresh alloc
-        }
-    }
-    // Zone 1: 0x00020000–0x009FFFFC (below game binary at 0x00A00000)
-    // Zone 2: 0x00C10000–0x01FFFFFC (above stack area, within 32 MB)
-    if (m_heap_top + size > 0x009FFFFC && m_heap_top < 0x00C10000)
-        m_heap_top = 0x00C10000;
-    u32 addr = m_heap_top;
-    m_heap_top += size;
-    if (m_heap_top > 0x01FFFFFC) {
-        printf("[HEAP] OOM: top=0x%08X size=%u\n", m_heap_top, size);
+    if (size > HEAP_MAX_SINGLE) {
+        printf("[HEAP] OOM: rejected oversize allocation size=%u PC=0x%08X\n", size, g_cpu_pc);
         return 0;
     }
+    // Do not reuse freed blocks — Landlord keeps live structs that point into
+    // earlier guest allocations (dl_res/audio buffers). Reuse caused malloc(64)
+    // inside s3dtex init to overwrite a struct field with a stale size.
+    u32 top = m_heap_top;
+    if (top + size > 0x009FFFFC && top < 0x00C10000)
+        top = 0x00C10000;
+    u64 new_top = (u64)top + size;
+    if (new_top > 0x01FFFFFC) {
+        printf("[HEAP] OOM: top=0x%08X size=%u\n", top, size);
+        return 0;
+    }
+    u32 addr = top;
+    m_heap_top = (u32)new_top;
     m_heap.push_back({addr, size, false});
     return addr | 0x80000000;  // KSEG0 for TLB bypass
 }
@@ -2255,9 +2258,14 @@ const ArchiveEntry* Syscalls::resolve_dl_res_entry(u32 key_or_path) {
         }
     }
 
-    // Numeric SPK directory index
+    // Numeric SPK directory index (plain index or Landlord 24-bit key 0x000102xx)
     if (key_or_path < m_archive->count())
         return &m_archive->entry(key_or_path);
+    if ((key_or_path & 0x00FFFF00u) == 0x00010200u) {
+        u32 idx = key_or_path & 0xFFu;
+        if (idx < m_archive->count())
+            return &m_archive->entry(idx);
+    }
 
     return nullptr;
 }
@@ -2281,6 +2289,11 @@ void Syscalls::impl_dl_res_open() {
             if (fail_log < 8)
                 printf("[dl_res] open failed: '%s'\n", read_guest_path(path_ptr).c_str());
             fail_log++;
+        } else if (path_ptr != 0) {
+            static int fail_num = 0;
+            if (fail_num < 8)
+                printf("[dl_res] open failed: key=0x%08X\n", path_ptr);
+            fail_num++;
         }
         g_cpu_regs[2] = 0;
         return;
@@ -2304,7 +2317,7 @@ void Syscalls::impl_dl_res_open() {
     m_dl_res[idx].size = entry->size;
 
     static int ok_log = 0;
-    if (ok_log < 8)
+    if (ok_log < 16)
         printf("[dl_res] open '%s' -> handle %d (%u bytes @ 0x%08X)\n",
                entry->name.c_str(), idx + 1, entry->size, guest);
     ok_log++;

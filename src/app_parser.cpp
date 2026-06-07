@@ -236,11 +236,20 @@ bool parse_app(const std::string& path, AppBinary& out) {
                             valid = false;
                             break;
                         }
-                        u32 data_off;
+                        u32 data_size, data_off;
                         fseek(f, (long)(entry_off + name_len), SEEK_SET);
-                        if (fread(&data_off, 4, 1, f) != 1) { valid = false; break; }
+                        if (fread(&data_size, 4, 1, f) != 1 ||
+                            fread(&data_off, 4, 1, f) != 1) {
+                            valid = false;
+                            break;
+                        }
                         if (data_off == 0) continue;
-                        if (off + (u64)data_off + 4 > (u64)file_size) { valid = false; break; }
+                        u64 dir_end = off + dir_sz;
+                        if (data_size == 0 || off + data_off < dir_end ||
+                            off + (u64)data_off + data_size > (u64)file_size) {
+                            valid = false;
+                            break;
+                        }
                         found = true;
                     }
                     if (valid && found) return true;
