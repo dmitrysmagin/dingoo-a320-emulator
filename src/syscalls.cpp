@@ -221,6 +221,7 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     , m_heap_top(0x00020000)  // phys: zone1 above exception vectors, zone2 at 0x04000000 (above archive)
     , m_lcd_bpp(2)       // default RGB565 — updated by rgb_user_init
     , m_lcd_back(false)
+    , m_lcd_pending_buf(0)
     , m_nosound(false)
     , m_audio_open(false)
     , m_audio_device_open(false)
@@ -804,25 +805,15 @@ void Syscalls::argb8888_to_rgb565(const u8* src, u8* dst, u32 pixel_count) {
 }
 
 void Syscalls::impl__lcd_set_frame() {
-    // _lcd_set_frame is a mid-routine label (inherits $s0–$s7 from parent frame).
-    // arg(0) = end_ptr: the address one buf_size past the start of the rendered frame.
-    // render start = end_ptr - buf_size.
+    // Zero-arg OS API: flip the buffer last handed out by _lcd_get_frame ($a0 ignored).
     static constexpr u32 PIXEL_COUNT = Display::WIDTH * Display::HEIGHT;  // 76800
 
-    u32 end_ptr = arg(0) & 0x1FFFFFFF;
     u32 bpp = m_lcd_bpp;
     u32 buf_size = PIXEL_COUNT * bpp;
     g_cpu_regs[2] = 0;
 
-    u32 start = 0;
-    // Portrait SDK: end_ptr = buffer_start - 2 (see tetris/Block Breaker logs).
-    if (m_lcd_hw_buf[0] && end_ptr + 2 == m_lcd_hw_buf[0])
-        start = m_lcd_hw_buf[0];
-    else if (m_lcd_hw_buf[1] && end_ptr + 2 == m_lcd_hw_buf[1])
-        start = m_lcd_hw_buf[1];
-    else if (end_ptr >= buf_size && end_ptr <= m_mem.size())
-        start = end_ptr - buf_size;
-    else
+    u32 start = m_lcd_pending_buf;
+    if (!start)
         return;
     u8* ram = m_mem.get_raw_ptr();
 
@@ -894,8 +885,6 @@ void Syscalls::impl__lcd_set_frame() {
 void Syscalls::impl__lcd_get_frame() {
     // Allocate two HW frame buffers on first call (each buf_size bytes).
     // Returns the start of whichever buffer is currently the back buffer.
-    // The game renders into [start, start+buf_size) and passes start+buf_size
-    // to _lcd_set_frame; we compute start = end_ptr - buf_size to display.
     static constexpr u32 PIXEL_COUNT  = Display::WIDTH * Display::HEIGHT;
     static constexpr u32 BUF_SIZE_RGB = PIXEL_COUNT * 2;   // 153 600 bytes (RGB565)
 
@@ -909,6 +898,7 @@ void Syscalls::impl__lcd_get_frame() {
     }
 
     u32 back = m_lcd_hw_buf[m_lcd_back ? 1 : 0];
+    m_lcd_pending_buf = back;
     g_cpu_regs[2] = back ? (back | 0xA0000000u) : 0;
 }
 
