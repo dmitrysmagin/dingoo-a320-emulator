@@ -232,9 +232,9 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Landlord | Black screen, crashes |
 | Life | Stuck at Phase 1 |
 | Link'em Up | Playable |
-| Manic-Miner | ⏳ Loads, reads resources, then audio-write spin (timeout) |
-| Mine Sweeper | ⏳ Loads, reads resources, then audio-write spin (timeout) |
-| Mojo | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Manic-Miner | Black screen |
+| Mine Sweeper | Black screen, then playfield - GetTickCount |
+| Mojo | Playable |
 | Mushroom Roulette | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | Nose Breaker | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | Overlord-Fighter | 💥 Non-standard GOT layout (96 imports, first = cmGetSysVersion) |

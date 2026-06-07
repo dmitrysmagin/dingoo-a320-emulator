@@ -199,8 +199,54 @@ bool parse_app(const std::string& path, AppBinary& out) {
         rawd_end + 8,                       // after padding
     };
 
+    auto spk_name_looks_like_path = [](const u8* name, u32 len) -> bool {
+        u32 end = 0;
+        while (end < len && name[end]) end++;
+        if (end < 3) return false;
+        for (u32 i = 0; i < end; i++) {
+            if (name[i] == '\\' || name[i] == '/') return true;
+        }
+        return false;
+    };
+
     auto spk_validate = [&](u64 off) -> bool {
         if (off + 2 > (u64)file_size) return false;
+
+        // Interleaved (Landlord): u32 count + 0x1FC entries; data anywhere in file
+        if (off + 4 <= (u64)file_size) {
+            u32 count_il;
+            fseek(f, (long)off, SEEK_SET);
+            if (fread(&count_il, 4, 1, f) == 1 && count_il >= 1 && count_il <= 5000) {
+                const u32 entry_sz = 0x1FC;
+                const u32 name_len = 0x1F4;
+                u64 dir_sz = 4 + (u64)count_il * entry_sz;
+                if (off + dir_sz <= (u64)file_size) {
+                    bool valid = true;
+                    bool found = false;
+                    u32 max_check = std::min(count_il, 3u);
+                    for (u32 i = 0; i < max_check; i++) {
+                        u64 entry_off = off + 4 + (u64)i * entry_sz;
+                        u8 name_buf[16];
+                        fseek(f, (long)entry_off, SEEK_SET);
+                        if (fread(name_buf, 1, sizeof(name_buf), f) != sizeof(name_buf)) {
+                            valid = false;
+                            break;
+                        }
+                        if (!spk_name_looks_like_path(name_buf, name_len)) {
+                            valid = false;
+                            break;
+                        }
+                        u32 data_off;
+                        fseek(f, (long)(entry_off + name_len), SEEK_SET);
+                        if (fread(&data_off, 4, 1, f) != 1) { valid = false; break; }
+                        if (data_off == 0) continue;
+                        if (off + (u64)data_off + 4 > (u64)file_size) { valid = false; break; }
+                        found = true;
+                    }
+                    if (valid && found) return true;
+                }
+            }
+        }
 
         // Try u16-count formats: REGULAR (0x44) and PC (0x24)
         fseek(f, (long)off, SEEK_SET);
@@ -266,12 +312,33 @@ bool parse_app(const std::string& path, AppBinary& out) {
     for (u64 off : spk_candidates) {
         if (!spk_validate(off)) continue;
         out.resource_offset = off;
-        // Read count for display
         fseek(f, (long)off, SEEK_SET);
-        u16 count;
-        fread(&count, 2, 1, f);
-        printf("[APP] SPK archive at 0x%llX (%u entries)\n", off, count);
+        u32 count32;
+        if (fread(&count32, 4, 1, f) == 1 && count32 >= 1 && count32 <= 5000) {
+            // Interleaved archives use u32 count; classic use u16
+            u64 dir_il = 4 + (u64)count32 * 0x1FC;
+            if (off + dir_il <= (u64)file_size)
+                printf("[APP] SPK archive at 0x%llX (%u entries, interleaved)\n", off, count32);
+            else {
+                u16 count16;
+                memcpy(&count16, &count32, 2);
+                printf("[APP] SPK archive at 0x%llX (%u entries)\n", off, count16);
+            }
+        }
         break;
+    }
+
+    if (out.resource_offset == 0) {
+        // Fine scan: SPK often starts within a few bytes of RAWD end (e.g. Landlord @ rawd_end+8)
+        for (u64 off = rawd_end; off < rawd_end + 64 && off < (u64)file_size; off += 4) {
+            if (!spk_validate(off)) continue;
+            out.resource_offset = off;
+            fseek(f, (long)off, SEEK_SET);
+            u32 count32;
+            fread(&count32, 4, 1, f);
+            printf("[APP] SPK archive at 0x%llX (%u entries, near-RAWD)\n", off, count32);
+            break;
+        }
     }
 
     if (out.resource_offset == 0) {
