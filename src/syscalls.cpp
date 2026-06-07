@@ -674,9 +674,7 @@ void Syscalls::impl_fseek() {
 // === GOT 11-23: display / cache ===
 
 void Syscalls::impl_LcdGetDisMode() {
-    // Orientation flag lives in the LCD driver layer, not the app API.
-    // Not accessible from app level — return 0 (landscape default).
-    g_cpu_regs[2] = 0;
+    g_cpu_regs[2] = 1;
 }
 
 void Syscalls::impl_vxGoHome() {
@@ -816,10 +814,16 @@ void Syscalls::impl__lcd_set_frame() {
     u32 buf_size = PIXEL_COUNT * bpp;
     g_cpu_regs[2] = 0;
 
-    if (end_ptr < buf_size || end_ptr > m_mem.size())
+    u32 start = 0;
+    // Portrait SDK: end_ptr = buffer_start - 2 (see tetris/Block Breaker logs).
+    if (m_lcd_hw_buf[0] && end_ptr + 2 == m_lcd_hw_buf[0])
+        start = m_lcd_hw_buf[0];
+    else if (m_lcd_hw_buf[1] && end_ptr + 2 == m_lcd_hw_buf[1])
+        start = m_lcd_hw_buf[1];
+    else if (end_ptr >= buf_size && end_ptr <= m_mem.size())
+        start = end_ptr - buf_size;
+    else
         return;
-
-    u32 start = end_ptr - buf_size;
     u8* ram = m_mem.get_raw_ptr();
 
     // Count non-zero pixels to check if anything is actually drawn

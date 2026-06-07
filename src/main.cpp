@@ -36,7 +36,7 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "Usage: %s [--frames <n>] [--save-screenshots] [--nosound] <app>\n", argv[0]);
         return 1;
     }
-    printf("=== 7days Dingoo A320 Emulator (Phase 2) ===\n\n");
+    printf("=== Dingoo A320 Emulator (Phase 2) ===\n\n");
 
     // Parse the .app file
     AppBinary app;
@@ -88,8 +88,6 @@ int main(int argc, char* argv[]) {
 
     // Determine GOT base from imports (minimum trampoline address).
     // IMPORTANT: start from 0 so that ANY import address wins over the fallback.
-    // Using a 7days-specific hardcoded fallback here caused Hell Striker II (GOT at
-    // 0x80B005E0) to go undetected because all its import addresses are > 0x80AD67E0.
     u32 got_base = 0;
     for (const auto& imp : app.imports) {
         if (imp.address >= 0x80000000 && (got_base == 0 || imp.address < got_base)) {
