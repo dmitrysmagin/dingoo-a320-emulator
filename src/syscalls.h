@@ -393,6 +393,8 @@ public:
     bool simulate_vsync();
     void set_idle_regs(const u32 regs[32]);
     void set_idle_pc(u32 pc) { m_idle_pc = pc; }
+    u32  idle_pc() const { return m_idle_pc; }
+    bool has_blocked_tasks() const;
     void register_main_context(u32 pc, u32 a0, u8 prio);
     bool in_idle() const { return m_in_idle; }
     bool task_switched() const { return m_task_switched; }

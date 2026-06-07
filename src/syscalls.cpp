@@ -1819,11 +1819,11 @@ void Syscalls::impl_OSTimeDly() {
         // g_cpu_regs now holds the next task's context — do NOT write to it here.
         // The delayed task's return value (0) is already stored in its saved regs above.
     } else {
-        // No other task ready — yield to idle loop until vsync wakes this task.
-        memcpy(g_cpu_regs, m_idle_regs, sizeof(g_cpu_regs));
+        // No other task ready — spin in the idle loop until vsync advances ticks
+        // and unblocks this task.  Do NOT switch to the dl_main sentinel PC.
+        m_in_idle = true;
+        m_current_task = -1;
         g_cpu_pc = m_idle_pc;
-        g_cpu_hi = m_idle_hi;
-        g_cpu_lo = m_idle_lo;
         m_task_switched = true;
     }
 }
@@ -1888,6 +1888,14 @@ void Syscalls::impl_OSSemDel() {
 
 void Syscalls::set_idle_regs(const u32 regs[32]) {
     memcpy(m_idle_regs, regs, sizeof(m_idle_regs));
+}
+
+bool Syscalls::has_blocked_tasks() const {
+    for (int i = 0; i < m_task_count; i++) {
+        if (m_tasks[i].active && m_tasks[i].blocked)
+            return true;
+    }
+    return false;
 }
 
 void Syscalls::impl_OSTaskDel() {

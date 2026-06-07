@@ -704,8 +704,10 @@ void CPU::execute_one() {
     insn_count++;
 }
 
-void CPU::run_until_pc(u32 stop_pc, u32 max_insns) {
+void CPU::run_until_pc(u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
     for (u32 i = 0; i < max_insns && running && pc != stop_pc; i++) {
+        if (alt_stop_pc && pc == alt_stop_pc)
+            break;
         execute_one();
     }
 }

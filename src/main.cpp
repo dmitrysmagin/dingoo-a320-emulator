@@ -145,6 +145,13 @@ int main(int argc, char* argv[]) {
     // (NOPs) but we never execute there — run_until_pc stops before fetching from it.
     const u32 DL_MAIN_SENTINEL = 0x80BFFE00;
 
+    // Dedicated idle loop for the µC/OS-II scheduler (distinct from DL_MAIN_SENTINEL).
+    // OSTimeDly with no other runnable task spins here until vsync unblocks the caller.
+    const u32 IDLE_LOOP_PC = 0x80BFFD00;
+    mem.write_u32(IDLE_LOOP_PC + 0x00, 0x082FFF40); // j IDLE_LOOP_PC
+    mem.write_u32(IDLE_LOOP_PC + 0x04, 0x00000000); // nop
+    printf("[PATCH] Scheduler idle loop at 0x%08X\n", IDLE_LOOP_PC);
+
     // Write timer callback return stub at 0x80BFFF00
     //   lw $ra, 0($sp);  addiu $sp, $sp, 8;  jr $ra;  nop
     u32 timer_ret_stub = 0x80BFFF00;
@@ -259,11 +266,14 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Save post-init CPU state as idle context for OSTaskDel fallback
-    extern u32 g_cpu_regs[32];
-    memcpy(g_cpu_regs, cpu.regs, sizeof(g_cpu_regs));
-    syscalls.set_idle_regs(g_cpu_regs);
-    syscalls.set_idle_pc(cpu.pc);
+    // Save post-init CPU state as idle context for OSTaskDel fallback.
+    // Idle PC is the scheduler spin loop, NOT the dl_main sentinel — using the sentinel
+    // here caused OSTimeDly to look like AppMain returning when no peer task exists.
+    u32 idle_regs[32] = {};
+    idle_regs[29] = STACK_TOP;
+    idle_regs[30] = STACK_TOP;
+    syscalls.set_idle_regs(idle_regs);
+    syscalls.set_idle_pc(IDLE_LOOP_PC);
 
     // =========================================================
     // Phase 2: call AppMain
@@ -296,18 +306,26 @@ int main(int argc, char* argv[]) {
         }
 
         write_keys();
-        cpu.run_until_pc(DL_MAIN_SENTINEL, max_insns_per_frame);
+        cpu.run_until_pc(DL_MAIN_SENTINEL, max_insns_per_frame, IDLE_LOOP_PC);
         syscalls.process_timers();
         cpu.do_vsync();
         frame++;
 
-        // AppMain (or any task) returned to the sentinel.
-        // Let the scheduler switch to the next runnable task. If nothing
-        // switches in, there is genuinely nothing left to run.
+        // AppMain returned to the sentinel for real (jr $ra where $ra == sentinel).
+        // If tasks are still blocked on OSTimeDly/OSSemPend, keep running — that is
+        // a scheduler yield, not an exit (should not happen once idle loop is separate).
         if (cpu.pc == DL_MAIN_SENTINEL) {
             if (!cpu.running) break;
+            if (syscalls.has_blocked_tasks()) {
+                continue;
+            }
             printf("[PHASE 2] Sentinel hit at frame %u — no runnable task, stopping\n", frame);
             break;
+        }
+
+        // OSTimeDly yielded with no peer task — vsync above may have woken the caller.
+        if (cpu.pc == IDLE_LOOP_PC || syscalls.in_idle()) {
+            continue;
         }
 
         // Check if PC is in valid code region
