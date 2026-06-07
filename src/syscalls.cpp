@@ -2282,6 +2282,18 @@ void Syscalls::impl_dl_res_open() {
     if (path_ptr == 0)
         path_ptr = g_cpu_regs[2]; // path in $v0 (Landlord and other SDK games)
 
+    static int num_log = 0;
+    if (path_ptr < 0x00100000u && num_log < 64) {
+        const ArchiveEntry* preview = resolve_dl_res_entry(path_ptr);
+        if (preview)
+            printf("[dl_res] open numeric key=0x%08X -> idx %zu '%s' PC=0x%08X\n",
+                   path_ptr, preview - &m_archive->entry(0), preview->name.c_str(), g_cpu_pc);
+        else
+            printf("[dl_res] open numeric key=0x%08X -> UNRESOLVED PC=0x%08X\n",
+                   path_ptr, g_cpu_pc);
+        num_log++;
+    }
+
     const ArchiveEntry* entry = resolve_dl_res_entry(path_ptr);
     if (!entry) {
         if (path_ptr >= 0x80000000) {

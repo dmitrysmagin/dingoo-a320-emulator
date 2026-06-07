@@ -237,10 +237,10 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Mojo | Playable |
 | Mushroom Roulette | Black screen |
 | Nose Breaker | Black screen |
-| Overlord-Fighter | 💥 Non-standard GOT layout (96 imports, first = cmGetSysVersion) |
-| Platinum Sudoku | ⏳ Loads, reads resources, then audio-write spin (timeout) |
-| PoPo Bash | ⏳ Loads, reads resources, then audio-write spin (timeout) |
-| Puzzle Bobble | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Overlord-Fighter | Exits |
+| Platinum Sudoku | Grey screen, dl_res_*** |
+| PoPo Bash | Exits |
+| Puzzle Bobble | ⏳ Exits |
 | Rick-Dangerous | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | Rubido | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | snake | ⏳ Loads resources from binary, then loops on NOT FOUND (timeout) |
