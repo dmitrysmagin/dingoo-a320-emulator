@@ -312,6 +312,13 @@ private:
     u32 m_audio_high_water;
     u32 m_audio_block_count;
     u32 m_audio_unblock_count;
+    u32 m_audio_sem_post_count;
+    int m_last_waveout_bytes;
+    u32 m_audio_hw_chunk_bytes;
+    uint64_t m_audio_post_watermark;
+    static constexpr int AUDIO_SEM_REG_MAX = 4;
+    u32 m_audio_sem_reg[AUDIO_SEM_REG_MAX];
+    int m_audio_sem_reg_count;
     bool m_audio_has_data;
     u32 m_audio_start_tick;
 
@@ -370,6 +377,10 @@ private:
     const ArchiveEntry* resolve_dl_res_entry(u32 key_or_path);
 
     void sem_pend(u32 sem_ptr, u32 timeout, u32 err_ptr);
+    bool sem_signal(u32 sem_ptr);
+    void audio_register_sem(u32 sem_ptr);
+    void audio_post_buffer_sems();
+    void audio_post_if_chunks_played();
 
     // Per-slot handler index: maps GOT slot → index into static s_handlers[]
     std::vector<int> m_slot_handlers;

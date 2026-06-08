@@ -251,6 +251,11 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     , m_audio_high_water(0)
     , m_audio_block_count(0)
     , m_audio_unblock_count(0)
+    , m_audio_sem_post_count(0)
+    , m_last_waveout_bytes(-1)
+    , m_audio_hw_chunk_bytes(800)
+    , m_audio_post_watermark(0)
+    , m_audio_sem_reg_count(0)
     , m_audio_has_data(false)
     , m_audio_start_tick(0)
     , m_audio_block_task(-1)
@@ -267,6 +272,7 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     , m_last_timer_tick(SDL_GetTicks())
 {
     memset(m_got_call_counts, 0, sizeof(m_got_call_counts));
+    m_audio_sem_reg_count = 0;
     for (int i = 0; i < MAX_TASKS; i++) {
         m_tasks[i].active = false;
         m_tasks[i].wake_tick = 0;
@@ -297,10 +303,10 @@ Syscalls::Syscalls(Memory& mem, Display& display)
 
 void Syscalls::shutdown_audio() {
     if (m_audio_underruns || m_audio_overruns || m_audio_high_water
-        || m_audio_block_count || m_audio_unblock_count) {
-        printf("[AUDIO] stats: underruns=%u overruns=%u high_water=%u/%u blocks=%u unblocks=%u\n",
+        || m_audio_block_count || m_audio_unblock_count || m_audio_sem_post_count) {
+        printf("[AUDIO] stats: underruns=%u overruns=%u high_water=%u/%u blocks=%u unblocks=%u sem_posts=%u\n",
                m_audio_underruns, m_audio_overruns, m_audio_high_water, m_ring_cap,
-               m_audio_block_count, m_audio_unblock_count);
+               m_audio_block_count, m_audio_unblock_count, m_audio_sem_post_count);
     }
     audio_close_immediate();
     m_ring_buf.reset();
@@ -477,6 +483,7 @@ void Syscalls::audio_write_os_state(bool playing) {
 
 void Syscalls::audio_wake_waiters() {
     audio_try_complete_blocked_writes();
+    audio_post_if_chunks_played();
     if (audio_can_write_bytes() == 0)
         return;
     for (int i = 0; i < m_task_count; i++) {
@@ -488,6 +495,104 @@ void Syscalls::audio_wake_waiters() {
             t.wake_tick = 0;
         }
     }
+}
+
+void Syscalls::audio_register_sem(u32 sem_ptr) {
+    if (!sem_ptr)
+        return;
+    for (int i = 0; i < m_audio_sem_reg_count; i++) {
+        if (m_audio_sem_reg[i] == sem_ptr)
+            return;
+    }
+    if (m_audio_sem_reg_count >= AUDIO_SEM_REG_MAX)
+        return;
+    m_audio_sem_reg[m_audio_sem_reg_count++] = sem_ptr;
+}
+
+bool Syscalls::sem_signal(u32 sem_ptr) {
+    if (!sem_ptr)
+        return true;
+
+    int waiter = -1;
+    u8 best_prio = 0xFF;
+    for (int i = 0; i < m_task_count; i++) {
+        if (m_tasks[i].blocked && m_tasks[i].block_sem == sem_ptr
+            && m_tasks[i].task_prio < best_prio) {
+            best_prio = m_tasks[i].task_prio;
+            waiter = i;
+        }
+    }
+
+    if (waiter >= 0) {
+        m_tasks[waiter].blocked = false;
+        m_tasks[waiter].block_sem = 0;
+        m_tasks[waiter].wake_tick = 0;
+        m_tasks[waiter].regs[2] = 0;
+        if (m_tasks[waiter].sem_err_ptr)
+            m_mem.write_u8(m_tasks[waiter].sem_err_ptr, 0);
+        m_tasks[waiter].sem_err_ptr = 0;
+        return true;
+    }
+
+    u16 cnt = m_mem.read_u16(sem_ptr + 8);
+    if (cnt >= 65535u)
+        return false;
+    m_mem.write_u16(sem_ptr + 8, (u16)(cnt + 1));
+    return true;
+}
+
+void Syscalls::audio_post_buffer_sems() {
+    if (!m_audio_open || m_audio_sem_reg_count <= 0)
+        return;
+
+    int waiter = -1;
+    u8 best_prio = 0xFF;
+    u32 wake_sem = 0;
+    for (int i = 0; i < m_task_count; i++) {
+        Task& t = m_tasks[i];
+        if (!t.blocked || !t.block_sem || t.task_prio < 16)
+            continue;
+        for (int j = 0; j < m_audio_sem_reg_count; j++) {
+            if (t.block_sem == m_audio_sem_reg[j] && t.task_prio < best_prio) {
+                best_prio = t.task_prio;
+                waiter = i;
+                wake_sem = t.block_sem;
+                break;
+            }
+        }
+    }
+
+    if (waiter >= 0) {
+        sem_signal(wake_sem);
+        m_audio_sem_post_count++;
+        return;
+    }
+
+    u32 sem_ptr = m_audio_sem_reg[m_audio_sem_post_count % m_audio_sem_reg_count];
+    sem_signal(sem_ptr);
+    m_audio_sem_post_count++;
+}
+
+void Syscalls::audio_post_if_chunks_played() {
+    if (!m_audio_open || m_audio_sem_reg_count <= 0)
+        return;
+
+    int chunk_bytes = (int)m_audio_hw_chunk_bytes;
+    if (chunk_bytes <= 0)
+        chunk_bytes = 800;
+    int chunk_samples = (m_audio_bits == 8) ? chunk_bytes : (chunk_bytes / 2);
+    if (chunk_samples <= 0)
+        return;
+
+    uint64_t played = m_samples_played.load(std::memory_order_acquire);
+    uint64_t delta = played - m_audio_post_watermark;
+    if (delta < (uint64_t)chunk_samples)
+        return;
+
+    int chunks = (int)(delta / (uint64_t)chunk_samples);
+    m_audio_post_watermark += (uint64_t)chunks * (uint64_t)chunk_samples;
+    for (int i = 0; i < chunks; i++)
+        audio_post_buffer_sems();
 }
 
 bool Syscalls::audio_try_complete_blocked_writes() {
@@ -558,6 +663,7 @@ void Syscalls::audio_drain_and_close() {
     }
     m_audio_open = false;
     m_audio_device_open = false;
+    m_audio_sem_reg_count = 0;
     audio_reset_ring();
     audio_write_os_state(false);
 }
@@ -577,6 +683,7 @@ void Syscalls::audio_close_immediate() {
     m_audio_block_task = -1;
     m_audio_block_samples = 0;
     m_audio_block_pcm.reset();
+    m_audio_sem_reg_count = 0;
     audio_reset_ring();
     audio_write_os_state(false);
 }
@@ -1785,6 +1892,8 @@ void Syscalls::impl_waveout_open() {
     m_audio_has_data = false;
     m_samples_played.store(0, std::memory_order_relaxed);
     m_samples_written.store(0, std::memory_order_relaxed);
+    m_audio_post_watermark = 0;
+    m_audio_hw_chunk_bytes = 800;
     m_audio_start_tick = SDL_GetTicks();
 
     if (!audio_open_device(sample_rate, channels)) {
@@ -1855,8 +1964,13 @@ void Syscalls::impl_waveout_write() {
         printf("[AUDIO] waveout_write: subsequent calls suppressed\n");
     }
 
+    m_last_waveout_bytes = -1;
     int bytes = audio_do_write(buf_addr, size);
     m_audio_write_count++;
+    if (bytes > 0)
+        m_audio_hw_chunk_bytes = (u32)bytes;
+    if (bytes >= 0)
+        m_last_waveout_bytes = bytes;
     if (bytes >= 0)
         g_cpu_regs[2] = (u32)bytes;
 }
@@ -2120,6 +2234,10 @@ void Syscalls::impl_OSTaskCreate() {
 
 
 void Syscalls::sem_pend(u32 sem_ptr, u32 timeout, u32 err_ptr) {
+    if (m_current_task >= 0 && m_current_task < m_task_count
+        && m_tasks[m_current_task].task_prio >= 16 && sem_ptr) {
+        audio_register_sem(sem_ptr);
+    }
     u16 cnt = m_mem.read_u16(sem_ptr + 8);
     if (cnt > 0) {
         m_mem.write_u16(sem_ptr + 8, (u16)(cnt - 1));
@@ -2158,33 +2276,19 @@ void Syscalls::impl_OSSemPend() {
 void Syscalls::impl_OSSemPost() {
     u32 sem_ptr = arg(0);
 
-    // Find a waiter first (highest priority = lowest task_prio).
-    int waiter = -1;
-    u8 best_prio = 0xFF;
-    for (int i = 0; i < m_task_count; i++) {
-        if (m_tasks[i].blocked && m_tasks[i].block_sem == sem_ptr
-            && m_tasks[i].task_prio < best_prio) {
-            best_prio = m_tasks[i].task_prio;
-            waiter = i;
-        }
+    if (m_current_task >= 0 && m_current_task < m_task_count
+        && m_tasks[m_current_task].task_prio >= 16
+        && m_last_waveout_bytes == 0) {
+        g_cpu_regs[2] = 0;
+        return;
     }
 
-    if (waiter >= 0) {
-        // Hand the resource to the waiter; do NOT increment count.
-        m_tasks[waiter].blocked = false;
-        m_tasks[waiter].block_sem = 0;
-        m_tasks[waiter].wake_tick = 0;
-        m_tasks[waiter].regs[2] = 0;  // OS_NO_ERR in v0
-        if (m_tasks[waiter].sem_err_ptr)
-            m_mem.write_u8(m_tasks[waiter].sem_err_ptr, 0);  // OS_NO_ERR
-        m_tasks[waiter].sem_err_ptr = 0;
-    } else {
-        // No waiter: increment count, saturating at 65535.
-        u16 cnt = m_mem.read_u16(sem_ptr + 8);
-        if (cnt < 65535u) m_mem.write_u16(sem_ptr + 8, (u16)(cnt + 1));
-        else { g_cpu_regs[2] = 51 /* OS_SEM_OVF */; return; }
+    if (!sem_signal(sem_ptr)) {
+        g_cpu_regs[2] = 51;  // OS_SEM_OVF
+        return;
     }
-    g_cpu_regs[2] = 0;  // OS_NO_ERR
+    m_last_waveout_bytes = -1;
+    g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_OSTimeDly() {
