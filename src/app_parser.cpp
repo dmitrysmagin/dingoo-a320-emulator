@@ -189,131 +189,44 @@ bool parse_app(const std::string& path, AppBinary& out) {
     u64 raopp  = (u64)rawd.offset + rawd.prog_size;
     u64 rawd_end = (u64)rawd.offset + rawd.size;
 
-    // SPK candidate offsets: try aligned + raw end-of-RAWD positions
+    // SPK candidate offsets: try aligned positions after code/RAWD
     u64 spk_candidates[] = {
         ((raopp + 0x7FFFF) & ~0x7FFFFu),   // align(raopp, 0x80000)
         ((raopp + 0xFFFF)  & ~0xFFFFu),     // align(raopp, 0x10000)
         ((rawd_end + 0x7FFFF) & ~0x7FFFFu), // align(rawd_end, 0x80000)
         ((rawd_end + 0xFFFF)  & ~0xFFFFu),  // align(rawd_end, 0x10000)
-        rawd_end,                           // right after code
-        rawd_end + 8,                       // after padding
-    };
-
-    auto spk_name_looks_like_path = [](const u8* name, u32 len) -> bool {
-        u32 end = 0;
-        while (end < len && name[end]) end++;
-        if (end < 3) return false;
-        for (u32 i = 0; i < end; i++) {
-            if (name[i] == '\\' || name[i] == '/') return true;
-        }
-        return false;
+        rawd_end,                           // right after RAWD
     };
 
     auto spk_validate = [&](u64 off) -> bool {
         if (off + 2 > (u64)file_size) return false;
 
-        // Interleaved (Landlord): u32 count + 0x1FC entries; data anywhere in file
-        if (off + 4 <= (u64)file_size) {
-            u32 count_il;
-            fseek(f, (long)off, SEEK_SET);
-            if (fread(&count_il, 4, 1, f) == 1 && count_il >= 1 && count_il <= 5000) {
-                const u32 entry_sz = 0x1FC;
-                const u32 name_len = 0x1F4;
-                u64 dir_sz = 4 + (u64)count_il * entry_sz;
-                if (off + dir_sz <= (u64)file_size) {
-                    bool valid = true;
-                    bool found = false;
-                    u32 max_check = std::min(count_il, 3u);
-                    for (u32 i = 0; i < max_check; i++) {
-                        u64 entry_off = off + 4 + (u64)i * entry_sz;
-                        u8 name_buf[16];
-                        fseek(f, (long)entry_off, SEEK_SET);
-                        if (fread(name_buf, 1, sizeof(name_buf), f) != sizeof(name_buf)) {
-                            valid = false;
-                            break;
-                        }
-                        if (!spk_name_looks_like_path(name_buf, name_len)) {
-                            valid = false;
-                            break;
-                        }
-                        u32 data_size, data_off;
-                        fseek(f, (long)(entry_off + name_len), SEEK_SET);
-                        if (fread(&data_size, 4, 1, f) != 1 ||
-                            fread(&data_off, 4, 1, f) != 1) {
-                            valid = false;
-                            break;
-                        }
-                        if (data_off == 0) continue;
-                        u64 dir_end = off + dir_sz;
-                        if (data_size == 0 || off + data_off < dir_end ||
-                            off + (u64)data_off + data_size > (u64)file_size) {
-                            valid = false;
-                            break;
-                        }
-                        found = true;
-                    }
-                    if (valid && found) return true;
-                }
-            }
-        }
-
-        // Try u16-count formats: REGULAR (0x44) and PC (0x24)
         fseek(f, (long)off, SEEK_SET);
         u16 count_u16;
         if (fread(&count_u16, 2, 1, f) != 1) return false;
-        if (count_u16 >= 1 && count_u16 <= 5000) {
-            for (u32 entry_sz : {0x44u, 0x24u}) {
-                u32 dir_sz = 2 + (u32)count_u16 * entry_sz;
-                if (off + dir_sz > (u64)file_size) continue;
-                bool valid = true;
-                bool found_nonzero = false;
-                u32 first_do = 0;
-                u32 max_check = std::min((u32)count_u16, 3u);
-                for (u32 i = 0; i < max_check; i++) {
-                    u32 data_off;
-                    fseek(f, (long)(off + 2 + i * entry_sz + entry_sz - 4), SEEK_SET);
-                    if (fread(&data_off, 4, 1, f) != 1) { valid = false; break; }
-                    if (data_off == 0) continue;  // sentinel entry, skip
-                    found_nonzero = true;
-                    u64 abs_doff = off + data_off;
-                    if (abs_doff < off + dir_sz || abs_doff > (u64)file_size)
-                        { valid = false; break; }
-                    if (i == 0) first_do = data_off;
-                    else if (data_off == first_do) { valid = false; break; } // reject all-identical
-                }
-                if (valid && found_nonzero) return true;
-            }
-        }
+        if (count_u16 < 1 || count_u16 > 5000) return false;
 
-        // Try BIGNAME format: u32 count, entry_size = 0x1F8 (0x1F4 name + 4 offset)
-        if (off + 4 > (u64)file_size) return false;
-        fseek(f, (long)off, SEEK_SET);  // rewind to start for u32 read
-        u32 count_u32;
-        if (fread(&count_u32, 4, 1, f) != 1) return false;
-        if (count_u32 >= 1 && count_u32 <= 5000) {
-            u32 entry_sz = 0x1F8;
-            u32 dir_sz = 4 + count_u32 * entry_sz;
-            if (off + dir_sz <= (u64)file_size) {
-                bool valid = true;
-                bool found_nonzero = false;
-                u32 first_do = 0;
-                u32 max_check = std::min(count_u32, 3u);
-                for (u32 i = 0; i < max_check; i++) {
-                    u32 data_off;
-                    fseek(f, (long)(off + 4 + i * entry_sz + entry_sz - 4), SEEK_SET);
-                    if (fread(&data_off, 4, 1, f) != 1) { valid = false; break; }
-                    if (data_off == 0) continue;  // sentinel entry
-                    found_nonzero = true;
-                    u64 abs_doff = off + data_off;
-                    if (abs_doff < off + dir_sz || abs_doff > (u64)file_size)
-                        { valid = false; break; }
-                    if (i == 0) first_do = data_off;
-                    else if (data_off == first_do) { valid = false; break; }
-                }
-                if (valid && found_nonzero) return true;
+        for (u32 entry_sz : {0x44u, 0x24u}) {
+            u32 dir_sz = 2 + (u32)count_u16 * entry_sz;
+            if (off + dir_sz > (u64)file_size) continue;
+            bool valid = true;
+            bool found_nonzero = false;
+            u32 first_do = 0;
+            u32 max_check = std::min((u32)count_u16, 3u);
+            for (u32 i = 0; i < max_check; i++) {
+                u32 data_off;
+                fseek(f, (long)(off + 2 + i * entry_sz + entry_sz - 4), SEEK_SET);
+                if (fread(&data_off, 4, 1, f) != 1) { valid = false; break; }
+                if (data_off == 0) continue;
+                found_nonzero = true;
+                u64 abs_doff = off + data_off;
+                if (abs_doff < off + dir_sz || abs_doff > (u64)file_size)
+                    { valid = false; break; }
+                if (i == 0) first_do = data_off;
+                else if (data_off == first_do) { valid = false; break; }
             }
+            if (valid && found_nonzero) return true;
         }
-
         return false;
     };
 
@@ -322,36 +235,13 @@ bool parse_app(const std::string& path, AppBinary& out) {
         if (!spk_validate(off)) continue;
         out.resource_offset = off;
         fseek(f, (long)off, SEEK_SET);
-        u32 count32;
-        if (fread(&count32, 4, 1, f) == 1 && count32 >= 1 && count32 <= 5000) {
-            // Interleaved archives use u32 count; classic use u16
-            u64 dir_il = 4 + (u64)count32 * 0x1FC;
-            if (off + dir_il <= (u64)file_size)
-                printf("[APP] SPK archive at 0x%llX (%u entries, interleaved)\n", off, count32);
-            else {
-                u16 count16;
-                memcpy(&count16, &count32, 2);
-                printf("[APP] SPK archive at 0x%llX (%u entries)\n", off, count16);
-            }
-        }
+        u16 count;
+        fread(&count, 2, 1, f);
+        printf("[APP] SPK archive at 0x%llX (%u entries)\n", off, count);
         break;
     }
 
     if (out.resource_offset == 0) {
-        // Fine scan: SPK often starts within a few bytes of RAWD end (e.g. Landlord @ rawd_end+8)
-        for (u64 off = rawd_end; off < rawd_end + 64 && off < (u64)file_size; off += 4) {
-            if (!spk_validate(off)) continue;
-            out.resource_offset = off;
-            fseek(f, (long)off, SEEK_SET);
-            u32 count32;
-            fread(&count32, 4, 1, f);
-            printf("[APP] SPK archive at 0x%llX (%u entries, near-RAWD)\n", off, count32);
-            break;
-        }
-    }
-
-    if (out.resource_offset == 0) {
-        // Fallback: scan at finer granularity
         for (u64 off = spk_candidates[0]; off > rawd_end && off > 0; off -= 0x10000) {
             if (spk_validate(off)) {
                 out.resource_offset = off;

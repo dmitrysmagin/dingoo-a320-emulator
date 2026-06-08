@@ -377,9 +377,6 @@ u32 Syscalls::heap_alloc(u32 size) {
         printf("[HEAP] OOM: rejected oversize allocation size=%u PC=0x%08X\n", size, g_cpu_pc);
         return 0;
     }
-    // Do not reuse freed blocks — Landlord keeps live structs that point into
-    // earlier guest allocations (dl_res/audio buffers). Reuse caused malloc(64)
-    // inside s3dtex init to overwrite a struct field with a stale size.
     u32 top = m_heap_top;
     if (top + size > 0x009FFFFC && top < 0x00C10000)
         top = 0x00C10000;
@@ -454,6 +451,12 @@ void Syscalls::close_file_handle(int idx) {
 }
 
 // === Internal I/O helpers (used by both stdlib-style and fsys_* calls) ===
+
+static bool is_spk_index_bin(const std::string& path) {
+    return path.size() >= 4 &&
+           (path.compare(path.size() - 4, 4, ".bin") == 0 ||
+            path.compare(path.size() - 4, 4, ".BIN") == 0);
+}
 
 u32 Syscalls::do_fread(u32 ptr, u32 size, u32 nmemb, u32 file_handle) {
     int idx = (int)file_handle - 1;
@@ -1049,7 +1052,7 @@ void Syscalls::impl_fsys_fopen() {
     std::string path = guest_string(path_addr);
     std::string mode = guest_string(mode_addr);
 
-    if (m_archive) {
+    if (m_archive && !is_spk_index_bin(path)) {
         const ArchiveEntry* entry = m_archive->find(path);
         if (entry) {
             int idx = alloc_file_handle();
@@ -2088,7 +2091,7 @@ void Syscalls::impl_fsys_fopenW() {
         }
     }*/
 
-    if (m_archive) {
+    if (m_archive && !is_spk_index_bin(search_path)) {
         const ArchiveEntry* entry = m_archive->find(search_path);
         if (!entry && search_path.size() > 2 && search_path[0] == '.' &&
             (search_path[1] == '\\' || search_path[1] == '/'))
@@ -2220,7 +2223,7 @@ void Syscalls::impl_get_current_language() {
     g_cpu_regs[2] = lang; // Chinese (0=English)
 }
 
-// === dl_res resource API (SPK archive by path or 24-bit key) ===
+// === dl_res resource API (SPK archive by guest path) ===
 
 int Syscalls::alloc_dl_res_handle() {
     for (int i = 0; i < MAX_DL_RES; i++) {
@@ -2241,69 +2244,29 @@ const ArchiveEntry* Syscalls::resolve_dl_res_entry(u32 key_or_path) {
     if (!m_archive || m_archive->count() == 0)
         return nullptr;
 
-    // Guest path pointer (SDK games pass path in $v0 when $a0==0)
-    if (key_or_path >= 0x80000000) {
-        std::string path = read_guest_path(key_or_path);
-        if (!path.empty()) {
-            if (const ArchiveEntry* e = m_archive->find(path))
-                return e;
-            size_t slash = path.find_last_of("/\\");
-            if (slash != std::string::npos) {
-                if (const ArchiveEntry* e = m_archive->find(path.substr(slash + 1)))
-                    return e;
-            }
-        }
-    }
+    if (key_or_path < 0x80000000)
+        return nullptr;
 
-    // Numeric SPK directory index (plain index or Landlord 24-bit key 0x000102xx)
-    if (key_or_path < m_archive->count())
-        return &m_archive->entry(key_or_path);
-    if ((key_or_path & 0x00FFFF00u) == 0x00010200u) {
-        u32 idx = key_or_path & 0xFFu;
-        if (idx < m_archive->count())
-            return &m_archive->entry(idx);
-    }
+    std::string path = read_guest_path(key_or_path);
+    if (path.empty())
+        return nullptr;
 
+    if (const ArchiveEntry* e = m_archive->find(path))
+        return e;
+    size_t slash = path.find_last_of("/\\");
+    if (slash != std::string::npos)
+        return m_archive->find(path.substr(slash + 1));
     return nullptr;
 }
 
 void Syscalls::impl_get_dl_handle() {
-    // firmware: 2nd API #17 has func=0x00000000 (NULL — never implemented).
-    // Any module that imported this and called it would jump to address 0 on real hardware.
-    // Return 0 so callers' null-handle guards fire cleanly.
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_dl_res_open() {
     u32 path_ptr = arg(0);
-    if (path_ptr == 0)
-        path_ptr = g_cpu_regs[2]; // path in $v0 (Landlord and other SDK games)
-
-    static int num_log = 0;
-    if (path_ptr < 0x00100000u && num_log < 64) {
-        const ArchiveEntry* preview = resolve_dl_res_entry(path_ptr);
-        if (preview)
-            printf("[dl_res] open numeric key=0x%08X -> idx %zu '%s' PC=0x%08X\n",
-                   path_ptr, preview - &m_archive->entry(0), preview->name.c_str(), g_cpu_pc);
-        else
-            printf("[dl_res] open numeric key=0x%08X -> UNRESOLVED PC=0x%08X\n",
-                   path_ptr, g_cpu_pc);
-        num_log++;
-    }
-
     const ArchiveEntry* entry = resolve_dl_res_entry(path_ptr);
     if (!entry) {
-        if (path_ptr >= 0x80000000) {
-            static int fail_log = 0;
-            if (fail_log < 8)
-                printf("[dl_res] open failed: '%s'\n", read_guest_path(path_ptr).c_str());
-            fail_log++;
-        } else if (path_ptr != 0) {
-            static int fail_num = 0;
-            if (fail_num < 8)
-                printf("[dl_res] open failed: key=0x%08X\n", path_ptr);
-            fail_num++;
-        }
         g_cpu_regs[2] = 0;
         return;
     }
@@ -2324,12 +2287,6 @@ void Syscalls::impl_dl_res_open() {
     m_dl_res[idx].in_use = true;
     m_dl_res[idx].guest_addr = guest;
     m_dl_res[idx].size = entry->size;
-
-    static int ok_log = 0;
-    if (ok_log < 16)
-        printf("[dl_res] open '%s' -> handle %d (%u bytes @ 0x%08X)\n",
-               entry->name.c_str(), idx + 1, entry->size, guest);
-    ok_log++;
 
     g_cpu_regs[2] = (u32)(idx + 1);
 }
