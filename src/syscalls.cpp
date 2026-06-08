@@ -33,7 +33,7 @@ const Syscalls::GOTHandler Syscalls::s_handlers[] = {
     {"GetTickCount",            &Syscalls::impl_GetTickCount,            false},
     {"Get_X",                   &Syscalls::impl_Get_X,                   true},
     {"Get_Y",                   &Syscalls::impl_Get_Y,                   true},
-    {"HP_Mute_sw",              &Syscalls::impl_HP_Mute_sw,              true},
+    {"HP_Mute_sw",              &Syscalls::impl_HP_Mute_sw,              false},
     {"LCD_Color2Index",         &Syscalls::impl_LCD_Color2Index,         false},
     {"LCD_GetXSize",            &Syscalls::impl_LCD_GetXSize,            false},
     {"LCD_GetYSize",            &Syscalls::impl_LCD_GetYSize,            false},
@@ -79,8 +79,8 @@ const Syscalls::GOTHandler Syscalls::s_handlers[] = {
     {"_sys_judge_event",        &Syscalls::impl__sys_judge_event,        false},
     {"_tcscmp",                 &Syscalls::impl__tcscmp,                 true},
     {"_tcscpy",                 &Syscalls::impl__tcscpy,                 true},
-    {"_waveout_open",           &Syscalls::impl__waveout_open,           true},
-    {"_waveout_set_volume",     &Syscalls::impl__waveout_set_volume,     true},
+    {"_waveout_open",           &Syscalls::impl__waveout_open,           false},
+    {"_waveout_set_volume",     &Syscalls::impl__waveout_set_volume,     false},
     {"abort",                   &Syscalls::impl_abort,                   false},
     {"ap_lcd_set_frame",        &Syscalls::impl_ap_lcd_set_frame,        false},
     {"av_begin_thread",         &Syscalls::impl_av_begin_thread,         true},
@@ -238,6 +238,7 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     , m_audio_paused(false)
     , m_audio_muted(false)
     , m_audio_device(0)
+    , m_audio_target_latency_ms(AUDIO_TARGET_LATENCY_MS_DEFAULT)
     , m_ring_cap(0)
     , m_ring_mask(0)
     , m_ring_head(0)
@@ -318,6 +319,14 @@ void Syscalls::shutdown_audio() {
 
 // --- Audio helpers ---
 
+void Syscalls::set_audio_target_latency_ms(int ms) {
+    if (ms < AUDIO_TARGET_LATENCY_MS_MIN)
+        ms = AUDIO_TARGET_LATENCY_MS_MIN;
+    else if (ms > AUDIO_TARGET_LATENCY_MS_MAX)
+        ms = AUDIO_TARGET_LATENCY_MS_MAX;
+    m_audio_target_latency_ms = ms;
+}
+
 int Syscalls::audio_calc_ring_cap(u32 rate, u32 channels) const {
     uint64_t need = (uint64_t)rate * channels * AUDIO_RING_MS / 1000;
     if (need < (uint64_t)AUDIO_MIN_RING_CAP)
@@ -340,7 +349,7 @@ void Syscalls::audio_alloc_ring(u32 rate, u32 channels) {
     m_audio_has_data = false;
     audio_reset_ring();
     printf("[AUDIO] ring cap=%u samples (target=%ums ring=%ums @ %uHz %uch)\n",
-           m_ring_cap, AUDIO_TARGET_LATENCY_MS, AUDIO_RING_MS, rate, channels);
+           m_ring_cap, m_audio_target_latency_ms, AUDIO_RING_MS, rate, channels);
 }
 
 void Syscalls::audio_reset_ring() {
@@ -364,7 +373,8 @@ int Syscalls::audio_ring_free() const {
 }
 
 u32 Syscalls::audio_max_ahead_samples() const {
-    u64 max_ahead = (u64)m_audio_sample_rate * m_audio_channels * AUDIO_TARGET_LATENCY_MS / 1000;
+    u64 max_ahead = (u64)m_audio_sample_rate * m_audio_channels
+                    * (u64)m_audio_target_latency_ms / 1000;
     if (max_ahead < 1)
         max_ahead = 1;
     return (u32)max_ahead;

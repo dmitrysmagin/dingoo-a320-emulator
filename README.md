@@ -23,7 +23,7 @@ Runs any standard `.app` binary with Dingoo OS syscall interception, SDL2 displa
 │  │                                                          │   │
 │  │  ┌──────────────────────────────────────────────────┐   │   │
 │  │  │           Dingoo OS Syscall Interception         │   │   │
-│  │  │ 73 implemented + 102 stubs = 175 intercepted     │   │   │
+│  │  │ 76 implemented + 99 stubs = 175 intercepted     │   │   │
 │  │  └──────────────────────────────────────────────────┘   │   │
 │  │                                                          │   │
 │  │  ┌──────────────────────────────────────────────────┐   │   │
@@ -92,6 +92,8 @@ make
 Options:
   --frames <n>        Stop after n CPU frames (0 = unlimited)
   --save-screenshots  Save BMP screenshots periodically
+  --nosound           Disable audio output
+  --audio-latency <ms>  Max queued audio ahead of playback (default 80, range 20–500)
 ```
 
 ### Examples
@@ -99,6 +101,7 @@ Options:
 ```bash
 ./emulator.exe ../7days.app
 ./emulator.exe --frames 5000 --save-screenshots ../tetris.app
+./emulator.exe --audio-latency 60 ../tetris.app
 SDL_VIDEODRIVER=offscreen ./emulator.exe --frames 1000 ../snake.app
 ```
 
@@ -175,13 +178,16 @@ Guest memory layout:
 
 | Feature | Status |
 |---------|--------|
-| SDL2 audio device (16-bit signed LE, 44100 Hz, stereo) | ✅ Complete |
-| Waveout API (`waveout_open`/`write`/`close`/`can_write`) | ✅ Complete |
-| Mutex-protected PCM sample queue | ✅ Complete |
+| SDL2 audio device (16-bit signed LE; rate/channels from `waveout_open`) | ✅ Complete |
+| Waveout API (`waveout_open`/`write`/`close`/`can_write`/`reset`/`get_volume`) | ✅ Complete |
+| Lock-free SPSC ring buffer (CPU producer, SDL callback consumer) | ✅ Complete |
+| Playback clock + ahead-of-playback cap (default 80 ms, `--audio-latency`) | ✅ Complete |
+| Scheduler-cooperative blocking when ring/latency full (no host-thread sleep) | ✅ Complete |
+| Sem-aware pacing (playback posts buffer sems; suppress spurious `OSSemPost`) | ✅ Complete |
 | Underrun fills with silence | ✅ Complete |
-| Volume control (`waveout_set_volume`, `HP_Mute_sw`) | ✅ Complete |
-| Credit-based flow control (`waveout_write` blocks when buffer full) | ✅ Complete |
-| Output correctness | ✅ Verified — MXU mixing and credit-based pacing ensure real-time audio |
+| Volume control (`waveout_set_volume`, `HP_Mute_sw`, `_waveout_*` wrappers) | ✅ Complete |
+| `pcm_ioctl` (rate, channels, pause, `PCM_GET_SPACE`, volume, mute) | ✅ Complete |
+| All-or-nothing writes (full chunk or reject/block; no partial writes) | ✅ Complete |
 
 ### Input
 
@@ -209,8 +215,8 @@ Guest memory layout:
 
 The emulator intercepts all GOT trampoline calls from the guest binary. The dispatch table has 175 entries covering all 173 documented Dingoo OS functions plus 2 extras:
 
-- **73 implemented** — real host implementations (malloc, printf, LCD, audio, input, µC/OS-II scheduler, filesystem I/O, PCM ioctl, etc.)
-- **102 stubs** — print `[STUB]` and return (TV, accelerometer, audio/video framework, wide-FS, extra libc, and misc categories)
+- **76 implemented** — real host implementations (malloc, printf, LCD, audio, input, µC/OS-II scheduler, filesystem I/O, PCM ioctl, etc.)
+- **99 stubs** — print `[STUB]` and return (TV, accelerometer, audio/video framework, wide-FS, extra libc, and misc categories)
 - Standard 72-entry GOT apps are fully dispatched. Apps with extended GOT (Life, StopWatch, dicer with 172 imports; Yi-Chi/Overlord-Fighter with 96) are now covered for all known Dingoo OS functions — 3 extra entries beyond the 172-import max handle edge cases
 
 ---
@@ -221,9 +227,9 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 
 | App | Status |
 |-----|--------|
-| 7days (HellStriker) | Playable |
+| 7days (HellStriker) | Playable, no sound |
 | AliBaba | Exits, dl_res_open() |
-| Block Breaker | Playable |
+| Block Breaker | Playable, with sound |
 | Candy | Playable, with sound |
 | Decollation Warrior | Playable, with sound |
 | dicer | Stuck at Phase 1, lots of stubs: av_*** |
@@ -250,7 +256,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Yi-Chi King Fighter | 💥 Non-standard GOT layout (96 imports) |
 | Zhao Yun Chuan | Playable |
 
-**7days** is the primary verified title — boots to a rendered title screen with real sprite content and active audio. **tetris** boots and renders correctly but exits prematurely due to unthrottled audio (see Known Limitations).
+**7days** and **tetris** are verified titles — both boot with rendered graphics and stable real-time audio (scheduler block + sem pacing).
 
 ---
 
@@ -259,7 +265,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 - ~64 million guest MIPS instructions / second on modern x86
 - Typically 2M instructions per CPU frame, ~50–60 CPU frames for 1 rendered frame
 - Runs approximately 5× slower than real JZ4730 hardware (360 MHz)
-- Audio handled inline and asynchronously via SDL callback
+- Audio handled via lock-free ring + SDL callback (~20–32 ms fragments)
 
 ---
 
@@ -267,8 +273,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 
 | Issue | Status |
 |-------|--------|
-| **`waveout_write` not throttled to real time** | 🔍 Audio task runs ~210× faster than real time; tetris completes its full audio track in seconds and exits. Fix: block in `waveout_write` when SDL audio queue depth exceeds ~200 ms of buffered samples |
-| Most games stop before rendering loop | 🔍 Root cause varies: missing resources, GOT gaps, or early exit from unthrottled audio |
+| Most games stop before rendering loop | 🔍 Root cause varies: missing resources, GOT gaps, or title-specific logic |
 | Save file write path not implemented | ⚠️ Medium priority |
 | MXU audio mixing correctness unverified | ⚠️ Low priority |
 | `get_current_language` hardcoded to English | ⚠️ Low priority — may affect Chinese UI locale |
@@ -276,9 +281,9 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 
 ---
 
-## Stubs (102 entries)
+## Stubs (99 entries)
 
-All 102 stubs print `[STUB]` and return. Categories:
+All 99 stubs print `[STUB]` and return. Categories:
 
 | Category | Functions |
 |----------|-----------|
@@ -288,7 +293,7 @@ All 102 stubs print `[STUB]` and return. Categories:
 | Wide filesystem | `fsys_fcloseW`, `fsys_fclose_flash`, `fsys_fopen_flash`, `fsys_mkdir`, `fsys_removeW`, `fsys_renameW` |
 | Extra libc | `memcpy`, `memset`, `sscanf`, `vsprintf`, `_tcscmp`, `_tcscpy`, `serial_puts` |
 | Low-level OS | `SysDisableBkLight`, `sys_get_ccpmp_config`, `dl_get_proc`, `detect_clock`, `delay_ms`, `udelay` |
-| Pre-existing stubs | `vxGoHome`, `free_irq`, `fsys_RefreshCache`, `fsys_flush_cache`, `__icache_invalidate_all`, `__dcache_writeback_all`, `TaskMediaFunStop`, `serial_getc`, `USB_Connect`, `USB_No_Connect`, `udc_attached`, `open_gui_key_msg`, `_waveout_open`, `_waveout_set_volume` |
+| Pre-existing stubs | `vxGoHome`, `free_irq`, `fsys_RefreshCache`, `fsys_flush_cache`, `__icache_invalidate_all`, `__dcache_writeback_all`, `TaskMediaFunStop`, `serial_getc`, `USB_Connect`, `USB_No_Connect`, `udc_attached`, `open_gui_key_msg` |
 
 These stubs unblock all tested apps (including Life, StopWatch, dicer with 172-import GOT) from hitting "Unknown GOT" errors.
 

@@ -16,6 +16,7 @@ int main(int argc, char* argv[]) {
     u32 arg_max_frames = 0;  // 0 = unlimited
     bool save_screenshots = false;
     bool nosound = false;
+    int audio_latency_ms = Syscalls::AUDIO_TARGET_LATENCY_MS_DEFAULT;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
@@ -24,17 +25,21 @@ int main(int argc, char* argv[]) {
             save_screenshots = true;
         } else if (strcmp(argv[i], "--nosound") == 0) {
             nosound = true;
+        } else if (strncmp(argv[i], "--audio-latency=", 16) == 0) {
+            audio_latency_ms = atoi(argv[i] + 16);
+        } else if (strcmp(argv[i], "--audio-latency") == 0 && i + 1 < argc) {
+            audio_latency_ms = atoi(argv[++i]);
         } else if (argv[i][0] != '-') {
             app_path = argv[i];
         } else {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
-            fprintf(stderr, "Usage: %s [--frames <n>] [--save-screenshots] [--nosound] <app>\n", argv[0]);
+            fprintf(stderr, "Usage: %s [--frames <n>] [--save-screenshots] [--nosound] [--audio-latency <ms>] <app>\n", argv[0]);
             return 1;
         }
     }
 
     if (!app_path) {
-        fprintf(stderr, "Usage: %s [--frames <n>] [--save-screenshots] [--nosound] <app>\n", argv[0]);
+        fprintf(stderr, "Usage: %s [--frames <n>] [--save-screenshots] [--nosound] [--audio-latency <ms>] <app>\n", argv[0]);
         return 1;
     }
     printf("=== Dingoo A320 Emulator (Phase 2) ===\n\n");
@@ -187,6 +192,11 @@ int main(int argc, char* argv[]) {
     syscalls.set_archive(archive_ptr);
     syscalls.set_app_path(app_path);
     syscalls.set_nosound(nosound);
+    syscalls.set_audio_target_latency_ms(audio_latency_ms);
+    if (audio_latency_ms != Syscalls::AUDIO_TARGET_LATENCY_MS_DEFAULT) {
+        printf("[AUDIO] target latency: %d ms (default %d)\n",
+               audio_latency_ms, Syscalls::AUDIO_TARGET_LATENCY_MS_DEFAULT);
+    }
 
     // Resolve GOT slot handlers by name (works for all app formats)
     syscalls.init_slot_handlers(app.imports);

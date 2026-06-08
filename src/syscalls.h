@@ -27,6 +27,11 @@ public:
     void set_app_path(const char* path) { m_app_path = path ? path : ""; }
     void set_cop0(COP0* cop0) { m_cop0 = cop0; }
     void set_nosound(bool v) { m_nosound = v; }
+    void set_audio_target_latency_ms(int ms);
+
+    static constexpr int AUDIO_TARGET_LATENCY_MS_DEFAULT = 80;
+    static constexpr int AUDIO_TARGET_LATENCY_MS_MIN = 20;
+    static constexpr int AUDIO_TARGET_LATENCY_MS_MAX = 500;
 
 private:
     Memory& m_mem;
@@ -291,11 +296,11 @@ private:
     // SPSC ring: producer (CPU) / consumer (SDL callback), lock-free indices.
     // Target latency: max PCM the guest may queue ahead of playback.
     // Ring is sized slightly larger so the physical buffer is not the bottleneck.
-    static constexpr int AUDIO_TARGET_LATENCY_MS = 80;
     static constexpr int AUDIO_RING_MS = 120;
     static constexpr int AUDIO_MIN_RING_CAP = 1024;
     static constexpr int AUDIO_MAX_RING_CAP = 32768;
     static constexpr int AUDIO_MAX_CHUNK_SAMPLES = 4096;
+    int m_audio_target_latency_ms;
     u32 m_ring_cap;
     u32 m_ring_mask;
     std::unique_ptr<s16[]> m_ring_buf;
