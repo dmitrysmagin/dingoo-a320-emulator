@@ -163,8 +163,11 @@ const Syscalls::GOTHandler Syscalls::s_handlers[] = {
     {"memcpy",                  &Syscalls::impl_memcpy,                  true},
     {"memset",                  &Syscalls::impl_memset,                  true},
     {"open_gui_key_msg",        &Syscalls::impl_open_gui_key_msg,        true},
+    {"pcm_can_read",            &Syscalls::impl_pcm_can_read,            false},
     {"pcm_can_write",           &Syscalls::impl_pcm_can_write,           false},
     {"pcm_ioctl",               &Syscalls::impl_pcm_ioctl,               false},
+    {"pcm_read",                &Syscalls::impl_pcm_read,                false},
+    {"pcm_write",               &Syscalls::impl_pcm_write,               false},
     {"printf",                  &Syscalls::impl_printf,                  false},
     {"realloc",                 &Syscalls::impl_realloc,                 false},
     {"serial_getc",             &Syscalls::impl_serial_getc,             true},
@@ -193,7 +196,9 @@ const Syscalls::GOTHandler Syscalls::s_handlers[] = {
     {"waveout_can_write",       &Syscalls::impl_waveout_can_write,       false},
     {"waveout_close",           &Syscalls::impl_waveout_close,           false},
     {"waveout_close_at_once",   &Syscalls::impl_waveout_close_at_once,   false},
+    {"waveout_get_volume",      &Syscalls::impl_waveout_get_volume,      false},
     {"waveout_open",            &Syscalls::impl_waveout_open,            false},
+    {"waveout_reset",           &Syscalls::impl_waveout_reset,           false},
     {"waveout_set_volume",      &Syscalls::impl_waveout_set_volume,      false},
     {"waveout_write",           &Syscalls::impl_waveout_write,           false},
 };
@@ -228,11 +233,28 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     , m_audio_write_count(0)
     , m_audio_sample_rate(44100)
     , m_audio_channels(2)
+    , m_audio_bits(16)
+    , m_volume_level(100)
+    , m_audio_paused(false)
+    , m_audio_muted(false)
     , m_audio_device(0)
-    , m_audio_mutex(nullptr)
-    , m_ring_write(0)
-    , m_ring_read(0)
+    , m_ring_cap(0)
+    , m_ring_mask(0)
+    , m_ring_head(0)
+    , m_ring_tail(0)
+    , m_samples_played(0)
+    , m_samples_written(0)
+    , m_audio_space_flag(false)
     , m_volume(1.0f)
+    , m_audio_underruns(0)
+    , m_audio_overruns(0)
+    , m_audio_high_water(0)
+    , m_audio_block_count(0)
+    , m_audio_unblock_count(0)
+    , m_audio_has_data(false)
+    , m_audio_start_tick(0)
+    , m_audio_block_task(-1)
+    , m_audio_block_samples(0)
     , m_got_call_count(0)
     , m_current_task(-1)
     , m_task_count(0)
@@ -250,6 +272,7 @@ Syscalls::Syscalls(Memory& mem, Display& display)
         m_tasks[i].wake_tick = 0;
         m_tasks[i].block_sem = 0;
         m_tasks[i].sem_err_ptr = 0;
+        m_tasks[i].block_audio = false;
     }
     for (int i = 0; i < 64; i++) {
         m_files[i].in_use = false;
@@ -273,38 +296,389 @@ Syscalls::Syscalls(Memory& mem, Display& display)
 }
 
 void Syscalls::shutdown_audio() {
-    if (m_audio_device > 0) {
-        SDL_CloseAudioDevice(m_audio_device);
-        m_audio_device = 0;
+    if (m_audio_underruns || m_audio_overruns || m_audio_high_water
+        || m_audio_block_count || m_audio_unblock_count) {
+        printf("[AUDIO] stats: underruns=%u overruns=%u high_water=%u/%u blocks=%u unblocks=%u\n",
+               m_audio_underruns, m_audio_overruns, m_audio_high_water, m_ring_cap,
+               m_audio_block_count, m_audio_unblock_count);
     }
-    if (m_audio_mutex) {
-        SDL_LockMutex(m_audio_mutex);
-        m_ring_write = m_ring_read = 0;
-        SDL_UnlockMutex(m_audio_mutex);
-        SDL_DestroyMutex(m_audio_mutex);
-        m_audio_mutex = nullptr;
-    }
-    m_audio_open = false;
-    m_audio_device_open = false;
+    audio_close_immediate();
+    m_ring_buf.reset();
+    m_audio_scratch.reset();
+    m_ring_cap = m_ring_mask = 0;
     if (SDL_WasInit(SDL_INIT_AUDIO))
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
 
-void SDLCALL Syscalls::audio_callback(void* userdata, Uint8* stream, int len) {
-    Syscalls* sys = static_cast<Syscalls*>(userdata);
-    if (!sys || !sys->m_audio_mutex) return;
-    s16* buf = reinterpret_cast<s16*>(stream);
-    int samples = len / 2;
-    SDL_LockMutex(sys->m_audio_mutex);
-    for (int i = 0; i < samples; i++) {
-        if (sys->m_ring_write != sys->m_ring_read) {
-            buf[i] = sys->m_ring_buf[sys->m_ring_read];
-            sys->m_ring_read = (sys->m_ring_read + 1) % AUDIO_RING_CAP;
-        } else {
-            buf[i] = 0;  // underrun — ring empty
+// --- Audio helpers ---
+
+int Syscalls::audio_calc_ring_cap(u32 rate, u32 channels) const {
+    uint64_t need = (uint64_t)rate * channels * AUDIO_LATENCY_MS / 1000;
+    if (need < (uint64_t)AUDIO_MIN_RING_CAP)
+        need = AUDIO_MIN_RING_CAP;
+    u32 cap = 1;
+    while (cap < need && cap < (u32)AUDIO_MAX_RING_CAP)
+        cap <<= 1;
+    if (cap > (u32)AUDIO_MAX_RING_CAP)
+        cap = AUDIO_MAX_RING_CAP;
+    return (int)cap;
+}
+
+void Syscalls::audio_alloc_ring(u32 rate, u32 channels) {
+    int cap = audio_calc_ring_cap(rate, channels);
+    m_ring_cap = (u32)cap;
+    m_ring_mask = m_ring_cap - 1;
+    m_ring_buf = std::make_unique<s16[]>(m_ring_cap);
+    m_audio_scratch = std::make_unique<s16[]>(AUDIO_MAX_CHUNK_SAMPLES);
+    m_audio_high_water = 0;
+    m_audio_has_data = false;
+    audio_reset_ring();
+    printf("[AUDIO] ring cap=%u samples (~%u ms @ %uHz %uch)\n",
+           m_ring_cap, AUDIO_LATENCY_MS, rate, channels);
+}
+
+void Syscalls::audio_reset_ring() {
+    m_ring_head.store(0, std::memory_order_relaxed);
+    m_ring_tail.store(0, std::memory_order_relaxed);
+    uint64_t played = m_samples_played.load(std::memory_order_relaxed);
+    m_samples_written.store(played, std::memory_order_relaxed);
+    m_audio_has_data = false;
+}
+
+int Syscalls::audio_ring_used() const {
+    if (!m_ring_cap) return 0;
+    uint32_t head = m_ring_head.load(std::memory_order_acquire);
+    uint32_t tail = m_ring_tail.load(std::memory_order_acquire);
+    return (int)(tail - head);
+}
+
+int Syscalls::audio_ring_free() const {
+    if (!m_ring_cap) return 0;
+    return (int)m_ring_cap - audio_ring_used() - 1;
+}
+
+u32 Syscalls::audio_max_ahead_samples() const {
+    u64 max_ahead = (u64)m_audio_sample_rate * m_audio_channels * AUDIO_LATENCY_MS / 1000;
+    if (max_ahead < 1)
+        max_ahead = 1;
+    return (u32)max_ahead;
+}
+
+int Syscalls::audio_can_write_bytes() const {
+    if (!m_ring_cap || !m_audio_open)
+        return 0;
+    int ring_free = audio_ring_free();
+    if (ring_free <= 0)
+        return 0;
+
+    uint64_t played = m_samples_played.load(std::memory_order_acquire);
+    uint64_t written = m_samples_written.load(std::memory_order_acquire);
+    uint64_t ahead = written - played;
+    u32 max_ahead = audio_max_ahead_samples();
+    if (ahead >= max_ahead)
+        return 0;
+
+    u64 latency_free = max_ahead - ahead;
+    u64 free_samples = (u64)ring_free;
+    if (latency_free < free_samples)
+        free_samples = latency_free;
+    if (free_samples > 0x7FFF)
+        return 65536;
+    return (int)(free_samples * sizeof(s16));
+}
+
+float Syscalls::audio_gain() const {
+    if (m_audio_muted || m_nosound)
+        return 0.0f;
+    return m_volume;
+}
+
+int Syscalls::audio_push_pcm_once(const s16* src, int sample_count) {
+    if (!src || sample_count <= 0 || !m_ring_buf || !m_ring_cap)
+        return 0;
+
+    uint32_t head = m_ring_head.load(std::memory_order_acquire);
+    uint32_t tail = m_ring_tail.load(std::memory_order_relaxed);
+    uint32_t used = tail - head;
+    uint32_t free = m_ring_cap - used - 1;
+    if ((uint32_t)sample_count > free)
+        return 0;
+
+    uint64_t played = m_samples_played.load(std::memory_order_acquire);
+    uint64_t written = m_samples_written.load(std::memory_order_relaxed);
+    uint64_t ahead = written - played;
+    u32 max_ahead = audio_max_ahead_samples();
+    if (ahead + (uint64_t)sample_count > max_ahead)
+        return 0;
+
+    uint32_t idx = tail & m_ring_mask;
+    uint32_t first = std::min((uint32_t)sample_count, m_ring_cap - idx);
+    memcpy(&m_ring_buf[idx], src, first * sizeof(s16));
+    if ((uint32_t)sample_count > first)
+        memcpy(&m_ring_buf[0], src + first, (uint32_t)(sample_count - first) * sizeof(s16));
+
+    m_ring_tail.store(tail + (uint32_t)sample_count, std::memory_order_release);
+    m_samples_written.store(written + (uint64_t)sample_count, std::memory_order_relaxed);
+
+    uint32_t new_used = used + (uint32_t)sample_count;
+    if (new_used > m_audio_high_water)
+        m_audio_high_water = new_used;
+
+    m_audio_space_flag.store(true, std::memory_order_relaxed);
+    m_audio_has_data = true;
+    return sample_count * (int)sizeof(s16);
+}
+
+bool Syscalls::audio_open_device(int sample_rate, int channels) {
+    if (m_audio_device > 0) {
+        SDL_PauseAudioDevice(m_audio_device, 1);
+        SDL_CloseAudioDevice(m_audio_device);
+        m_audio_device = 0;
+    }
+
+    SDL_AudioSpec want, obtained;
+    SDL_zero(want);
+    want.freq = sample_rate;
+    want.format = AUDIO_S16SYS;
+    want.channels = (Uint8)channels;
+    want.samples = AUDIO_SDL_SAMPLES;
+    want.callback = audio_callback;
+    want.userdata = this;
+
+    m_audio_device = SDL_OpenAudioDevice(nullptr, 0, &want, &obtained, 0);
+    if (m_audio_device == 0)
+        return false;
+
+    m_audio_sample_rate = (u32)obtained.freq;
+    m_audio_channels = (u32)obtained.channels;
+    if (obtained.freq != sample_rate || obtained.channels != (Uint8)channels) {
+        printf("[AUDIO] device adjusted: wanted %dHz %dch, got %dHz %dch\n",
+               sample_rate, channels, obtained.freq, obtained.channels);
+    }
+    SDL_PauseAudioDevice(m_audio_device, m_audio_paused ? 1 : 0);
+    return true;
+}
+
+void Syscalls::audio_write_os_state(bool playing) {
+    m_mem.write_u32(0x80242AE4, playing ? 1u : 0u);
+    m_mem.write_u32(0x80242558, playing ? 1u : 0u);
+    m_mem.write_u32(0x80242560, playing ? 0u : 1u);
+    m_mem.write_u32(0x80242580, playing ? 1u : 0u);
+}
+
+void Syscalls::audio_wake_waiters() {
+    audio_try_complete_blocked_writes();
+    if (audio_can_write_bytes() == 0)
+        return;
+    for (int i = 0; i < m_task_count; i++) {
+        Task& t = m_tasks[i];
+        if (!t.active || !t.blocked || t.block_sem || t.block_audio)
+            continue;
+        if (t.task_prio >= 16) {
+            t.blocked = false;
+            t.wake_tick = 0;
         }
     }
-    SDL_UnlockMutex(sys->m_audio_mutex);
+}
+
+bool Syscalls::audio_try_complete_blocked_writes() {
+    if (m_audio_block_task < 0 || m_audio_block_task >= m_task_count)
+        return false;
+    if (!m_audio_block_pcm || m_audio_block_samples <= 0)
+        return false;
+
+    int bytes = audio_push_pcm_once(m_audio_block_pcm.get(), m_audio_block_samples);
+    if (bytes == 0)
+        return false;
+
+    Task& t = m_tasks[m_audio_block_task];
+    t.regs[2] = (u32)bytes;
+    t.blocked = false;
+    t.block_audio = false;
+    m_audio_block_task = -1;
+    m_audio_block_samples = 0;
+    m_audio_block_pcm.reset();
+    m_audio_unblock_count++;
+    return true;
+}
+
+bool Syscalls::audio_block_task_for_write(int sample_count) {
+    if (m_current_task < 0 || m_current_task >= m_task_count || sample_count <= 0)
+        return false;
+
+    u32 return_pc = g_cpu_regs[31];
+    if (return_pc < 0x80000000)
+        return false;
+
+    if (!m_audio_block_pcm)
+        m_audio_block_pcm = std::make_unique<s16[]>(AUDIO_MAX_CHUNK_SAMPLES);
+    memcpy(m_audio_block_pcm.get(), m_audio_scratch.get(),
+           (size_t)sample_count * sizeof(s16));
+
+    m_audio_block_task = m_current_task;
+    m_audio_block_samples = sample_count;
+
+    save_current_task();
+    Task& t = m_tasks[m_current_task];
+    t.pc = return_pc;
+    t.blocked = true;
+    t.block_audio = true;
+    m_audio_block_count++;
+
+    int next = find_ready_task();
+    if (next >= 0) {
+        switch_to_task(next);
+    } else {
+        m_in_idle = true;
+        m_current_task = -1;
+        g_cpu_pc = m_idle_pc;
+        m_task_switched = true;
+    }
+    return true;
+}
+
+void Syscalls::audio_drain_and_close() {
+    if (m_audio_device > 0) {
+        SDL_PauseAudioDevice(m_audio_device, 0);
+        u32 deadline = SDL_GetTicks() + 500;
+        while (audio_ring_used() > 0 && SDL_GetTicks() < deadline)
+            SDL_Delay(5);
+        SDL_PauseAudioDevice(m_audio_device, 1);
+        SDL_CloseAudioDevice(m_audio_device);
+        m_audio_device = 0;
+    }
+    m_audio_open = false;
+    m_audio_device_open = false;
+    audio_reset_ring();
+    audio_write_os_state(false);
+}
+
+void Syscalls::audio_close_immediate() {
+    if (m_audio_device > 0) {
+        SDL_PauseAudioDevice(m_audio_device, 1);
+        SDL_CloseAudioDevice(m_audio_device);
+        m_audio_device = 0;
+    }
+    m_audio_open = false;
+    m_audio_device_open = false;
+    if (m_audio_block_task >= 0 && m_audio_block_task < m_task_count) {
+        m_tasks[m_audio_block_task].blocked = false;
+        m_tasks[m_audio_block_task].block_audio = false;
+    }
+    m_audio_block_task = -1;
+    m_audio_block_samples = 0;
+    m_audio_block_pcm.reset();
+    audio_reset_ring();
+    audio_write_os_state(false);
+}
+
+int Syscalls::audio_guest_sample_count(u32 byte_size) const {
+    if (m_audio_bits == 8)
+        return (int)byte_size;
+    return (int)(byte_size / 2);
+}
+
+void Syscalls::audio_read_guest_pcm(u32 buf_addr, u32 byte_size, s16* out, int max_samples) const {
+    if (m_audio_bits == 8) {
+        int count = (int)byte_size;
+        if (count > max_samples)
+            count = max_samples;
+        for (int i = 0; i < count; i++) {
+            u8 v = m_mem.read_u8(buf_addr + (u32)i);
+            out[i] = (s16)(((int)v - 128) * 256);
+        }
+    } else {
+        int bytes = (int)byte_size;
+        if (bytes > max_samples * 2)
+            bytes = max_samples * 2;
+        m_mem.read_block(buf_addr, (u8*)out, (u32)bytes);
+    }
+}
+
+int Syscalls::audio_do_write(u32 buf_addr, u32 byte_size) {
+    if (byte_size == 0 || !buf_addr)
+        return 0;
+
+    int sample_count = audio_guest_sample_count(byte_size);
+    if (sample_count <= 0)
+        return 0;
+    if (sample_count > AUDIO_MAX_CHUNK_SAMPLES) {
+        printf("[AUDIO] write too large: %u bytes (%d samples)\n", byte_size, sample_count);
+        return 0;
+    }
+    if (!m_audio_scratch)
+        return 0;
+
+    audio_read_guest_pcm(buf_addr, byte_size, m_audio_scratch.get(), sample_count);
+    int bytes = audio_push_pcm_once(m_audio_scratch.get(), sample_count);
+    if (bytes > 0)
+        return bytes;
+
+    if (!m_audio_open)
+        return 0;
+
+    // Already waiting for ring space on this task.
+    if (m_audio_block_task == m_current_task)
+        return -1;
+
+    // Ring full — block this task cooperatively and run other tasks until vsync/callback frees space.
+    if (m_current_task >= 0 && m_current_task < m_task_count && m_task_count > 0) {
+        if (audio_block_task_for_write(sample_count))
+            return -1;
+    }
+
+    m_audio_overruns++;
+    return 0;
+}
+
+void SDLCALL Syscalls::audio_callback(void* userdata, Uint8* stream, int len) {
+    Syscalls* sys = static_cast<Syscalls*>(userdata);
+    if (!sys || !sys->m_ring_buf || !sys->m_ring_cap) {
+        memset(stream, 0, (size_t)len);
+        return;
+    }
+
+    s16* out = reinterpret_cast<s16*>(stream);
+    int want_samples = len / 2;
+    int produced = 0;
+
+    if (!sys->m_audio_paused) {
+        uint32_t head = sys->m_ring_head.load(std::memory_order_relaxed);
+        uint32_t tail = sys->m_ring_tail.load(std::memory_order_acquire);
+        uint32_t avail = tail - head;
+        int to_read = want_samples;
+        if ((uint32_t)to_read > avail)
+            to_read = (int)avail;
+
+        float gain = sys->audio_gain();
+        if (to_read > 0) {
+            uint32_t idx = head & sys->m_ring_mask;
+            uint32_t first = std::min((uint32_t)to_read, sys->m_ring_cap - idx);
+            if (gain == 1.0f) {
+                memcpy(out, &sys->m_ring_buf[idx], first * sizeof(s16));
+                if ((uint32_t)to_read > first)
+                    memcpy(out + first, &sys->m_ring_buf[0],
+                           (uint32_t)(to_read - first) * sizeof(s16));
+            } else {
+                for (uint32_t i = 0; i < first; i++)
+                    out[i] = (s16)(sys->m_ring_buf[idx + i] * gain);
+                if ((uint32_t)to_read > first) {
+                    for (int i = 0; i < to_read - (int)first; i++)
+                        out[first + i] = (s16)(sys->m_ring_buf[i] * gain);
+                }
+            }
+            sys->m_ring_head.store(head + (uint32_t)to_read, std::memory_order_release);
+            sys->m_samples_played.fetch_add((uint64_t)to_read, std::memory_order_relaxed);
+            produced = to_read;
+            sys->m_audio_space_flag.store(true, std::memory_order_relaxed);
+        }
+    }
+
+    if (produced < want_samples) {
+        memset(out + produced, 0, (size_t)(want_samples - produced) * sizeof(s16));
+        if (sys->m_audio_has_data && !sys->m_audio_paused)
+            sys->m_audio_underruns += (u32)(want_samples - produced);
+    }
 }
 
 
@@ -1350,130 +1724,112 @@ void Syscalls::impl_USB_No_Connect() {
 
 // === GOT 49-57: audio ===
 
+void Syscalls::audio_set_volume_level(u32 vol) {
+    if (vol > 100)
+        vol = 100;
+    m_volume_level = (u8)vol;
+    if (vol > 30)
+        m_volume = (float)vol / 100.0f;
+    else
+        m_volume = (float)vol / 30.0f;
+}
+
 void Syscalls::impl_waveout_open() {
     if (m_nosound) { g_cpu_regs[2] = 1; return; }
     u32 a0 = arg(0), a1 = arg(1), a2 = arg(2);
     printf("[AUDIO] waveout_open raw args: a0=0x%08X a1=0x%08X a2=0x%08X\n", a0, a1, a2);
 
-    // waveout_open takes a single waveout_args* pointer:
-    //   struct { u32 sample_rate; u16 format; u8 channel; u8 volume; } // 8 bytes
     int sample_rate, channels, bits;
+    u16 format = 16;
+    u8  volume = 100;
 
-    // Try reading as struct pointer first (SDK convention)
     if (a0 >= 0x80000000 || (a0 >= 0x1000 && a0 < m_mem.size())) {
-        // a0 is likely a pointer to waveout_args struct
         sample_rate = (int)m_mem.read_u32(a0);
-        u16 format  = m_mem.read_u16(a0 + 4);
-        u8  channel = m_mem.read_u8(a0 + 6);
-        u8  volume  = m_mem.read_u8(a0 + 7);
-        channels = channel;
-        bits = (format == 0) ? 16 : 16;  // format field meaning unclear; always 16-bit PCM
+        format      = m_mem.read_u16(a0 + 4);
+        channels    = (int)m_mem.read_u8(a0 + 6);
+        volume      = m_mem.read_u8(a0 + 7);
         printf("[AUDIO] struct@0x%08X: rate=%d format=%u ch=%u vol=%u\n",
-               a0, sample_rate, format, channel, volume);
+               a0, sample_rate, format, channels, volume);
     } else {
-        // Fallback: individual args (legacy)
         sample_rate = (int)a0;
-        channels = (int)a1;
-        bits = (int)a2;
+        channels    = (int)a1;
+        bits        = (int)a2;
+        format      = (bits == 8) ? 8 : 16;
     }
 
     if (sample_rate <= 0) sample_rate = 44100;
-    if (channels <= 0 || channels > 2) channels = 2;  // force mono/stereo
-    if (bits <= 0) bits = 16;
+    if (channels <= 0 || channels > 2) channels = 2;
+    bits = (format == 8) ? 8 : 16;
+    m_audio_bits = (u32)bits;
 
-    // Store for use by waveout_write throttle
-    m_audio_sample_rate = (u32)sample_rate;
-    m_audio_channels    = (u32)channels;
+    audio_set_volume_level(volume);
 
-    // Initialise the SDL audio subsystem on first real open (not done at startup
-    // so that --nosound mode never touches the audio driver at all).
     if (!SDL_WasInit(SDL_INIT_AUDIO))
         SDL_InitSubSystem(SDL_INIT_AUDIO);
 
-    // Create mutex if not yet created
-    if (!m_audio_mutex) {
-        m_audio_mutex = SDL_CreateMutex();
-        printf("[AUDIO] Created audio mutex: %p\n", (void*)m_audio_mutex);
-    }
+    m_audio_sample_rate = (u32)sample_rate;
+    m_audio_channels    = (u32)channels;
+    audio_alloc_ring(m_audio_sample_rate, m_audio_channels);
 
-    SDL_LockMutex(m_audio_mutex);
-    m_ring_write = m_ring_read = 0;
-    SDL_UnlockMutex(m_audio_mutex);
+    m_audio_paused = false;
+    m_audio_muted  = false;
+    m_audio_has_data = false;
+    m_samples_played.store(0, std::memory_order_relaxed);
+    m_samples_written.store(0, std::memory_order_relaxed);
+    m_audio_start_tick = SDL_GetTicks();
 
-    if (m_audio_device > 0) {
-        SDL_CloseAudioDevice(m_audio_device);
-        m_audio_device = 0;
-    }
-
-    SDL_AudioSpec want;
-    SDL_zero(want);
-    want.freq = sample_rate;
-    want.format = AUDIO_S16SYS;
-    want.channels = (Uint8)channels;
-    want.samples = 4096;
-    want.callback = audio_callback;
-    want.userdata = this;
-
-    m_audio_device = SDL_OpenAudioDevice(nullptr, 0, &want, 0, 0);
-    if (m_audio_device > 0) {
-        SDL_PauseAudioDevice(m_audio_device, 0);
-        m_audio_open = true;
-        m_audio_device_open = true;
-        printf("[AUDIO] waveout_open: %dHz %dch %dbit -> device=%u (got %dHz %dch)\n",
-               sample_rate, channels, bits, m_audio_device, want.freq, want.channels);
-        // Write OS audio state variables so games that read firmware RAM directly
-        // see the correct state (enable=1, busy=1, stop=0, state=1).
-        m_mem.write_u32(0x80242AE4, 1);
-        m_mem.write_u32(0x80242558, 1);
-        m_mem.write_u32(0x80242560, 0);
-        m_mem.write_u32(0x80242580, 1);
-        g_cpu_regs[2] = 1;  // return non-zero instance handle
-    } else {
+    if (!audio_open_device(sample_rate, channels)) {
         printf("[AUDIO] waveout_open FAILED: %s\n", SDL_GetError());
         m_audio_open = false;
         m_audio_device_open = false;
         g_cpu_regs[2] = 0;
+        return;
     }
+
+    m_audio_open = true;
+    m_audio_device_open = true;
+    audio_write_os_state(true);
+    printf("[AUDIO] waveout_open: %dHz %dch %dbit -> device=%u\n",
+           sample_rate, channels, bits, m_audio_device);
+    g_cpu_regs[2] = 1;
 }
 
 void Syscalls::impl_waveout_close() {
     if (m_nosound) { g_cpu_regs[2] = 0; return; }
-    if (m_audio_device > 0) {
-        SDL_CloseAudioDevice(m_audio_device);
-        m_audio_device = 0;
-    }
-    m_audio_open = false;
-    m_audio_device_open = false;
-    SDL_LockMutex(m_audio_mutex);
-    m_ring_write = m_ring_read = 0;
-    SDL_UnlockMutex(m_audio_mutex);
-    // Clear OS audio state variables (enable=0, busy=0, stop=1, state=0).
-    m_mem.write_u32(0x80242AE4, 0);
-    m_mem.write_u32(0x80242558, 0);
-    m_mem.write_u32(0x80242560, 1);
-    m_mem.write_u32(0x80242580, 0);
+    audio_drain_and_close();
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_waveout_close_at_once() {
-    impl_waveout_close();
+    if (m_nosound) { g_cpu_regs[2] = 0; return; }
+    audio_close_immediate();
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_waveout_reset() {
+    if (m_nosound) { g_cpu_regs[2] = 0; return; }
+    audio_reset_ring();
+    g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_waveout_set_volume() {
     if (m_nosound) { g_cpu_regs[2] = 0; return; }
-    // SDK: int waveout_set_volume(waveout_inst* inst, int vol)  vol = 0-100
-    u32 vol = arg(1);
-    m_volume = (float)vol / 100.0f;
-    if (m_volume < 0.0f) m_volume = 0.0f;
-    if (m_volume > 1.0f) m_volume = 1.0f;
+    u32 vol = arg(0);
+    if (vol > 100)
+        vol = arg(1);
+    audio_set_volume_level(vol);
     printf("[AUDIO] waveout_set_volume(%u) -> %.2f\n", vol, m_volume);
     g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_waveout_get_volume() {
+    g_cpu_regs[2] = m_volume_level;
 }
 
 void Syscalls::impl_HP_Mute_sw() {
     if (m_nosound) { g_cpu_regs[2] = 0; return; }
     printf("[AUDIO] HP_Mute_sw -> muted\n");
-    m_volume = 0.0f;
+    m_audio_muted = true;
     g_cpu_regs[2] = 0;
 }
 
@@ -1483,61 +1839,52 @@ void Syscalls::impl_waveout_write() {
 
     if (m_nosound) { g_cpu_regs[2] = size; return; }
 
-    if (size == 0 || !buf_addr) {
-        g_cpu_regs[2] = 0;
-        return;
-    }
-
-    u32 samples = size / 2;
-
-    // Log first few calls
     if (m_audio_write_count < 10) {
-        printf("[AUDIO] waveout_write #%u: buf=0x%08X size=%u samples=%u\n",
-               m_audio_write_count, buf_addr, size, samples);
+        printf("[AUDIO] waveout_write #%u: buf=0x%08X size=%u\n",
+               m_audio_write_count, buf_addr, size);
     } else if (m_audio_write_count == 10) {
         printf("[AUDIO] waveout_write: subsequent calls suppressed\n");
     }
 
-    // Non-blocking push into the fixed ring buffer.
-    // If the ring is full the excess is silently dropped — the game should have
-    // checked waveout_can_write first, matching real hardware behaviour.
-    std::vector<s16> buf(samples);
-    m_mem.read_block(buf_addr, (u8*)buf.data(), size);
-
-    SDL_LockMutex(m_audio_mutex);
-    int free_samples = (m_ring_read - m_ring_write - 1 + AUDIO_RING_CAP) % AUDIO_RING_CAP;
-    int to_push = (samples < (u32)free_samples) ? (int)samples : free_samples;
-    for (int i = 0; i < to_push; i++) {
-        m_ring_buf[m_ring_write] = (s16)(buf[i] * m_volume);
-        m_ring_write = (m_ring_write + 1) % AUDIO_RING_CAP;
-    }
-    SDL_UnlockMutex(m_audio_mutex);
-
+    int bytes = audio_do_write(buf_addr, size);
     m_audio_write_count++;
-    g_cpu_regs[2] = (u32)to_push * 2;  // bytes actually written
+    if (bytes >= 0)
+        g_cpu_regs[2] = (u32)bytes;
 }
 
 void Syscalls::impl_waveout_can_write() {
     if (m_nosound) { g_cpu_regs[2] = 65536; return; }
-    SDL_LockMutex(m_audio_mutex);
-    int free_samples = (m_ring_read - m_ring_write - 1 + AUDIO_RING_CAP) % AUDIO_RING_CAP;
-    SDL_UnlockMutex(m_audio_mutex);
-    g_cpu_regs[2] = (u32)free_samples * 2;  // bytes, matches real hardware semantics
+    g_cpu_regs[2] = (u32)audio_can_write_bytes();
 }
 
 void Syscalls::impl_pcm_can_write() {
     impl_waveout_can_write();
 }
 
+void Syscalls::impl_pcm_can_read() {
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_pcm_read() {
+    g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_pcm_write() {
+    u32 buf_addr = arg(0);
+    u32 size = arg(1);
+    if (m_nosound) { g_cpu_regs[2] = size; return; }
+    int bytes = audio_do_write(buf_addr, size);
+    if (bytes >= 0)
+        g_cpu_regs[2] = (u32)bytes;
+}
+
 void Syscalls::impl_pcm_ioctl() {
-    // pcm_ioctl(cmd, arg) — Dingoo SDK signature
     u32 cmd = arg(0);
     u32 arg_val = arg(1);
-    (void)arg_val; // not all cmds use arg_val
 
     if (m_nosound) {
         if (cmd == 5 /* PCM_GET_SPACE */) {
-            if (arg_val) m_mem.write_u32(arg_val, (u32)(AUDIO_RING_CAP - 1) * 2);
+            if (arg_val) m_mem.write_u32(arg_val, 65536);
             g_cpu_regs[2] = 0;
         } else if (cmd == 4 /* PCM_GET_VOL */ || cmd == 7 /* PCM_GET_HP_VOL */) {
             g_cpu_regs[2] = m_pcm_volume;
@@ -1561,23 +1908,60 @@ void Syscalls::impl_pcm_ioctl() {
 #define PCM_RESET            10
 #define PCM_SET_MUTE         13
     case PCM_GET_SPACE: {
-        SDL_LockMutex(m_audio_mutex);
-        int free_samples = (m_ring_read - m_ring_write - 1 + AUDIO_RING_CAP) % AUDIO_RING_CAP;
-        SDL_UnlockMutex(m_audio_mutex);
-        u32 free_bytes = (u32)free_samples * 2;
+        u32 free_bytes = (u32)audio_can_write_bytes();
         if (arg_val) m_mem.write_u32(arg_val, free_bytes);
         g_cpu_regs[2] = 0;
         break;
     }
-    case PCM_SET_SAMPLE_RATE:
-    case PCM_SET_CHANNEL:
-    case PCM_SET_FORMAT:
-    case PCM_SET_HP_VOL:
+    case PCM_SET_SAMPLE_RATE: {
+        int rate = (int)arg_val;
+        if (rate > 0 && rate != (int)m_audio_sample_rate) {
+            m_audio_sample_rate = (u32)rate;
+            audio_alloc_ring(m_audio_sample_rate, m_audio_channels);
+            audio_open_device(rate, (int)m_audio_channels);
+        }
+        g_cpu_regs[2] = 0;
+        break;
+    }
+    case PCM_SET_CHANNEL: {
+        int ch = (int)arg_val;
+        if (ch >= 1 && ch <= 2 && ch != (int)m_audio_channels) {
+            m_audio_channels = (u32)ch;
+            audio_alloc_ring(m_audio_sample_rate, m_audio_channels);
+            audio_open_device((int)m_audio_sample_rate, ch);
+        }
+        g_cpu_regs[2] = 0;
+        break;
+    }
+    case PCM_SET_FORMAT: {
+        u32 bits = (arg_val == 8) ? 8u : 16u;
+        if (bits != m_audio_bits)
+            m_audio_bits = bits;
+        g_cpu_regs[2] = 0;
+        break;
+    }
     case PCM_SET_PAUSE:
+        m_audio_paused = true;
+        if (m_audio_device > 0)
+            SDL_PauseAudioDevice(m_audio_device, 1);
+        g_cpu_regs[2] = 0;
+        break;
     case PCM_SET_PLAY:
-    case PCM_SET_MUTE:
+        m_audio_paused = false;
+        if (m_audio_device > 0)
+            SDL_PauseAudioDevice(m_audio_device, 0);
+        g_cpu_regs[2] = 0;
+        break;
     case PCM_RESET:
-        // Accepted silently
+        audio_reset_ring();
+        g_cpu_regs[2] = 0;
+        break;
+    case PCM_SET_MUTE:
+        m_audio_muted = (arg_val != 0);
+        g_cpu_regs[2] = 0;
+        break;
+    case PCM_SET_HP_VOL:
+        audio_set_volume_level(arg_val);
         g_cpu_regs[2] = 0;
         break;
     case PCM_SET_VOL:
@@ -2630,6 +3014,9 @@ bool Syscalls::simulate_vsync() {
             }
         }
     }
+
+    if (m_audio_space_flag.exchange(false, std::memory_order_relaxed))
+        audio_wake_waiters();
 
     // Cooperative multitasking: yield to another ready task if available.
     // The game uses tasks as inline-synchronized call chains (not independent

@@ -10,6 +10,8 @@
 #include "archive.h"
 #include <string>
 #include <vector>
+#include <atomic>
+#include <memory>
 #include <SDL2/SDL.h>
 #include <dirent.h>
 
@@ -97,7 +99,12 @@ private:
     void impl_HP_Mute_sw();
     void impl_waveout_can_write();
     void impl_waveout_write();
+    void impl_waveout_reset();
+    void impl_waveout_get_volume();
     void impl_pcm_can_write();
+    void impl_pcm_can_read();
+    void impl_pcm_read();
+    void impl_pcm_write();
     void impl_pcm_ioctl();
     // 58-67: RTOS
     void impl_OSTimeGet();
@@ -274,18 +281,61 @@ private:
     bool m_audio_open;
     bool m_audio_device_open;
     u32 m_audio_write_count;
-    u32 m_audio_sample_rate;  // set by waveout_open; used for waveout_write throttle
-    u32 m_audio_channels;     // set by waveout_open; 1=mono, 2=stereo
+    u32 m_audio_sample_rate;
+    u32 m_audio_channels;
+    u32 m_audio_bits;
+    u8  m_volume_level;
+    bool m_audio_paused;
+    bool m_audio_muted;
     SDL_AudioDeviceID m_audio_device;
-    SDL_mutex* m_audio_mutex;
-    // Fixed ring buffer — producer (main thread) writes, consumer (SDL callback) reads.
-    // Capacity chosen to hold ~512ms at 16kHz mono; waveout_can_write reports exact free bytes.
-    static constexpr int AUDIO_RING_CAP = 8192;  // samples
-    s16 m_ring_buf[AUDIO_RING_CAP];
-    int m_ring_write;   // next write index (main thread)
-    int m_ring_read;    // next read  index (SDL callback thread)
+    // SPSC ring: producer (CPU) / consumer (SDL callback), lock-free indices.
+    static constexpr int AUDIO_LATENCY_MS = 300;
+    static constexpr int AUDIO_SDL_SAMPLES = 512;
+    static constexpr int AUDIO_MIN_RING_CAP = 4096;
+    static constexpr int AUDIO_MAX_RING_CAP = 32768;
+    static constexpr int AUDIO_MAX_CHUNK_SAMPLES = 4096;
+    u32 m_ring_cap;
+    u32 m_ring_mask;
+    std::unique_ptr<s16[]> m_ring_buf;
+    std::unique_ptr<s16[]> m_audio_scratch;
+    std::atomic<uint32_t> m_ring_head;
+    std::atomic<uint32_t> m_ring_tail;
+    std::atomic<uint64_t> m_samples_played;
+    std::atomic<uint64_t> m_samples_written;
+    std::atomic<bool> m_audio_space_flag;
     float m_volume;
     u32 m_pcm_volume = 128;
+    u32 m_audio_underruns;
+    u32 m_audio_overruns;
+    u32 m_audio_high_water;
+    u32 m_audio_block_count;
+    u32 m_audio_unblock_count;
+    bool m_audio_has_data;
+    u32 m_audio_start_tick;
+
+    int audio_calc_ring_cap(u32 rate, u32 channels) const;
+    void audio_alloc_ring(u32 rate, u32 channels);
+    void audio_reset_ring();
+    int audio_ring_used() const;
+    int audio_ring_free() const;
+    u32 audio_max_ahead_samples() const;
+    int audio_can_write_bytes() const;
+    int audio_push_pcm_once(const s16* data, int sample_count);
+    bool audio_open_device(int sample_rate, int channels);
+    void audio_drain_and_close();
+    void audio_close_immediate();
+    void audio_write_os_state(bool playing);
+    void audio_wake_waiters();
+    float audio_gain() const;
+    int audio_guest_sample_count(u32 byte_size) const;
+    void audio_read_guest_pcm(u32 buf_addr, u32 byte_size, s16* out, int max_samples) const;
+    int audio_do_write(u32 buf_addr, u32 byte_size);
+    void audio_set_volume_level(u32 vol);
+    bool audio_try_complete_blocked_writes();
+    bool audio_block_task_for_write(int sample_count);
+    int m_audio_block_task;
+    int m_audio_block_samples;
+    std::unique_ptr<s16[]> m_audio_block_pcm;
     u32 m_got_call_count;
     u32 m_got_call_counts[MAX_GOT_ENTRIES];
     std::vector<u32> m_semaphores;
@@ -364,6 +414,7 @@ private:
         u32 wake_tick; // >0 = OSTimeDly blocks until this tick count
         u32 block_sem; // semaphore ECB addr task is blocked on (0 = not sem-blocked)
         u32 sem_err_ptr; // *err to write on sem wake (0 = OS_NO_ERR, 10 = OS_TIMEOUT)
+        bool block_audio; // blocked inside waveout_write waiting for ring space
     };
 
     // External PC tracking - the GOT dispatch caller (execute_one) saves/restores
