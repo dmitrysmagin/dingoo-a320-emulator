@@ -349,7 +349,8 @@ bool Syscalls::got_is_stub(int index) const {
     return true;  // unknown = stub (no implementation available)
 }
 
-void Syscalls::dispatch(int got_index, u32 /*return_addr*/) {
+void Syscalls::dispatch(int got_index, u32 return_addr) {
+    (void)return_addr;
     m_got_call_count++;
     if (got_index >= 0 && got_index < (int)MAX_GOT_ENTRIES)
         m_got_call_counts[got_index]++;
@@ -1020,11 +1021,8 @@ void Syscalls::impl__kbd_get_status() {
 
     g_cpu_regs[2] = keys;
 
-    if (keys)
-        printf("[INPUT] _kbd_get_status(a0=0x%08X) hw=0x%08X pressed=0x%08X released=0x%08X\n",
-               state_ptr, hw, hw_pressed, hw_released);
-
-    m_mem.write_u32(KERNEL_KEY_STATE_ADDR, keys);
+    // Fixed kernel mailbox: games read KEY_STATUS+8 using hw bit positions, not DKEY_*.
+    m_mem.write_u32(KERNEL_KEY_STATE_ADDR, hw);
 }
 
 void Syscalls::impl_get_game_vol() {
@@ -1037,7 +1035,6 @@ void Syscalls::impl__kbd_get_key() {
     // Returns 0 when the queue is empty.
     if (m_display.has_key_event()) {
         u32 ev = m_display.pop_key_event();
-        printf("[INPUT] _kbd_get_key -> 0x%04X\n", ev);
         g_cpu_regs[2] = ev;
         return;
     }
@@ -1961,8 +1958,6 @@ void Syscalls::impl_GetTickCount() {
 }
 
 void Syscalls::impl__sys_judge_event() {
-    u32 a0 = arg(0);
-
     // The real _sys_judge_event (VA 0x801364B0) is a fast, non-blocking routine.
     // It reads the touch-screen registers (0x8057F16A/C/170) — always inactive on
     // the Dingoo A320 (no touchscreen) — reads the global key-state at 0x80242B40,
@@ -1980,7 +1975,6 @@ void Syscalls::impl__sys_judge_event() {
         event_val = 0;
     } else if (event_val) {
         m_mem.write_u32(EVENT_QUEUE_ADDR, 0);
-        printf("[INPUT] _sys_judge_event(a0=0x%08X) -> 0x%08X (queued event)\n", a0, event_val);
         g_cpu_regs[2] = event_val;
         return;
     }
@@ -1988,10 +1982,6 @@ void Syscalls::impl__sys_judge_event() {
     // Dequeue edge events (key-down / key-up) first
     if (m_display.has_input_event()) {
         event_val = m_display.pop_input_event();
-        u8 type = event_val >> 8;
-        u8 code = event_val & 0xFF;
-        printf("[INPUT] _sys_judge_event(a0=0x%08X) -> 0x%04X (type=%u code=%u)\n",
-               a0, event_val, type, code);
         g_cpu_regs[2] = event_val;
         return;
     }
@@ -2007,7 +1997,6 @@ void Syscalls::impl__sys_judge_event() {
         u32 code = bitmask_to_keycode(single);
         if (code) {
             event_val = (3u << 8) | code;  // type 3 = held
-            printf("[INPUT] _sys_judge_event held -> 0x%04X (code=%u)\n", event_val, code);
             g_cpu_regs[2] = event_val;
             return;
         }

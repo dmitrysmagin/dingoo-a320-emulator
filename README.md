@@ -221,7 +221,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 
 | App | Status |
 |-----|--------|
-| 7days (HellStriker) | Loads, stuck on choose audio screen, input not working |
+| 7days (HellStriker) | Playable |
 | AliBaba | Exits, dl_res_open() |
 | Block Breaker | Playable |
 | Candy | Playable, with sound |

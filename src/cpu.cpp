@@ -67,7 +67,9 @@ void CPU::exec_special(u32 insn) {
     case 0x06: if (rd) regs[rd] = regs[rt] >> (regs[rs] & 0x1F); break;
     case 0x07: if (rd) regs[rd] = (u32)((s32)regs[rt] >> (regs[rs] & 0x1F)); break;
     case 0x08: pc = regs[rs]; break;  // JR
-    case 0x09: { u32 t = regs[rs]; regs[rd] = pc + 4; pc = t; break; }  // JALR (read rs first in case rs==rd)
+    case 0x09: {  // JALR (read rs first in case rs==rd)
+        u32 t = regs[rs]; regs[rd] = pc + 4; pc = t; break;
+    }
     case 0x0A: if (rd && regs[rt] == 0) regs[rd] = regs[rs]; break;  // MOVZ
     case 0x0B: if (rd && regs[rt] != 0) regs[rd] = regs[rs]; break;  // MOVN
     case 0x0C: raise_exception(EXC_SYS); break;
@@ -610,6 +612,7 @@ void CPU::print_trace() {
 void CPU::execute_one() {
     u32 insn = fetch();
     trace_add(pc, insn);
+
     u32 next_pc = pc + 4;
     pc = next_pc;
 

@@ -195,7 +195,6 @@ int main(int argc, char* argv[]) {
     CPU cpu;
     cpu.mem = &mem;
     cpu.syscalls = &syscalls;
-    syscalls.set_cop0(&cpu.cop0);
     cpu.reset();
 
     // Kernel memory addresses for input state (written every frame so guest
@@ -208,12 +207,13 @@ int main(int argc, char* argv[]) {
 
     auto write_keys = [&]() {
         u32 keys = display.get_dingoo_keys();
+        u32 hw   = display.get_hw_keys();
         u32 prev = mem.read_u32(KERN_KEY_CURRENT);
         mem.write_u32(KERN_KEY_CURRENT,  keys);
         mem.write_u32(KERN_KEY_RELEASED, ~keys & prev);
         mem.write_u32(KERN_KEY_PRESSED,  keys & ~prev);
         mem.write_u32(KERN_KEY_SCAN_VAL, keys);
-        mem.write_u32(KERN_KEY_MAILBOX,  keys);
+        mem.write_u32(KERN_KEY_MAILBOX,  hw);
     };
 
     printf("[INIT] RAM size: %u MB\n", mem.size() / (1024 * 1024));
@@ -353,11 +353,6 @@ int main(int argc, char* argv[]) {
             printf("[FRAME %u] PC=0x%08X insns=%llu (%.0f/s) rendered=%u got=%u\n",
                    frame, cpu.pc, cpu.insn_count, insns_per_sec, frame_count,
                    syscalls.got_call_count());
-            int key_gots[] = {55, 60, 61, 63, 65, 66, 67, 49};
-            for (int gi = 0; gi < 8; gi++) {
-                int g = key_gots[gi];
-                printf("  GOT[%2d] %-20s %u\n", g, syscalls.got_name(g), syscalls.got_call_counts(g));
-            }
             fflush(stdout);
         }
 
