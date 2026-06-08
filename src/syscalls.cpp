@@ -313,7 +313,7 @@ void Syscalls::shutdown_audio() {
 // --- Audio helpers ---
 
 int Syscalls::audio_calc_ring_cap(u32 rate, u32 channels) const {
-    uint64_t need = (uint64_t)rate * channels * AUDIO_LATENCY_MS / 1000;
+    uint64_t need = (uint64_t)rate * channels * AUDIO_RING_MS / 1000;
     if (need < (uint64_t)AUDIO_MIN_RING_CAP)
         need = AUDIO_MIN_RING_CAP;
     u32 cap = 1;
@@ -333,8 +333,8 @@ void Syscalls::audio_alloc_ring(u32 rate, u32 channels) {
     m_audio_high_water = 0;
     m_audio_has_data = false;
     audio_reset_ring();
-    printf("[AUDIO] ring cap=%u samples (~%u ms @ %uHz %uch)\n",
-           m_ring_cap, AUDIO_LATENCY_MS, rate, channels);
+    printf("[AUDIO] ring cap=%u samples (target=%ums ring=%ums @ %uHz %uch)\n",
+           m_ring_cap, AUDIO_TARGET_LATENCY_MS, AUDIO_RING_MS, rate, channels);
 }
 
 void Syscalls::audio_reset_ring() {
@@ -358,7 +358,7 @@ int Syscalls::audio_ring_free() const {
 }
 
 u32 Syscalls::audio_max_ahead_samples() const {
-    u64 max_ahead = (u64)m_audio_sample_rate * m_audio_channels * AUDIO_LATENCY_MS / 1000;
+    u64 max_ahead = (u64)m_audio_sample_rate * m_audio_channels * AUDIO_TARGET_LATENCY_MS / 1000;
     if (max_ahead < 1)
         max_ahead = 1;
     return (u32)max_ahead;
@@ -441,7 +441,16 @@ bool Syscalls::audio_open_device(int sample_rate, int channels) {
     want.freq = sample_rate;
     want.format = AUDIO_S16SYS;
     want.channels = (Uint8)channels;
-    want.samples = AUDIO_SDL_SAMPLES;
+    // ~20–32 ms per SDL callback (power-of-two, clamped).
+    int sdl_frames = sample_rate / 50;
+    if (sdl_frames < 128)
+        sdl_frames = 128;
+    else if (sdl_frames > 512)
+        sdl_frames = 512;
+    int pow2 = 128;
+    while (pow2 * 2 <= sdl_frames)
+        pow2 *= 2;
+    want.samples = (Uint16)pow2;
     want.callback = audio_callback;
     want.userdata = this;
 
@@ -452,8 +461,8 @@ bool Syscalls::audio_open_device(int sample_rate, int channels) {
     m_audio_sample_rate = (u32)obtained.freq;
     m_audio_channels = (u32)obtained.channels;
     if (obtained.freq != sample_rate || obtained.channels != (Uint8)channels) {
-        printf("[AUDIO] device adjusted: wanted %dHz %dch, got %dHz %dch\n",
-               sample_rate, channels, obtained.freq, obtained.channels);
+        printf("[AUDIO] device adjusted: wanted %dHz %dch %d samples, got %dHz %dch %d samples\n",
+               sample_rate, channels, pow2, obtained.freq, obtained.channels, obtained.samples);
     }
     SDL_PauseAudioDevice(m_audio_device, m_audio_paused ? 1 : 0);
     return true;

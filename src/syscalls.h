@@ -289,9 +289,11 @@ private:
     bool m_audio_muted;
     SDL_AudioDeviceID m_audio_device;
     // SPSC ring: producer (CPU) / consumer (SDL callback), lock-free indices.
-    static constexpr int AUDIO_LATENCY_MS = 300;
-    static constexpr int AUDIO_SDL_SAMPLES = 512;
-    static constexpr int AUDIO_MIN_RING_CAP = 4096;
+    // Target latency: max PCM the guest may queue ahead of playback.
+    // Ring is sized slightly larger so the physical buffer is not the bottleneck.
+    static constexpr int AUDIO_TARGET_LATENCY_MS = 80;
+    static constexpr int AUDIO_RING_MS = 120;
+    static constexpr int AUDIO_MIN_RING_CAP = 1024;
     static constexpr int AUDIO_MAX_RING_CAP = 32768;
     static constexpr int AUDIO_MAX_CHUNK_SAMPLES = 4096;
     u32 m_ring_cap;
