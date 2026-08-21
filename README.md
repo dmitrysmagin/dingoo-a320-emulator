@@ -23,7 +23,7 @@ Runs any standard `.app` binary with Dingoo OS syscall interception, SDL2 displa
 │  │                                                          │   │
 │  │  ┌──────────────────────────────────────────────────┐   │   │
 │  │  │           Dingoo OS Syscall Interception         │   │   │
-│  │  │ 91 implemented + 89 stubs = 180 intercepted     │   │   │
+│  │  │ 96 implemented + 84 stubs = 180 intercepted     │   │   │
 │  │  └──────────────────────────────────────────────────┘   │   │
 │  │                                                          │   │
 │  │  ┌──────────────────────────────────────────────────┐   │   │
@@ -215,8 +215,8 @@ Guest memory layout:
 
 The emulator intercepts all GOT trampoline calls from the guest binary. The dispatch table has 180 entries covering all 173 documented Dingoo OS functions plus extras:
 
-- **91 implemented** — real host implementations (malloc, printf, LCD, audio, input, µC/OS-II scheduler, filesystem I/O, PCM ioctl, µC/GUI window manager, `dl_res_*`, etc.)
-- **89 stubs** — print `[STUB]` and return (TV, accelerometer, audio/video framework, wide-FS, extra libc, and misc categories)
+- **96 implemented** — real host implementations (malloc, printf, LCD, audio, input, µC/OS-II scheduler, filesystem I/O, PCM ioctl, µC/GUI window manager, `dl_res_*`, `dl_load`/`dl_free`/`dl_get_proc`, etc.)
+- **84 stubs** — print `[STUB]` and return (TV, accelerometer, audio/video framework, wide-FS, extra libc, and misc categories)
 - Standard 72-entry GOT apps are fully dispatched. Apps with extended GOT (Life, StopWatch, dicer with 172 imports; Yi-Chi/Overlord-Fighter with 96) are now covered for all known Dingoo OS functions
 
 Arguments beyond the fourth are read from the caller's stack following the o32 ABI: the
@@ -247,7 +247,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Mojo | Playable |
 | Mushroom Roulette | Renders |
 | Nose Breaker | Black screen |
-| Overlord-Fighter | Boots, runs µC/GUI message loop, blank screen (needs `flydata.dlx` via `dl_load`) |
+| Overlord-Fighter | Loads `flydata.dlx` (DLX2 via `dl_res_*`), shows LOADING splash, then KUSEG when the audio worker starts |
 | Platinum Sudoku | Renders |
 | PoPo Bash | Renders |
 | Puzzle Bobble | Renders |
@@ -257,7 +257,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | StopWatch | ⏳ Hits `=== Starting emulation ===`, then nothing (GAP) |
 | tetris | Playable |
 | ultimate_drift | Playable |
-| Yi-Chi King Fighter | Boots, runs µC/GUI message loop, blank screen (needs `ERPT` resources) |
+| Yi-Chi King Fighter | Same FlyApp engine as Overlord: DLX2 splash, then KUSEG on the audio worker |
 | Zhao Yun Chuan | Playable |
 
 **7days** and **tetris** are verified titles — both boot with rendered graphics and stable real-time audio (scheduler block + sem pacing).
@@ -281,14 +281,14 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Save file write path not implemented | ⚠️ Medium priority |
 | MXU audio mixing correctness unverified | ⚠️ Low priority |
 | `get_current_language` hardcoded to English | ⚠️ Low priority — may affect Chinese UI locale |
-| `ERPT` / SIZED resource archives | ✅ Parsed (`u32` count, 508-byte name/size/offset records, XOR 0x40). PoPo Bash, Puzzle Bobble, Platinum Sudoku, Mushroom Roulette now render. Overlord/Yi-Chi still need `dl_load` for `.dlx` modules |
-| `dl_load` / DLX dynamic modules not implemented | ⚠️ Medium priority — Overlord/Yi-Chi stay blank without it |
+| `ERPT` / SIZED resource archives | ✅ Parsed (`u32` count, 508-byte name/size/offset records, XOR 0x40). PoPo Bash, Puzzle Bobble, Platinum Sudoku, Mushroom Roulette render. Overlord/Yi-Chi load `.dlx` via `dl_res_*` |
+| `dl_load` / DLX2 modules | ✅ `dl_load` maps archive/sidecar files into guest RAM. Overlord/Yi-Chi actually parse DLX2 (`DLX2` magic, 36-byte header, 12-byte records) through `dl_res_get_data` size×count reads + `U8TOU32`. Splash renders; audio worker then KUSEG |
 
 ---
 
-## Stubs (89 entries)
+## Stubs (84 entries)
 
-All 89 stubs print `[STUB]` and return. Categories:
+All 84 stubs print `[STUB]` and return. Categories:
 
 | Category | Functions |
 |----------|-----------|
@@ -297,7 +297,7 @@ All 89 stubs print `[STUB]` and return. Categories:
 | Audio/video framework | `av_begin_thread`, `av_end_thread`, `av_create/destroy/give/wait_flag`, `av_create/destroy/give/wait_sem`, `av_wait_sem2`, `av_delay`, `av_queue_abort/end/flush/get/init/put`, `av_reg/unreg_object`, `av_resize_packet`, `av_uft8_2_unicode`, `av_upper_4cc` |
 | Wide filesystem | `fsys_fcloseW`, `fsys_fclose_flash`, `fsys_fopen_flash`, `fsys_mkdir`, `fsys_removeW`, `fsys_renameW` |
 | Extra libc | `memcpy`, `memset`, `sscanf`, `vsprintf`, `_tcscmp`, `_tcscpy`, `serial_puts` |
-| Low-level OS | `SysDisableBkLight`, `sys_get_ccpmp_config`, `dl_get_proc`, `detect_clock`, `delay_ms`, `udelay` |
+| Low-level OS | `SysDisableBkLight`, `sys_get_ccpmp_config`, `detect_clock`, `delay_ms`, `udelay` |
 | Pre-existing stubs | `vxGoHome`, `free_irq`, `fsys_RefreshCache`, `fsys_flush_cache`, `__icache_invalidate_all`, `__dcache_writeback_all`, `TaskMediaFunStop`, `serial_getc`, `USB_Connect`, `USB_No_Connect`, `udc_attached`, `open_gui_key_msg` |
 
 These stubs unblock all tested apps (including Life, StopWatch, dicer with 172-import GOT) from hitting "Unknown GOT" errors.
@@ -306,7 +306,7 @@ These stubs unblock all tested apps (including Life, StopWatch, dicer with 172-i
 
 | App | Imports | Status |
 |-----|---------|--------|
-| Yi‑Chi King Fighter, Overlord‑Fighter | 96 | All 96 names in table; dispatch works; both boot and pump µC/GUI messages, but render blank until the `ERPT` resource chunk is parsed |
+| Yi‑Chi King Fighter, Overlord‑Fighter | 96 | All 96 names dispatched. `flydata.dlx` loads (DLX2); LOADING splash renders; audio task then KUSEG |
 | Life, StopWatch, dicer | 172 | All 173 documented functions + extras in table; no more "Unknown GOT" errors |
 
 ---

@@ -367,17 +367,25 @@ private:
     void release_fb(u32 phys);
     void argb8888_to_rgb565(const u8* src, u8* dst, u32 pixel_count);
 
-    // get_dl_handle counter (incrementing handle allocator)
-    u32 m_dl_handle_counter = 1;
-
     // dl_res handle tracking (SPK resources opened by path or 24-bit key)
     static constexpr int MAX_DL_RES = 64;
     struct DlResHandle {
         bool in_use;
         u32 guest_addr;
         u32 size;
+        u32 offset;  // sequential read cursor for dl_res_get_data
     };
     DlResHandle m_dl_res[MAX_DL_RES];
+
+    static constexpr int MAX_DL_MODULES = 16;
+    struct DlModule {
+        bool in_use;
+        u32 guest_addr;
+        u32 size;
+        std::string name;
+    };
+    DlModule m_dl_modules[MAX_DL_MODULES];
+    const ArchiveEntry* find_dl_file(const std::string& name) const;
     int alloc_dl_res_handle();
     void free_dl_res_handle(int idx);
     const ArchiveEntry* resolve_dl_res_entry(u32 key_or_path);

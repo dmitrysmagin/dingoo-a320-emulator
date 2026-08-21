@@ -61,8 +61,8 @@ const Syscalls::GOTHandler Syscalls::s_handlers[] = {
     {"SysDisableCloseBkLight",  &Syscalls::impl_SysDisableCloseBkLight,  true},
     {"SysEnableShutDownPower",  &Syscalls::impl_SysEnableShutDownPower,  true},
     {"TaskMediaFunStop",        &Syscalls::impl_TaskMediaFunStop,        true},
-    {"U8TOU16",                 &Syscalls::impl_U8TOU16,                 true},
-    {"U8TOU32",                 &Syscalls::impl_U8TOU32,                 true},
+    {"U8TOU16",                 &Syscalls::impl_U8TOU16,                 false},
+    {"U8TOU32",                 &Syscalls::impl_U8TOU32,                 false},
     {"USB_Connect",             &Syscalls::impl_USB_Connect,             true},
     {"USB_No_Connect",          &Syscalls::impl_USB_No_Connect,          true},
     {"WM_CreateWindow",         &Syscalls::impl_WM_CreateWindow,         false},
@@ -113,9 +113,9 @@ const Syscalls::GOTHandler Syscalls::s_handlers[] = {
     {"cmGetSysVersion",         &Syscalls::impl_cmGetSysVersion,         false},
     {"delay_ms",                &Syscalls::impl_delay_ms,                true},
     {"detect_clock",            &Syscalls::impl_detect_clock,            true},
-    {"dl_free",                 &Syscalls::impl_dl_free,                 true},
-    {"dl_get_proc",             &Syscalls::impl_dl_get_proc,             true},
-    {"dl_load",                 &Syscalls::impl_dl_load,                 true},
+    {"dl_free",                 &Syscalls::impl_dl_free,                 false},
+    {"dl_get_proc",             &Syscalls::impl_dl_get_proc,             false},
+    {"dl_load",                 &Syscalls::impl_dl_load,                 false},
     {"dl_res_close",            &Syscalls::impl_dl_res_close,            false},
     {"dl_res_get_data",         &Syscalls::impl_dl_res_get_data,         false},
     {"dl_res_get_size",         &Syscalls::impl_dl_res_get_size,         false},
@@ -303,8 +303,17 @@ Syscalls::Syscalls(Memory& mem, Display& display)
         m_fb_pool[i].in_use = false;
     }
     m_lcd_hw_buf[0] = m_lcd_hw_buf[1] = 0;  // allocated lazily on first _lcd_get_frame call
-    for (int i = 0; i < MAX_DL_RES; i++)
+    for (int i = 0; i < MAX_DL_RES; i++) {
         m_dl_res[i].in_use = false;
+        m_dl_res[i].guest_addr = 0;
+        m_dl_res[i].size = 0;
+        m_dl_res[i].offset = 0;
+    }
+    for (int i = 0; i < MAX_DL_MODULES; i++) {
+        m_dl_modules[i].in_use = false;
+        m_dl_modules[i].guest_addr = 0;
+        m_dl_modules[i].size = 0;
+    }
     m_archive = nullptr;
     m_audio_open = false;
 }
@@ -2130,12 +2139,13 @@ void Syscalls::impl_pcm_ioctl() {
 // === GOT 58-67: RTOS ===
 
 void Syscalls::save_current_task() {
-    if (m_current_task >= 0 && m_current_task < m_task_count) {
-        memcpy(m_tasks[m_current_task].regs, g_cpu_regs, sizeof(g_cpu_regs));
-        m_tasks[m_current_task].hi  = g_cpu_hi;
-        m_tasks[m_current_task].lo  = g_cpu_lo;
-        m_tasks[m_current_task].pc  = g_cpu_pc;
-    }
+    int t = m_current_task;
+    if (t < 0 || t >= m_task_count || t >= MAX_TASKS)
+        return;
+    memcpy(m_tasks[t].regs, g_cpu_regs, sizeof(g_cpu_regs));
+    m_tasks[t].hi  = g_cpu_hi;
+    m_tasks[t].lo  = g_cpu_lo;
+    m_tasks[t].pc  = g_cpu_pc;
 }
 
 void Syscalls::switch_to_task(int task_idx) {
@@ -2325,7 +2335,8 @@ void Syscalls::impl_OSTimeDly() {
     }
 
     // No current task — nothing to delay, just return.
-    if (m_current_task < 0 || m_current_task >= m_task_count) {
+    if (m_current_task < 0 || m_current_task >= m_task_count ||
+        m_current_task >= MAX_TASKS) {
         g_cpu_regs[2] = 0;
         return;
     }
@@ -2760,6 +2771,24 @@ void Syscalls::free_dl_res_handle(int idx) {
     m_dl_res[idx].in_use = false;
     m_dl_res[idx].guest_addr = 0;
     m_dl_res[idx].size = 0;
+    m_dl_res[idx].offset = 0;
+}
+
+const ArchiveEntry* Syscalls::find_dl_file(const std::string& name) const {
+    if (!m_archive || name.empty())
+        return nullptr;
+    if (const ArchiveEntry* e = m_archive->find(name))
+        return e;
+    std::string stripped = name;
+    if (stripped.size() >= 3 && stripped[1] == ':' &&
+        (stripped[2] == '\\' || stripped[2] == '/'))
+        stripped = stripped.substr(3);
+    if (const ArchiveEntry* e = m_archive->find(stripped))
+        return e;
+    size_t slash = stripped.find_last_of("/\\");
+    if (slash != std::string::npos)
+        return m_archive->find(stripped.substr(slash + 1));
+    return nullptr;
 }
 
 const ArchiveEntry* Syscalls::resolve_dl_res_entry(u32 key_or_path) {
@@ -2810,7 +2839,10 @@ void Syscalls::impl_dl_res_open() {
     m_dl_res[idx].in_use = true;
     m_dl_res[idx].guest_addr = guest;
     m_dl_res[idx].size = entry->size;
+    m_dl_res[idx].offset = 0;
 
+    printf("[dl_res] open '%s' -> handle %d (%u bytes @ 0x%08X)\n",
+           entry->name.c_str(), idx + 1, entry->size, guest);
     g_cpu_regs[2] = (u32)(idx + 1);
 }
 
@@ -2831,11 +2863,43 @@ void Syscalls::impl_dl_res_get_data() {
     u32 src = m_dl_res[idx].guest_addr;
     u32 dest = arg(1);
     u32 n = arg(2);
-    if (dest >= 0x80000000 && n == m_dl_res[idx].size && n > 0) {
-        std::vector<u8> tmp(n);
-        m_mem.read_block(src, tmp.data(), n);
-        m_mem.write_block(dest, tmp.data(), n);
+    u32 count = arg(3);
+    u32 remaining = (m_dl_res[idx].offset < m_dl_res[idx].size)
+        ? (m_dl_res[idx].size - m_dl_res[idx].offset) : 0;
+
+    // Dingoo: dl_res_get_data(h, buf, size, nmemb) — total bytes = size*nmemb,
+    // matching fread. Overlord reads a 36-byte DLX2 header (36, 1), then the
+    // 12-byte index (12, count), then each payload (1, size).
+    u32 nbytes = n;
+    if (count > 1) {
+        u64 total = (u64)n * count;
+        if (total > 0 && total <= remaining)
+            nbytes = (u32)total;
     }
+
+    // Copy into a guest buffer when dest is KSEG0 RAM and the length fits.
+    // Full-size dumps (PoPo) always copy. Partial reads (Overlord DLX2 header
+    // and records) skip dest in the RAWD/code window so leftover $a1 from
+    // brick-style callers cannot smash the guest image.
+    u32 phys = dest & 0x1FFFFFFF;
+    bool dest_ok = dest >= 0x80000000 && dest < 0x82000000;
+    bool in_rawd = phys >= 0x00A00000 && phys < 0x00BF0000;
+    if (dest_ok && nbytes > 0 && nbytes <= remaining && !in_rawd) {
+        u32 from = src + m_dl_res[idx].offset;
+        u8 chunk[4096];
+        u32 copied = 0;
+        while (copied < nbytes) {
+            u32 n = nbytes - copied;
+            if (n > sizeof(chunk)) n = (u32)sizeof(chunk);
+            m_mem.read_block(from + copied, chunk, n);
+            m_mem.write_block(dest + copied, chunk, n);
+            copied += n;
+        }
+        m_dl_res[idx].offset += nbytes;
+        g_cpu_regs[2] = dest;
+        return;
+    }
+
     g_cpu_regs[2] = src;
 }
 
@@ -3152,46 +3216,118 @@ void Syscalls::impl_jz_pm_pllconvert() {
 }
 
 void Syscalls::impl_dl_load() {
-    // dl_load(name) — load another .app module; return handle
+    // void *dl_load(const char *filename) — map a named module from the
+    // ERPT/SPK archive (or a sidecar next to the .app) into guest RAM.
     u32 name_ptr = arg(0);
-    std::string name = name_ptr ? guest_string(name_ptr) : "?";
-    printf("[DL] dl_load('%s') -> stub\n", name.c_str());
-    // On real hardware this loads a separate module; just return a dummy handle
-    g_cpu_regs[2] = m_dl_handle_counter++;
+    if (!name_ptr) {
+        g_cpu_regs[2] = 0;
+        return;
+    }
+    std::string name = guest_string(name_ptr);
+    const ArchiveEntry* entry = find_dl_file(name);
+
+    std::vector<u8> blob;
+    if (entry) {
+        blob.resize(entry->size);
+        memcpy(blob.data(), m_archive->get_data(*entry), entry->size);
+    } else if (!m_app_path.empty()) {
+        std::string dir = m_app_path;
+        size_t slash = dir.find_last_of("/\\");
+        dir = (slash != std::string::npos) ? dir.substr(0, slash + 1) : std::string();
+        std::string base = name;
+        size_t nslash = base.find_last_of("/\\");
+        if (nslash != std::string::npos)
+            base = base.substr(nslash + 1);
+        FILE* f = fopen((dir + base).c_str(), "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long sz = ftell(f);
+            if (sz > 0) {
+                blob.resize((size_t)sz);
+                fseek(f, 0, SEEK_SET);
+                if (fread(blob.data(), 1, blob.size(), f) != blob.size())
+                    blob.clear();
+            }
+            fclose(f);
+        }
+    }
+
+    if (blob.empty()) {
+        printf("[DL] dl_load('%s') -> not found\n", name.c_str());
+        g_cpu_regs[2] = 0;
+        return;
+    }
+
+    int slot = -1;
+    for (int i = 0; i < MAX_DL_MODULES; i++) {
+        if (!m_dl_modules[i].in_use) { slot = i; break; }
+    }
+    if (slot < 0) {
+        printf("[DL] dl_load('%s') -> no module slots\n", name.c_str());
+        g_cpu_regs[2] = 0;
+        return;
+    }
+
+    u32 guest = heap_alloc((u32)blob.size());
+    if (!guest) {
+        printf("[DL] dl_load('%s') -> OOM (%zu bytes)\n", name.c_str(), blob.size());
+        g_cpu_regs[2] = 0;
+        return;
+    }
+    m_mem.write_block(guest, blob.data(), (u32)blob.size());
+
+    m_dl_modules[slot].in_use = true;
+    m_dl_modules[slot].guest_addr = guest;
+    m_dl_modules[slot].size = (u32)blob.size();
+    m_dl_modules[slot].name = name;
+
+    char magic[5] = {};
+    memcpy(magic, blob.data(), std::min(blob.size(), (size_t)4));
+    printf("[DL] dl_load('%s') -> handle %d @ 0x%08X (%zu bytes, magic='%s')\n",
+           name.c_str(), slot + 1, guest, blob.size(), magic);
+    g_cpu_regs[2] = (u32)(slot + 1);
 }
 
 void Syscalls::impl_dl_free() {
-    u32 handle = arg(0);
-    printf("[DL] dl_free(%u) -> stub\n", handle);
+    int idx = (int)arg(0) - 1;
+    if (idx < 0 || idx >= MAX_DL_MODULES || !m_dl_modules[idx].in_use) {
+        g_cpu_regs[2] = (u32)-1;
+        return;
+    }
+    printf("[DL] dl_free(%d) '%s'\n", idx + 1, m_dl_modules[idx].name.c_str());
+    heap_free(m_dl_modules[idx].guest_addr);
+    m_dl_modules[idx].in_use = false;
+    m_dl_modules[idx].guest_addr = 0;
+    m_dl_modules[idx].size = 0;
+    m_dl_modules[idx].name.clear();
     g_cpu_regs[2] = 0;
+}
+
+void Syscalls::impl_dl_get_proc() {
+    int idx = (int)arg(0) - 1;
+    u32 name_ptr = arg(1);
+    if (idx < 0 || idx >= MAX_DL_MODULES || !m_dl_modules[idx].in_use) {
+        g_cpu_regs[2] = 0;
+        return;
+    }
+    std::string name = name_ptr ? guest_string(name_ptr) : "";
+    // Mapped blobs (DLX2 resource packs, raw CCDL) have no reloc'd export
+    // table. Return the load address so callers can inspect the image.
+    printf("[DL] dl_get_proc(%d, '%s') -> 0x%08X\n",
+           idx + 1, name.c_str(), m_dl_modules[idx].guest_addr);
+    g_cpu_regs[2] = m_dl_modules[idx].guest_addr;
 }
 
 void Syscalls::impl_U8TOU16() {
-    u32 dst = arg(0);
-    u32 src = arg(1);
-    u32 len = arg(2);
-    if (src && dst) {
-        std::string src_str = guest_string(src);
-        for (u32 i = 0; i < len && i < src_str.size(); i++) {
-            m_mem.write_u16(dst + i * 2, (u16)(u8)src_str[i]);
-        }
-    }
-    printf("[U8TOU16] '%s' -> len=%u\n", src ? guest_string(src).c_str() : "?", len);
-    g_cpu_regs[2] = 0;
+    // u16 U8TOU16(u8 *p) — little-endian 16-bit load (Dingoo SDK).
+    u32 src = arg(0);
+    g_cpu_regs[2] = src ? (u32)m_mem.read_u16(src) : 0;
 }
 
 void Syscalls::impl_U8TOU32() {
-    u32 dst = arg(0);
-    u32 src = arg(1);
-    u32 len = arg(2);
-    if (src && dst) {
-        std::string src_str = guest_string(src);
-        for (u32 i = 0; i < len && i < src_str.size(); i++) {
-            m_mem.write_u32(dst + i * 4, (u32)(u8)src_str[i]);
-        }
-    }
-    printf("[U8TOU32] '%s' -> len=%u\n", src ? guest_string(src).c_str() : "?", len);
-    g_cpu_regs[2] = 0;
+    // u32 U8TOU32(u8 *p) — little-endian 32-bit load (Dingoo SDK).
+    u32 src = arg(0);
+    g_cpu_regs[2] = src ? m_mem.read_u32(src) : 0;
 }
 
 // === VSYNC simulation ===
@@ -3356,7 +3492,6 @@ void Syscalls::impl_av_wait_sem()           { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_av_wait_sem2()          { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_delay_ms()              { (void)arg(0); g_cpu_regs[2] = 0; }
 void Syscalls::impl_detect_clock()          { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_dl_get_proc()           { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_fsys_fcloseW()          { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_fsys_fclose_flash()     { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_fsys_fopen_flash()      { printf("[STUB] %s\n", __func__); }

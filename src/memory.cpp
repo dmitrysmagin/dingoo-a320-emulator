@@ -292,7 +292,8 @@ std::string Memory::read_string(u32 vaddr, size_t max_len) {
 
 void Memory::read_block(u32 vaddr, u8* dest, u32 size) {
     u32 phys = vaddr_to_phys(vaddr, false);
-    if (phys == 0xFFFFFFFF || phys + size > m_mem.size()) {
+    if (phys == 0xFFFFFFFF || size == 0 ||
+        phys >= m_mem.size() || size > m_mem.size() - phys) {
         memset(dest, 0, size);
         return;
     }
@@ -301,7 +302,8 @@ void Memory::read_block(u32 vaddr, u8* dest, u32 size) {
 
 void Memory::write_block(u32 vaddr, const u8* src, u32 size) {
     u32 phys = vaddr_to_phys(vaddr, true);
-    if (phys == 0xFFFFFFFF || phys + size > m_mem.size()) {
+    if (phys == 0xFFFFFFFF || size == 0 ||
+        phys >= m_mem.size() || size > m_mem.size() - phys) {
         // Check if this is a block write to the LCD palette
         if (phys >= LCD_PAL_BASE && phys < LCD_PAL_BASE + LCD_PAL_SIZE && size <= LCD_PAL_SIZE) {
             u32 start = (phys - LCD_PAL_BASE) / 2;
