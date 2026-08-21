@@ -4,6 +4,9 @@
 #include <cstdlib>
 #include <algorithm>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 
 // fsys_find constants (mirrors dingoo_sdk/include/dingoo/fsys.h)
 #define FSYS_FILENAME_MAX 544
@@ -147,7 +150,7 @@ const Syscalls::GOTHandler Syscalls::s_handlers[] = {
     {"fsys_renameW",            &Syscalls::impl_fsys_renameW,            true},
     {"fwrite",                  &Syscalls::impl_fwrite,                  false},
     {"get_current_language",    &Syscalls::impl_get_current_language,    false},
-    {"get_dl_handle",           &Syscalls::impl_get_dl_handle,           true},
+    {"get_dl_handle",           &Syscalls::impl_get_dl_handle,           false},
     {"get_game_vol",            &Syscalls::impl_get_game_vol,            false},
     {"isTVON",                  &Syscalls::impl_isTVON,                  true},
     {"jz_pm_pllconvert",        &Syscalls::impl_jz_pm_pllconvert,        true},
@@ -1572,10 +1575,16 @@ void Syscalls::impl_fsys_fopen() {
         }
     }
 
-    // Try host file for write mode
+    // Try host file for write/append mode
     int idx = alloc_file_handle();
     if (idx < 0) { g_cpu_regs[2] = 0; return; }
-    if (mode.find('w') != std::string::npos || mode.find('+') != std::string::npos) {
+    if (mode.find('w') != std::string::npos || mode.find('+') != std::string::npos ||
+        mode.find('a') != std::string::npos) {
+#ifdef _WIN32
+        _mkdir("save");
+#else
+        mkdir("save", 0755);
+#endif
         std::string host_path = "save/" + path;
         FILE* f = fopen(host_path.c_str(), mode.c_str());
         if (f) {
@@ -2773,12 +2782,13 @@ const ArchiveEntry* Syscalls::resolve_dl_res_entry(u32 key_or_path) {
 }
 
 void Syscalls::impl_get_dl_handle() {
-    g_cpu_regs[2] = 0;
+    g_cpu_regs[2] = 1;
 }
 
 void Syscalls::impl_dl_res_open() {
-    u32 path_ptr = arg(0);
-    const ArchiveEntry* entry = resolve_dl_res_entry(path_ptr);
+    const ArchiveEntry* entry = resolve_dl_res_entry(arg(0));
+    if (!entry)
+        entry = resolve_dl_res_entry(arg(2));
     if (!entry) {
         g_cpu_regs[2] = 0;
         return;
@@ -2814,10 +2824,19 @@ void Syscalls::impl_dl_res_get_size() {
 
 void Syscalls::impl_dl_res_get_data() {
     int idx = (int)arg(0) - 1;
-    if (idx < 0 || idx >= MAX_DL_RES || !m_dl_res[idx].in_use)
+    if (idx < 0 || idx >= MAX_DL_RES || !m_dl_res[idx].in_use) {
         g_cpu_regs[2] = 0;
-    else
-        g_cpu_regs[2] = m_dl_res[idx].guest_addr;
+        return;
+    }
+    u32 src = m_dl_res[idx].guest_addr;
+    u32 dest = arg(1);
+    u32 n = arg(2);
+    if (dest >= 0x80000000 && n == m_dl_res[idx].size && n > 0) {
+        std::vector<u8> tmp(n);
+        m_mem.read_block(src, tmp.data(), n);
+        m_mem.write_block(dest, tmp.data(), n);
+    }
+    g_cpu_regs[2] = src;
 }
 
 void Syscalls::impl_dl_res_close() {

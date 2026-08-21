@@ -39,6 +39,14 @@ struct RAWDHeader {
     uint32_t prog_size;   // total program size (including BSS)
 };
 
+struct ERPTHeader {
+    char ident[4];        // "ERPT"
+    uint32_t unknown;
+    uint32_t offset;
+    uint32_t size;
+    uint8_t padding[16];
+};
+
 // Import/export table entry
 struct TableEntry {
     uint32_t str_offset;  // cumulative string offset
@@ -70,6 +78,7 @@ bool parse_app(const std::string& path, AppBinary& out) {
     IMPTHeader impt;
     EXPTHeader expt;
     RAWDHeader rawd;
+    ERPTHeader erpt{};
 
     if (fread(&ccdl, sizeof(ccdl), 1, f) != 1 ||
         fread(&impt, sizeof(impt), 1, f) != 1 ||
@@ -79,6 +88,8 @@ bool parse_app(const std::string& path, AppBinary& out) {
         fclose(f);
         return false;
     }
+    if (fread(&erpt, sizeof(erpt), 1, f) != 1)
+        memset(&erpt, 0, sizeof(erpt));
 
     // Verify headers
     if (memcmp(ccdl.ident, "CCDL", 4) != 0) {
@@ -231,14 +242,24 @@ bool parse_app(const std::string& path, AppBinary& out) {
     };
 
     out.resource_offset = 0;
-    for (u64 off : spk_candidates) {
-        if (!spk_validate(off)) continue;
-        out.resource_offset = off;
-        fseek(f, (long)off, SEEK_SET);
-        u16 count;
-        fread(&count, 2, 1, f);
-        printf("[APP] SPK archive at 0x%llX (%u entries)\n", off, count);
-        break;
+    bool have_erpt = memcmp(erpt.ident, "ERPT", 4) == 0
+                     && erpt.offset >= rawd_end
+                     && erpt.offset < (u32)file_size;
+    if (have_erpt) {
+        out.resource_offset = erpt.offset;
+        printf("[APP] ERPT archive at 0x%X\n", erpt.offset);
+    }
+
+    if (out.resource_offset == 0) {
+        for (u64 off : spk_candidates) {
+            if (!spk_validate(off)) continue;
+            out.resource_offset = off;
+            fseek(f, (long)off, SEEK_SET);
+            u16 count;
+            fread(&count, 2, 1, f);
+            printf("[APP] SPK archive at 0x%llX (%u entries)\n", off, count);
+            break;
+        }
     }
 
     if (out.resource_offset == 0) {

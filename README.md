@@ -23,7 +23,7 @@ Runs any standard `.app` binary with Dingoo OS syscall interception, SDL2 displa
 │  │                                                          │   │
 │  │  ┌──────────────────────────────────────────────────┐   │   │
 │  │  │           Dingoo OS Syscall Interception         │   │   │
-│  │  │ 90 implemented + 90 stubs = 180 intercepted     │   │   │
+│  │  │ 91 implemented + 89 stubs = 180 intercepted     │   │   │
 │  │  └──────────────────────────────────────────────────┘   │   │
 │  │                                                          │   │
 │  │  ┌──────────────────────────────────────────────────┐   │   │
@@ -215,8 +215,8 @@ Guest memory layout:
 
 The emulator intercepts all GOT trampoline calls from the guest binary. The dispatch table has 180 entries covering all 173 documented Dingoo OS functions plus extras:
 
-- **90 implemented** — real host implementations (malloc, printf, LCD, audio, input, µC/OS-II scheduler, filesystem I/O, PCM ioctl, µC/GUI window manager, etc.)
-- **90 stubs** — print `[STUB]` and return (TV, accelerometer, audio/video framework, wide-FS, extra libc, and misc categories)
+- **91 implemented** — real host implementations (malloc, printf, LCD, audio, input, µC/OS-II scheduler, filesystem I/O, PCM ioctl, µC/GUI window manager, `dl_res_*`, etc.)
+- **89 stubs** — print `[STUB]` and return (TV, accelerometer, audio/video framework, wide-FS, extra libc, and misc categories)
 - Standard 72-entry GOT apps are fully dispatched. Apps with extended GOT (Life, StopWatch, dicer with 172 imports; Yi-Chi/Overlord-Fighter with 96) are now covered for all known Dingoo OS functions
 
 Arguments beyond the fourth are read from the caller's stack following the o32 ABI: the
@@ -232,7 +232,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | App | Status |
 |-----|--------|
 | 7days (HellStriker) | Playable, no sound |
-| AliBaba | Exits, dl_res_open() |
+| AliBaba | Loads ERPT resources, then KUSEG jump |
 | Block Breaker | Playable, with sound |
 | Candy | Playable, with sound |
 | Decollation Warrior | Playable, with sound |
@@ -245,12 +245,12 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Manic-Miner | Black screen |
 | Mine Sweeper | Black screen, then playfield - GetTickCount |
 | Mojo | Playable |
-| Mushroom Roulette | Black screen |
+| Mushroom Roulette | Renders |
 | Nose Breaker | Black screen |
-| Overlord-Fighter | Boots, runs µC/GUI message loop, blank screen (needs `flydata.dlx` from the `ERPT` chunk) |
-| Platinum Sudoku | Grey screen, dl_res_*** |
-| PoPo Bash | Exits |
-| Puzzle Bobble | ⏳ Exits |
+| Overlord-Fighter | Boots, runs µC/GUI message loop, blank screen (needs `flydata.dlx` via `dl_load`) |
+| Platinum Sudoku | Renders |
+| PoPo Bash | Renders |
+| Puzzle Bobble | Renders |
 | Rick-Dangerous | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | Rubido | ⏳ Loads, reads resources, then audio-write spin (timeout) |
 | snake | ⏳ Loads resources from binary, then loops on NOT FOUND (timeout) |
@@ -281,14 +281,14 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Save file write path not implemented | ⚠️ Medium priority |
 | MXU audio mixing correctness unverified | ⚠️ Low priority |
 | `get_current_language` hardcoded to English | ⚠️ Low priority — may affect Chinese UI locale |
-| `ERPT` resource chunk not parsed (Yi‑Chi, Overlord‑Fighter) | ⚠️ Medium priority — holds `flydata.dlx`; both titles render blank without it |
-| `dl_load` / DLX dynamic modules not implemented | ⚠️ Medium priority — blocks the `ERPT` titles even once resources are readable |
+| `ERPT` / SIZED resource archives | ✅ Parsed (`u32` count, 508-byte name/size/offset records, XOR 0x40). PoPo Bash, Puzzle Bobble, Platinum Sudoku, Mushroom Roulette now render. Overlord/Yi-Chi still need `dl_load` for `.dlx` modules |
+| `dl_load` / DLX dynamic modules not implemented | ⚠️ Medium priority — Overlord/Yi-Chi stay blank without it |
 
 ---
 
-## Stubs (90 entries)
+## Stubs (89 entries)
 
-All 90 stubs print `[STUB]` and return. Categories:
+All 89 stubs print `[STUB]` and return. Categories:
 
 | Category | Functions |
 |----------|-----------|
@@ -368,7 +368,7 @@ Previously, Phase 2 simply jumped to AppMain and called it as a plain function, 
 
 The original dispatch table covered 87 entries (indices 0–86). Apps with extended GOT (Life, StopWatch, dicer — 172 imports) hit "Unknown GOT" errors and stopped before rendering.
 
-**Fix:** cross-referenced the full Dingoo OS API list (173 functions) and added the missing entries to `s_handlers[]`. The table now has 180 entries. All tested apps, including 172-import GOT apps, avoid "Unknown GOT" errors. 90 functions have real implementations; 90 are stubs that print `[STUB]` and return.
+**Fix:** cross-referenced the full Dingoo OS API list (173 functions) and added the missing entries to `s_handlers[]`. The table now has 180 entries. All tested apps, including 172-import GOT apps, avoid "Unknown GOT" errors. 91 functions have real implementations; 89 are stubs that print `[STUB]` and return.
 
 ### System-model check (`cmGetSysModel`)
 

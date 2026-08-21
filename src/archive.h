@@ -12,6 +12,19 @@ struct ArchiveEntry {
     u32 size;          // file size
 };
 
+// SPK / ERPT directory variants.
+struct SpkFormat {
+    u32 count_bytes;
+    u32 name_len;
+    bool has_size;
+    u8 xor_key;       // payload obfuscation, 0 = plaintext
+    const char* label;
+};
+
+inline u32 spk_entry_size(const SpkFormat& f) {
+    return f.name_len + (f.has_size ? 8u : 4u);
+}
+
 class Archive {
 public:
     Archive();
