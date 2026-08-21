@@ -373,9 +373,10 @@ private:
     static constexpr int MAX_DL_RES = 64;
     struct DlResHandle {
         bool in_use;
-        u32 guest_addr;
+        u32 guest_addr;      // lazy KSEG0 map; 0 until a caller needs a pointer
         u32 size;
-        u32 offset;  // sequential read cursor for dl_res_get_data
+        u32 offset;          // sequential read cursor for dl_res_get_data
+        const u8* host_data; // archive bytes; open does not copy these into guest RAM
     };
     DlResHandle m_dl_res[MAX_DL_RES];
 

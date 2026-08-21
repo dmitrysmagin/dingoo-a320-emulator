@@ -4,6 +4,7 @@
 #include "types.h"
 #include <SDL2/SDL.h>
 #include <queue>
+#include <memory>
 
 // Dingoo A320 key bitmasks for _kbd_get_status / get_key_val.
 // Values match the VK_GAME_* constants in gamelib.h (gameplay/gamelib.h):
@@ -38,7 +39,7 @@ public:
     void shutdown();
 
     // Framebuffer access
-    u16* get_framebuffer() { return m_framebuffer; }
+    u16* get_framebuffer() { return m_framebuffer.get(); }
     u32  get_frame_addr() const { return m_frame_addr; }
     u32  get_back_addr()  const { return m_frame_back; }
     void set_back_addr(u32 addr) { m_frame_back = addr; }
@@ -87,8 +88,8 @@ private:
     SDL_Renderer* m_renderer;
     SDL_Texture*  m_texture;
 
-    u16 m_framebuffer[WIDTH * HEIGHT];
-    u32 m_argb_cache[WIDTH * HEIGHT];   // last ARGB8888 frame written by flip_argb8888
+    std::unique_ptr<u16[]> m_framebuffer;
+    std::unique_ptr<u32[]> m_argb_cache;   // last ARGB8888 frame written by flip / flip_argb8888
     u32 m_frame_addr;   // physical address of the front (currently displayed) buffer
     u32 m_frame_back;   // physical address of the back (available for rendering) buffer
     bool m_display_on;

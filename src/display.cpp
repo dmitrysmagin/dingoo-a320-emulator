@@ -2,11 +2,14 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
+#include <memory>
 
 Display::Display()
     : m_window(nullptr)
     , m_renderer(nullptr)
     , m_texture(nullptr)
+    , m_framebuffer(std::make_unique<u16[]>(WIDTH * HEIGHT))
+    , m_argb_cache(std::make_unique<u32[]>(WIDTH * HEIGHT))
     , m_frame_addr(0)
     , m_frame_back(0)
     , m_display_on(true)
@@ -17,8 +20,8 @@ Display::Display()
     , m_hw_keys(0)
     , m_prev_dingoo_keys(0)
 {
-    memset(m_framebuffer, 0, sizeof(m_framebuffer));
-    memset(m_argb_cache,  0, sizeof(m_argb_cache));
+    memset(m_framebuffer.get(), 0, WIDTH * HEIGHT * sizeof(u16));
+    memset(m_argb_cache.get(),  0, WIDTH * HEIGHT * sizeof(u32));
 }
 
 Display::~Display() {
@@ -95,7 +98,7 @@ void Display::flip(const u8* guest_ram, u32 ram_size) {
     constexpr u32 fb_bytes = WIDTH * HEIGHT * PIXEL_SIZE;
     u32 phys = m_frame_addr & 0x1FFFFFFF;
     if (phys + fb_bytes <= ram_size)
-        memcpy(m_framebuffer, &guest_ram[phys], fb_bytes);
+        memcpy(m_framebuffer.get(), &guest_ram[phys], fb_bytes);
 
     upload_and_present();
 }
@@ -134,11 +137,10 @@ void Display::flip_argb8888(const u8* guest_ram, u32 ram_size) {
             }
         }
         m_argb_valid = true;
-        SDL_UpdateTexture(m_texture, nullptr, m_argb_cache, WIDTH * sizeof(u32));
+        SDL_UpdateTexture(m_texture, nullptr, m_argb_cache.get(), WIDTH * sizeof(u32));
     }
-    SDL_RenderClear(m_renderer);
-    SDL_RenderCopy(m_renderer, m_texture, nullptr, nullptr);
-    SDL_RenderPresent(m_renderer);
+    // Present once per host vsync (present_blank) so a real D3D window is not
+    // flipped from inside the guest LCD syscall — that path crashes some drivers.
 }
 
 void Display::flip_composite(const u8* guest_ram, u32 ram_size, u32 overlay_phys) {
@@ -152,7 +154,7 @@ void Display::flip_composite(const u8* guest_ram, u32 ram_size, u32 overlay_phys
 
     // Copy background layer
     if (guest_ram && bg_phys + fb_bytes <= ram_size)
-        memcpy(m_framebuffer, &guest_ram[bg_phys], fb_bytes);
+        memcpy(m_framebuffer.get(), &guest_ram[bg_phys], fb_bytes);
 
     // Overlay text layer: copy non-zero pixels from overlay_phys on top
     if (guest_ram && overlay_phys && overlay_phys + fb_bytes <= ram_size) {
@@ -169,8 +171,9 @@ void Display::flip_composite(const u8* guest_ram, u32 ram_size, u32 overlay_phys
 // Convert m_framebuffer (RGB565) to ARGB8888 and upload to the SDL texture.
 // RGB565 layout: R[15:11] G[10:5] B[4:0].
 // Bits are replicated into the vacated LSBs so 0x1F → 0xFF (not 0xF8).
+// Does not Present — the host vsync path presents once per outer loop.
 void Display::upload_and_present() {
-    static u32 argb[WIDTH * HEIGHT];
+    if (!m_initialized || !m_framebuffer || !m_argb_cache) return;
     for (int i = 0; i < WIDTH * HEIGHT; i++) {
         u16 px = m_framebuffer[i];
         u8 r5 = (px >> 11) & 0x1F;
@@ -179,12 +182,10 @@ void Display::upload_and_present() {
         u8 r = (r5 << 3) | (r5 >> 2);
         u8 g = (g6 << 2) | (g6 >> 4);
         u8 b = (b5 << 3) | (b5 >> 2);
-        argb[i] = (0xFFu << 24) | ((u32)r << 16) | ((u32)g << 8) | b;
+        m_argb_cache[i] = (0xFFu << 24) | ((u32)r << 16) | ((u32)g << 8) | b;
     }
-    SDL_UpdateTexture(m_texture, nullptr, argb, WIDTH * sizeof(u32));
-    SDL_RenderClear(m_renderer);
-    SDL_RenderCopy(m_renderer, m_texture, nullptr, nullptr);
-    SDL_RenderPresent(m_renderer);
+    m_argb_valid = true;
+    SDL_UpdateTexture(m_texture, nullptr, m_argb_cache.get(), WIDTH * sizeof(u32));
 }
 
 static u32 sdl_to_dingoo(SDL_Keycode sym) {
@@ -226,8 +227,13 @@ static u32 sdl_to_game_hw(SDL_Keycode sym) {
 }
 
 void Display::present_blank() {
-    if (m_initialized)
-        SDL_RenderPresent(m_renderer);
+    if (!m_initialized || !m_renderer || !m_texture) return;
+    // Must Copy before Present: a bare SDL_RenderPresent on D3D flips an
+    // undefined back buffer and crashes some Windows drivers. Offscreen
+    // software backends hide that.
+    SDL_RenderClear(m_renderer);
+    SDL_RenderCopy(m_renderer, m_texture, nullptr, nullptr);
+    SDL_RenderPresent(m_renderer);
 }
 
 void Display::save_screenshot(const char* path) {
@@ -240,7 +246,7 @@ void Display::save_screenshot(const char* path) {
         // We cannot reliably use SDL_RenderReadPixels after SDL_RenderPresent because
         // double-buffered backends swap the back buffer, leaving it undefined.
         SDL_Surface* src = SDL_CreateRGBSurfaceWithFormatFrom(
-            m_argb_cache, WIDTH, HEIGHT, 32, WIDTH * sizeof(u32), SDL_PIXELFORMAT_ARGB8888);
+            m_argb_cache.get(), WIDTH, HEIGHT, 32, WIDTH * sizeof(u32), SDL_PIXELFORMAT_ARGB8888);
         if (!src) return;
         dst = SDL_ConvertSurfaceFormat(src, SDL_PIXELFORMAT_BGR24, 0);
         SDL_FreeSurface(src);
@@ -248,7 +254,7 @@ void Display::save_screenshot(const char* path) {
         // flip / flip_strided path (16bpp RGB565).
         // Replicate the 5/6-bit component values into the vacated LSBs (e.g. 0x1F → 0xFF).
         SDL_Surface* src = SDL_CreateRGBSurfaceWithFormatFrom(
-            m_framebuffer, WIDTH, HEIGHT, 16, WIDTH * PIXEL_SIZE, SDL_PIXELFORMAT_RGB565);
+            m_framebuffer.get(), WIDTH, HEIGHT, 16, WIDTH * PIXEL_SIZE, SDL_PIXELFORMAT_RGB565);
         if (!src) return;
         dst = SDL_ConvertSurfaceFormat(src, SDL_PIXELFORMAT_BGR24, 0);
         SDL_FreeSurface(src);

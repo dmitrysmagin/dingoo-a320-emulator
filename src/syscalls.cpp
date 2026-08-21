@@ -310,6 +310,7 @@ Syscalls::Syscalls(Memory& mem, Display& display)
         m_dl_res[i].guest_addr = 0;
         m_dl_res[i].size = 0;
         m_dl_res[i].offset = 0;
+        m_dl_res[i].host_data = nullptr;
     }
     for (int i = 0; i < MAX_DL_MODULES; i++) {
         m_dl_modules[i].in_use = false;
@@ -889,6 +890,9 @@ void Syscalls::dispatch(int got_index, u32 return_addr) {
 // === Heap ===
 
 static constexpr u32 HEAP_MAX_SINGLE = 16u * 1024u * 1024u;
+// Guest stack lives at phys 0x01FF0000 (64 KB). Never let the bump allocator
+// walk into that region — Rubido's titlescreen mapping used to smash $ra.
+static constexpr u32 HEAP_LIMIT = 0x01FE0000;
 
 u32 Syscalls::heap_alloc(u32 size) {
     if (size == 0) size = 1;
@@ -901,8 +905,8 @@ u32 Syscalls::heap_alloc(u32 size) {
     if (top + size > 0x009FFFFC && top < 0x00C10000)
         top = 0x00C10000;
     u64 new_top = (u64)top + size;
-    if (new_top > 0x01FFFFFC) {
-        printf("[HEAP] OOM: top=0x%08X size=%u\n", top, size);
+    if (new_top > HEAP_LIMIT) {
+        printf("[HEAP] OOM: top=0x%08X size=%u (limit 0x%08X)\n", top, size, HEAP_LIMIT);
         return 0;
     }
     u32 addr = top;
@@ -1263,6 +1267,11 @@ void Syscalls::impl_StartSwTimer() {
 }
 
 void Syscalls::process_timers() {
+    if (m_timers.size() > 64) {
+        printf("[TIMER] ignoring corrupt list size=%zu\n", m_timers.size());
+        fflush(stdout);
+        return;
+    }
     u32 now = SDL_GetTicks();
     u32 delta = now - m_last_timer_tick;
     m_last_timer_tick = now;
@@ -1270,9 +1279,10 @@ void Syscalls::process_timers() {
     if (delta == 0) return;
 
     for (auto& t : m_timers) {
-        if (!t.active || t.callback == 0) continue;
+        if (!t.active || t.callback == 0 || t.period_ms == 0) continue;
         t.elapsed += delta;
-        while (t.elapsed >= t.period_ms) {
+        u32 steps = 0;
+        while (t.elapsed >= t.period_ms && steps++ < 8) {
             t.elapsed -= t.period_ms;
             printf("[TIMER] Firing timer callback 0x%08X\n", t.callback);
             call_guest_function(t.callback, 0);
@@ -2258,7 +2268,19 @@ void Syscalls::impl_OSTaskCreate() {
         t.sem_err_ptr = 0;
         t.regs[4] = task_arg;
         t.regs[28] = g_cpu_regs[28];  // inherit $gp from the creator
+        // Rubido (and other Vrix titles) pass a BSS symbol as ptos — a few
+        // dozen bytes, not a real stack. The mixer then smashes $ra and jr's
+        // to 0. Give in-image stacks a proper 16 KB heap frame.
         u32 sp = stack_top & ~0xF;
+        if (sp >= 0x80A00000 && sp < 0x80C00000) {
+            static constexpr u32 TASK_STACK_SIZE = 0x4000;
+            u32 base = heap_alloc(TASK_STACK_SIZE);
+            if (base) {
+                printf("[OSTaskCreate] in-image stack 0x%08X too small; using 16KB @ 0x%08X\n",
+                       sp, base);
+                sp = (base + TASK_STACK_SIZE) & ~0xF;
+            }
+        }
         t.regs[29] = sp;
         t.regs[30] = sp;
         // Real µC/OS-II OSTaskStkInit sets $ra to OS_TaskReturn so a task that
@@ -2792,6 +2814,7 @@ void Syscalls::free_dl_res_handle(int idx) {
     m_dl_res[idx].guest_addr = 0;
     m_dl_res[idx].size = 0;
     m_dl_res[idx].offset = 0;
+    m_dl_res[idx].host_data = nullptr;
 }
 
 const ArchiveEntry* Syscalls::find_dl_file(const std::string& name) const {
@@ -2846,23 +2869,16 @@ void Syscalls::impl_dl_res_open() {
     int idx = alloc_dl_res_handle();
     if (idx < 0) { g_cpu_regs[2] = 0; return; }
 
-    u32 guest = heap_alloc(entry->size);
-    if (!guest) {
-        free_dl_res_handle(idx);
-        g_cpu_regs[2] = 0;
-        return;
-    }
-
-    const u8* src = m_archive->get_data(*entry);
-    m_mem.write_block(guest, src, entry->size);
-
+    // Keep the payload on the host. Mapping every open into guest RAM made
+    // Rubido's 10 MB music.snd bump the heap into the stack and smash $ra.
     m_dl_res[idx].in_use = true;
-    m_dl_res[idx].guest_addr = guest;
+    m_dl_res[idx].guest_addr = 0;
     m_dl_res[idx].size = entry->size;
     m_dl_res[idx].offset = 0;
+    m_dl_res[idx].host_data = m_archive->get_data(*entry);
 
-    printf("[dl_res] open '%s' -> handle %d (%u bytes @ 0x%08X)\n",
-           entry->name.c_str(), idx + 1, entry->size, guest);
+    printf("[dl_res] open '%s' -> handle %d (%u bytes, host-backed)\n",
+           entry->name.c_str(), idx + 1, entry->size);
     g_cpu_regs[2] = (u32)(idx + 1);
 }
 
@@ -2880,7 +2896,7 @@ void Syscalls::impl_dl_res_get_data() {
         g_cpu_regs[2] = 0;
         return;
     }
-    u32 src = m_dl_res[idx].guest_addr;
+    const u8* host = m_dl_res[idx].host_data;
     u32 dest = arg(1);
     u32 n = arg(2);
     u32 count = arg(3);
@@ -2904,23 +2920,22 @@ void Syscalls::impl_dl_res_get_data() {
     u32 phys = dest & 0x1FFFFFFF;
     bool dest_ok = dest >= 0x80000000 && dest < 0x82000000;
     bool in_rawd = phys >= 0x00A00000 && phys < 0x00BF0000;
-    if (dest_ok && nbytes > 0 && nbytes <= remaining && !in_rawd) {
-        u32 from = src + m_dl_res[idx].offset;
-        u8 chunk[4096];
-        u32 copied = 0;
-        while (copied < nbytes) {
-            u32 n = nbytes - copied;
-            if (n > sizeof(chunk)) n = (u32)sizeof(chunk);
-            m_mem.read_block(from + copied, chunk, n);
-            m_mem.write_block(dest + copied, chunk, n);
-            copied += n;
-        }
+    if (dest_ok && nbytes > 0 && nbytes <= remaining && !in_rawd && host) {
+        m_mem.write_block(dest, host + m_dl_res[idx].offset, nbytes);
         m_dl_res[idx].offset += nbytes;
         g_cpu_regs[2] = dest;
         return;
     }
 
-    g_cpu_regs[2] = src;
+    // Caller wants a pointer into the resource. Map once, lazily.
+    if (!m_dl_res[idx].guest_addr && host && m_dl_res[idx].size) {
+        u32 guest = heap_alloc(m_dl_res[idx].size);
+        if (guest) {
+            m_mem.write_block(guest, host, m_dl_res[idx].size);
+            m_dl_res[idx].guest_addr = guest;
+        }
+    }
+    g_cpu_regs[2] = m_dl_res[idx].guest_addr;
 }
 
 void Syscalls::impl_dl_res_close() {

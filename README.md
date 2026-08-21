@@ -252,7 +252,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | PoPo Bash | Renders |
 | Puzzle Bobble | Renders |
 | Rick-Dangerous | ⏳ Loads, reads resources, then audio-write spin (timeout) |
-| Rubido | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Rubido | Renders (host-backed `dl_res_*`; no longer heap-maps 10 MB `music.snd` into the stack) |
 | snake | ⏳ Loads resources from binary, then loops on NOT FOUND (timeout) |
 | StopWatch | ⏳ Hits `=== Starting emulation ===`, then nothing (GAP) |
 | tetris | Playable |

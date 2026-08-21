@@ -407,6 +407,17 @@ int main(int argc, char* argv[]) {
         cpu.do_vsync();
         frame++;
 
+        // Count after vsync Present so idle yields still register a rendered frame.
+        if (display.is_dirty()) {
+            display.clear_dirty();
+            frame_count++;
+            if (save_screenshots && (frame_count <= 10 || frame_count % 10 == 0)) {
+                char path[64];
+                snprintf(path, sizeof(path), "screenshot_%04d.bmp", frame_count);
+                display.save_screenshot(path);
+            }
+        }
+
         // AppMain returned to the sentinel for real (jr $ra where $ra == sentinel).
         // If tasks are still blocked on OSTimeDly/OSSemPend, keep running — that is
         // a scheduler yield, not an exit (should not happen once idle loop is separate).
@@ -429,17 +440,6 @@ int main(int argc, char* argv[]) {
         if (pc_phys >= mem.size()) {
             printf("[HALT] PC=0x%08X outside RAM (phys=0x%08X)\n", cpu.pc, pc_phys);
             cpu.running = false;
-        }
-
-        // Present frame if display is dirty; optionally save screenshots
-        if (display.is_dirty()) {
-            display.clear_dirty();
-            frame_count++;
-            if (save_screenshots && (frame_count <= 10 || frame_count % 10 == 0)) {
-                char path[64];
-                snprintf(path, sizeof(path), "screenshot_%04d.bmp", frame_count);
-                display.save_screenshot(path);
-            }
         }
 
         if (frame % 1000 == 0) {
