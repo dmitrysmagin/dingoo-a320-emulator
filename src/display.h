@@ -68,6 +68,8 @@ public:
         if (down) m_dingoo_keys |= key;
         else      m_dingoo_keys &= ~key;
     }
+    // Queue a Dingoo-button edge (updates DKEY/HW masks and the event FIFOs).
+    void inject_dingoo_key(u32 dkey, bool down);
 
     // Input event queues
     static constexpr u32 EVT_KEY_DOWN = 0x01;

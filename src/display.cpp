@@ -260,6 +260,47 @@ void Display::save_screenshot(const char* path) {
     printf("[DISPLAY] Screenshot saved: %s\n", path);
 }
 
+static u32 dkey_to_hw(u32 dk) {
+    switch (dk) {
+    case DKEY_UP:     return 1u << 20;
+    case DKEY_DOWN:   return 1u << 27;
+    case DKEY_LEFT:   return 1u << 28;
+    case DKEY_RIGHT:  return 1u << 18;
+    case DKEY_START:  return 1u << 11;
+    case DKEY_SELECT: return 1u << 10;
+    case DKEY_A:      return 1u << 31;
+    case DKEY_B:      return 1u << 21;
+    case DKEY_X:      return 1u << 16;
+    case DKEY_Y:      return 1u << 6;
+    case DKEY_L:      return 1u << 8;
+    case DKEY_R:      return 1u << 29;
+    default:          return 0;
+    }
+}
+
+void Display::inject_dingoo_key(u32 dk, bool down) {
+    if (!dk) return;
+    u32 hw = dkey_to_hw(dk);
+    u32 code = bitmask_to_keycode(dk);
+    if (down) {
+        if (!(m_dingoo_keys & dk) && code && m_input_events.size() < MAX_INPUT_EVENTS) {
+            u32 ev = (EVT_KEY_DOWN << 8) | code;
+            m_input_events.push(ev);
+            m_key_events.push(ev);
+        }
+        m_dingoo_keys |= dk;
+        m_hw_keys |= hw;
+    } else {
+        if ((m_dingoo_keys & dk) && code && m_input_events.size() < MAX_INPUT_EVENTS) {
+            u32 ev = (EVT_KEY_UP << 8) | code;
+            m_input_events.push(ev);
+            m_key_events.push(ev);
+        }
+        m_dingoo_keys &= ~dk;
+        m_hw_keys &= ~hw;
+    }
+}
+
 u32 Display::bitmask_to_keycode(u32 bitmask) {
     switch (bitmask) {
         case DKEY_A:      return 0x01;

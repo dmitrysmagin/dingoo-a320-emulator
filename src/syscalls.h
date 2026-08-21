@@ -145,6 +145,8 @@ private:
     void impl_kbd_get_status();
     void impl_sys_judge_event();
     void impl_open_gui_key_msg();
+    bool gui_dispatch_pending_key();
+    static u32 dingoo_code_to_gui_key(u32 code);
 
     // Non‑standard GOT apps (Yi‑Chi, Overlord‑Fighter, etc.)
     void impl_cmGetSysVersion();
@@ -500,6 +502,14 @@ public:
     static constexpr int WM_MSG_KEY    = 14;
     static constexpr int WM_MSG_TIMER  = 0x113;
     static constexpr u32 WM_MAIN_HWIN  = 1;
+    // µC/GUI GUI_KEY_* (GUI.h) — Overlord's menu switch and hold-table use these.
+    static constexpr u32 GUI_KEY_ENTER  = 13;
+    static constexpr u32 GUI_KEY_LEFT   = 16;
+    static constexpr u32 GUI_KEY_UP     = 17;
+    static constexpr u32 GUI_KEY_RIGHT  = 18;
+    static constexpr u32 GUI_KEY_DOWN   = 19;
+    static constexpr u32 GUI_KEY_ESCAPE = 27;
+    static constexpr u32 GUI_KEY_SPACE  = 32;
     struct GuiTimer {
         bool active;
         u32  callback;
@@ -512,6 +522,8 @@ public:
     bool m_wm_paint_pending;   // WM_CREATE queued for the next GUI_Exec
     u32  m_wm_msg_buf;         // guest-side scratch WM_MESSAGE
     u32  m_gui_timer_msg_buf;  // guest-side scratch GUI_TIMER_MESSAGE
+    u32  m_wm_key_info_buf;    // guest-side WM_KEY_INFO { int Key; int PressedCnt; }
+    bool m_gui_key_msg_open;   // open_gui_key_msg has armed the key→WM_KEY bridge
     u32  wm_scratch(u32& slot, u32 size);
     void wm_dispatch(int msg_id, u32 data);
     bool gui_run_due_timer();

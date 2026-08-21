@@ -165,7 +165,7 @@ const Syscalls::GOTHandler Syscalls::s_handlers[] = {
     {"mdelay",                  &Syscalls::impl_mdelay,                  false},
     {"memcpy",                  &Syscalls::impl_memcpy,                  true},
     {"memset",                  &Syscalls::impl_memset,                  true},
-    {"open_gui_key_msg",        &Syscalls::impl_open_gui_key_msg,        true},
+    {"open_gui_key_msg",        &Syscalls::impl_open_gui_key_msg,        false},
     {"pcm_can_read",            &Syscalls::impl_pcm_can_read,            false},
     {"pcm_can_write",           &Syscalls::impl_pcm_can_write,           false},
     {"pcm_ioctl",               &Syscalls::impl_pcm_ioctl,               false},
@@ -278,6 +278,8 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     , m_wm_paint_pending(false)
     , m_wm_msg_buf(0)
     , m_gui_timer_msg_buf(0)
+    , m_wm_key_info_buf(0)
+    , m_gui_key_msg_open(false)
 {
     memset(m_got_call_counts, 0, sizeof(m_got_call_counts));
     m_audio_sem_reg_count = 0;
@@ -2968,8 +2970,10 @@ void Syscalls::impl_LCD_Color2Index() {
 }
 
 void Syscalls::impl_kbd_get_key() {
-    // Non-underscore wrapper: same as _kbd_get_key
-    impl__kbd_get_key();
+    // kbd_get_key() (no underscore) returns the current hardware key bitmask.
+    // Overlord's hold-check at 0x80A117FC ANDs this with KeyLeft/KeyA/etc.
+    // _kbd_get_key is the separate event-FIFO API (type<<8|code).
+    g_cpu_regs[2] = m_display.get_hw_keys();
 }
 
 void Syscalls::impl_kbd_get_status() {
@@ -2982,10 +2986,52 @@ void Syscalls::impl_sys_judge_event() {
     impl__sys_judge_event();
 }
 
+u32 Syscalls::dingoo_code_to_gui_key(u32 code) {
+    // Dingoo SDK keycodes 1–12 → µC/GUI GUI_KEY_*. Overlord's menu switch
+    // (0x80A00830) and hold-table (0x80A21C70) compare against these values.
+    switch (code) {
+    case 0x01: return GUI_KEY_ENTER;   // A
+    case 0x02: return GUI_KEY_ESCAPE;  // B
+    case 0x03: return GUI_KEY_ENTER;   // X
+    case 0x04: return GUI_KEY_SPACE;   // Y
+    case 0x07: return GUI_KEY_ENTER;   // START
+    case 0x08: return GUI_KEY_ESCAPE;  // SELECT
+    case 0x09: return GUI_KEY_UP;
+    case 0x0A: return GUI_KEY_DOWN;
+    case 0x0B: return GUI_KEY_LEFT;
+    case 0x0C: return GUI_KEY_RIGHT;
+    default:   return 0;
+    }
+}
+
 void Syscalls::impl_open_gui_key_msg() {
-    // µC/GUI-specific; only imported by Yi-Chi King Fighter
-    printf("[STUB] open_gui_key_msg\n");
+    // Real firmware starts a task that polls the keypad and posts WM_KEY
+    // through GUI_StoreKeyMsg.  We fold that into GUI_Exec instead.
+    m_gui_key_msg_open = true;
+    printf("[µC/GUI] open_gui_key_msg\n");
     g_cpu_regs[2] = 0;
+}
+
+bool Syscalls::gui_dispatch_pending_key() {
+    if (!m_gui_key_msg_open || !m_wm_callback)
+        return false;
+    if (!m_display.has_key_event())
+        return false;
+    u32 ev = m_display.pop_key_event();
+    u32 type = ev >> 8;
+    u32 gui_key = dingoo_code_to_gui_key(ev & 0xFFu);
+    if (!gui_key)
+        return false;
+    u32 info = wm_scratch(m_wm_key_info_buf, 8);
+    if (!info)
+        return false;
+    // WM_KEY_INFO { int Key; int PressedCnt; } — PressedCnt 1 = down, 0 = up.
+    u32 pressed = (type == Display::EVT_KEY_DOWN) ? 1u : 0u;
+    m_mem.write_u32(info + 0, gui_key);
+    m_mem.write_u32(info + 4, pressed);
+    printf("[µC/GUI] WM_KEY key=%u pressed=%u\n", gui_key, pressed);
+    wm_dispatch(WM_MSG_KEY, info);
+    return true;
 }
 
 // === Non‑standard GOT app functions (Yi‑Chi, Overlord‑Fighter) ===
@@ -3125,6 +3171,8 @@ void Syscalls::impl_GUI_Exec() {
         wm_dispatch(WM_MSG_CREATE, 0);
         return;
     }
+    if (gui_dispatch_pending_key())
+        return;
     gui_run_due_timer();
 }
 

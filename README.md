@@ -23,7 +23,7 @@ Runs any standard `.app` binary with Dingoo OS syscall interception, SDL2 displa
 │  │                                                          │   │
 │  │  ┌──────────────────────────────────────────────────┐   │   │
 │  │  │           Dingoo OS Syscall Interception         │   │   │
-│  │  │ 96 implemented + 84 stubs = 180 intercepted     │   │   │
+│  │  │ 97 implemented + 83 stubs = 180 intercepted     │   │   │
 │  │  └──────────────────────────────────────────────────┘   │   │
 │  │                                                          │   │
 │  │  ┌──────────────────────────────────────────────────┐   │   │
@@ -215,8 +215,8 @@ Guest memory layout:
 
 The emulator intercepts all GOT trampoline calls from the guest binary. The dispatch table has 180 entries covering all 173 documented Dingoo OS functions plus extras:
 
-- **96 implemented** — real host implementations (malloc, printf, LCD, audio, input, µC/OS-II scheduler, filesystem I/O, PCM ioctl, µC/GUI window manager, `dl_res_*`, `dl_load`/`dl_free`/`dl_get_proc`, etc.)
-- **84 stubs** — print `[STUB]` and return (TV, accelerometer, audio/video framework, wide-FS, extra libc, and misc categories)
+- **97 implemented** — real host implementations (malloc, printf, LCD, audio, input, µC/OS-II scheduler, filesystem I/O, PCM ioctl, µC/GUI window manager, `dl_res_*`, `dl_load`/`dl_free`/`dl_get_proc`, etc.)
+- **83 stubs** — print `[STUB]` and return (TV, accelerometer, audio/video framework, wide-FS, extra libc, and misc categories)
 - Standard 72-entry GOT apps are fully dispatched. Apps with extended GOT (Life, StopWatch, dicer with 172 imports; Yi-Chi/Overlord-Fighter with 96) are now covered for all known Dingoo OS functions
 
 Arguments beyond the fourth are read from the caller's stack following the o32 ABI: the
@@ -247,7 +247,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Mojo | Playable |
 | Mushroom Roulette | Renders |
 | Nose Breaker | Black screen |
-| Overlord-Fighter | Loads `flydata.dlx` (DLX2 via `dl_res_*`), LOADING splash, then in-game frames (audio worker runs) |
+| Overlord-Fighter | Loads `flydata.dlx`, splash then menu; µC/GUI `WM_KEY` from `open_gui_key_msg` (A/Start confirm, D-pad choose) |
 | Platinum Sudoku | Renders |
 | PoPo Bash | Renders |
 | Puzzle Bobble | Renders |
@@ -286,9 +286,9 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 
 ---
 
-## Stubs (84 entries)
+## Stubs (83 entries)
 
-All 84 stubs print `[STUB]` and return. Categories:
+All 83 stubs print `[STUB]` and return. Categories:
 
 | Category | Functions |
 |----------|-----------|
@@ -298,7 +298,7 @@ All 84 stubs print `[STUB]` and return. Categories:
 | Wide filesystem | `fsys_fcloseW`, `fsys_fclose_flash`, `fsys_fopen_flash`, `fsys_mkdir`, `fsys_removeW`, `fsys_renameW` |
 | Extra libc | `memcpy`, `memset`, `sscanf`, `vsprintf`, `_tcscmp`, `_tcscpy`, `serial_puts` |
 | Low-level OS | `SysDisableBkLight`, `sys_get_ccpmp_config`, `detect_clock`, `delay_ms`, `udelay` |
-| Pre-existing stubs | `vxGoHome`, `free_irq`, `fsys_RefreshCache`, `fsys_flush_cache`, `__icache_invalidate_all`, `__dcache_writeback_all`, `TaskMediaFunStop`, `serial_getc`, `USB_Connect`, `USB_No_Connect`, `udc_attached`, `open_gui_key_msg` |
+| Pre-existing stubs | `vxGoHome`, `free_irq`, `fsys_RefreshCache`, `fsys_flush_cache`, `__icache_invalidate_all`, `__dcache_writeback_all`, `TaskMediaFunStop`, `serial_getc`, `USB_Connect`, `USB_No_Connect`, `udc_attached` |
 
 These stubs unblock all tested apps (including Life, StopWatch, dicer with 172-import GOT) from hitting "Unknown GOT" errors.
 
@@ -306,7 +306,7 @@ These stubs unblock all tested apps (including Life, StopWatch, dicer with 172-i
 
 | App | Imports | Status |
 |-----|---------|--------|
-| Yi‑Chi King Fighter, Overlord‑Fighter | 96 | All 96 names dispatched. `flydata.dlx` loads (DLX2); splash and in-game frames render; audio worker runs |
+| Yi‑Chi King Fighter, Overlord‑Fighter | 96 | All 96 names dispatched. `flydata.dlx` loads (DLX2); splash and menu render; `open_gui_key_msg` posts `WM_KEY` so D-pad/A/Start work |
 | Life, StopWatch, dicer | 172 | All 173 documented functions + extras in table; no more "Unknown GOT" errors |
 
 ---
@@ -392,9 +392,12 @@ without producing frames (13.5M `GUI_Exec` calls in 15 seconds, 1 frame rendered
 **Fix:** `GUI_Exec` now drives a real message pump. `WM_CreateWindow` records the
 callback and queues `WM_CREATE` (id 1); the first `GUI_Exec` delivers it, and later calls
 fire due `GUI_TIMER_*` timers, whose callbacks post `WM_TIMER` (id 0x113) back through
-`WM__SendMessage`. Messages use the µC/GUI layout `{ int MsgId; U16 hWin; U16 hWinSrc;
-U32 Data; }` and are delivered with `call_guest_function`, which reuses the existing
-return stub at `0x80BFFF00`. Both titles now boot and render continuously.
+`WM__SendMessage`. After `open_gui_key_msg`, keypad edges are posted as `WM_KEY` (id 14)
+with a `WM_KEY_INFO { Key, PressedCnt }` whose `Key` values are µC/GUI `GUI_KEY_*`
+(ENTER=13, arrows 16–19, ESCAPE=27). Messages use the µC/GUI layout `{ int MsgId;
+U16 hWin; U16 hWinSrc; U32 Data; }` and are delivered with `call_guest_function`, which
+reuses the existing return stub at `0x80BFFF00`. Both titles now boot, render, and
+accept menu input.
 
 Two supporting bugs were fixed alongside it: stack-passed syscall arguments were read 16
 bytes too high (see the ABI note above), and the callback return stub popped 8 bytes from

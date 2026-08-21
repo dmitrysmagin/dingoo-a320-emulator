@@ -367,6 +367,41 @@ int main(int argc, char* argv[]) {
         }
 
         write_keys();
+
+        // Optional headless pulses: EMU_INJECT=frame:KEY,...  (KEY = LEFT/RIGHT/UP/DOWN/A/B/START)
+        // Consecutive frames with the same KEY keep it held; a gap (or a different KEY) releases it.
+        if (const char* inj = getenv("EMU_INJECT")) {
+            static u32 s_held = 0;
+            u32 want = 0;
+            const char* p = inj;
+            while (*p) {
+                char name[16] = {};
+                unsigned fr = 0;
+                int n = 0;
+                if (sscanf(p, "%u:%15[A-Z]%n", &fr, name, &n) < 2)
+                    break;
+                if (fr == frame) {
+                    if (!strcmp(name, "LEFT")) want = DKEY_LEFT;
+                    else if (!strcmp(name, "RIGHT")) want = DKEY_RIGHT;
+                    else if (!strcmp(name, "UP")) want = DKEY_UP;
+                    else if (!strcmp(name, "DOWN")) want = DKEY_DOWN;
+                    else if (!strcmp(name, "A")) want = DKEY_A;
+                    else if (!strcmp(name, "B")) want = DKEY_B;
+                    else if (!strcmp(name, "START")) want = DKEY_START;
+                    else if (!strcmp(name, "SELECT")) want = DKEY_SELECT;
+                }
+                p += n;
+                if (*p == ',') p++;
+            }
+            if (want != s_held) {
+                if (s_held)
+                    display.inject_dingoo_key(s_held, false);
+                if (want)
+                    display.inject_dingoo_key(want, true);
+                s_held = want;
+            }
+        }
+
         cpu.run_until_pc(DL_MAIN_SENTINEL, max_insns_per_frame, IDLE_LOOP_PC);
         syscalls.process_timers();
         cpu.do_vsync();
