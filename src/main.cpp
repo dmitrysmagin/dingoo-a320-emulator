@@ -160,6 +160,35 @@ int main(int argc, char* argv[]) {
     mem.write_u32(IDLE_LOOP_PC + 0x04, 0x00000000); // nop
     printf("[PATCH] Scheduler idle loop at 0x%08X\n", IDLE_LOOP_PC);
 
+    // OS_TaskReturn: $ra for OSTaskCreate'd workers. Falling off the task
+    // calls OSTaskDel(OS_PRIO_SELF) instead of jumping to 0 (KUSEG walk).
+    {
+        u32 ostaskdel_got = 0;
+        for (const auto& imp : app.imports) {
+            if (imp.name == "OSTaskDel") {
+                ostaskdel_got = imp.address;
+                break;
+            }
+        }
+        mem.write_u32(TASK_RETURN_PC + 0x00, 0x240400FF); // addiu $a0, $zero, 255
+        if (ostaskdel_got) {
+            mem.write_u32(TASK_RETURN_PC + 0x04,
+                          0x0C000000u | ((ostaskdel_got >> 2) & 0x03FFFFFFu)); // jal OSTaskDel
+            mem.write_u32(TASK_RETURN_PC + 0x08, 0x00000000);
+            mem.write_u32(TASK_RETURN_PC + 0x0C,
+                          0x08000000u | ((IDLE_LOOP_PC >> 2) & 0x03FFFFFFu)); // j idle
+            mem.write_u32(TASK_RETURN_PC + 0x10, 0x00000000);
+            printf("[PATCH] OS_TaskReturn at 0x%08X -> OSTaskDel@0x%08X\n",
+                   TASK_RETURN_PC, ostaskdel_got);
+        } else {
+            mem.write_u32(TASK_RETURN_PC + 0x04,
+                          0x08000000u | ((IDLE_LOOP_PC >> 2) & 0x03FFFFFFu));
+            mem.write_u32(TASK_RETURN_PC + 0x08, 0x00000000);
+            printf("[PATCH] OS_TaskReturn at 0x%08X -> idle (no OSTaskDel import)\n",
+                   TASK_RETURN_PC);
+        }
+    }
+
     // Write timer callback return stub at 0x80BFFF00
     //   lw $ra, 0($sp);  addiu $sp, $sp, 16;  jr $ra;  nop
     // The +16 must match the frame call_guest_function() reserves, otherwise every

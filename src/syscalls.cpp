@@ -2142,6 +2142,13 @@ void Syscalls::save_current_task() {
     int t = m_current_task;
     if (t < 0 || t >= m_task_count || t >= MAX_TASKS)
         return;
+    // A KUSEG PC means the CPU already jumped off the rails — keep the last
+    // valid resume address so a later switch can restart at task_entry.
+    if ((g_cpu_pc & 0x80000000) == 0) {
+        printf("[SCHEDULER] not saving KUSEG pc=0x%08X for task %d (keeping 0x%08X)\n",
+               g_cpu_pc, t, m_tasks[t].pc);
+        return;
+    }
     memcpy(m_tasks[t].regs, g_cpu_regs, sizeof(g_cpu_regs));
     m_tasks[t].hi  = g_cpu_hi;
     m_tasks[t].lo  = g_cpu_lo;
@@ -2150,10 +2157,18 @@ void Syscalls::save_current_task() {
 
 void Syscalls::switch_to_task(int task_idx) {
     if (task_idx < 0 || task_idx >= m_task_count) return;
-    memcpy(g_cpu_regs, m_tasks[task_idx].regs, sizeof(g_cpu_regs));
-    g_cpu_hi = m_tasks[task_idx].hi;
-    g_cpu_lo = m_tasks[task_idx].lo;
-    g_cpu_pc = m_tasks[task_idx].pc;
+    Task& t = m_tasks[task_idx];
+    if ((t.pc & 0x80000000) == 0) {
+        printf("[SCHEDULER] task %d invalid resume pc=0x%08X, resetting to entry 0x%08X\n",
+               task_idx, t.pc, t.task_entry);
+        t.pc = t.task_entry;
+    }
+    if ((t.pc & 0x80000000) == 0)
+        return;
+    memcpy(g_cpu_regs, t.regs, sizeof(g_cpu_regs));
+    g_cpu_hi = t.hi;
+    g_cpu_lo = t.lo;
+    g_cpu_pc = t.pc;
     m_current_task   = task_idx;
     m_task_switched  = true;
 }
@@ -2230,21 +2245,24 @@ void Syscalls::impl_OSTaskCreate() {
 
     if (m_task_count < MAX_TASKS) {
         Task& t = m_tasks[m_task_count];
+        memset(&t, 0, sizeof(t));
         t.active = true;
         t.blocked = false;
-        memset(t.regs, 0, sizeof(t.regs));
         t.task_arg = task_arg;
         t.task_prio = (u8)prio;
+        t.task_entry = entry;
         t.wake_tick = 0;
         t.block_sem = 0;
         t.sem_err_ptr = 0;
         t.regs[4] = task_arg;
+        t.regs[28] = g_cpu_regs[28];  // inherit $gp from the creator
         u32 sp = stack_top & ~0xF;
-        sp &= ~0xF;
         t.regs[29] = sp;
         t.regs[30] = sp;
-        t.regs[31] = entry;
-        t.pc = entry;  // dedicated resume PC
+        // Real µC/OS-II OSTaskStkInit sets $ra to OS_TaskReturn so a task that
+        // falls off its entry deletes itself instead of jumping to 0 (KUSEG).
+        t.regs[31] = TASK_RETURN_PC;
+        t.pc = entry;
 
         int new_idx = m_task_count;
         m_task_count++;
@@ -3341,6 +3359,7 @@ void Syscalls::register_main_context(u32 pc, u32 a0, u8 prio) {
     t.blocked   = false;
     t.task_prio = prio;
     t.task_arg  = a0;
+    t.task_entry = pc;
     t.pc        = pc;
     // regs[] populated by save_current_task() on first preemption/block
     m_current_task      = idx;

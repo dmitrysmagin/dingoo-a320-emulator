@@ -638,8 +638,9 @@ void CPU::execute_one() {
         return;
     }
 
-    // Detect JR/JALR to invalid address immediately
-    if ((pc & 0x80000000) == 0 && pc >= 0x4000) {
+    // Detect JR/JALR to invalid address immediately.
+    // pc==0 used to be allowed so the CPU walked NOPs until 0x4000; halt now.
+    if ((pc & 0x80000000) == 0 && (pc == 0 || pc >= 0x4000)) {
         printf("[KUSEG] Immediate: pc=0x%08X from insn=0x%08X at 0x%08X\n",
                pc, insn, next_pc - 4);
         printf("[KUSEG] regs[31]=0x%08X regs[29]=0x%08X\n", regs[31], regs[29]);
@@ -670,7 +671,7 @@ void CPU::execute_one() {
         g_cpu_lo = lo;
 
         // Check if delay slot set KUSEG
-        if ((pc & 0x80000000) == 0 && pc >= 0x4000) {
+        if ((pc & 0x80000000) == 0 && (pc == 0 || pc >= 0x4000)) {
             printf("[KUSEG] After delay slot: pc=0x%08X\n", pc);
             printf("[KUSEG] delay_insn=0x%08X branch_target=0x%08X\n",
                    delay_insn, branch_target);
@@ -696,7 +697,7 @@ void CPU::execute_one() {
             // If the syscall did a task switch, g_cpu_pc holds the new task's resume PC.
             // Otherwise return to the caller via $ra (which dispatch may have set).
             pc = syscalls->task_switched() ? g_cpu_pc : return_addr;
-            if ((pc & 0x80000000) == 0 && pc >= 0x4000) {
+            if ((pc & 0x80000000) == 0 && (pc == 0 || pc >= 0x4000)) {
                 printf("[KUSEG] GOT dispatch idx=%d pc=0x%08X (invalid)\n", idx, pc);
                 printf("[KUSEG] return_addr=0x%08X\n", return_addr);
                 running = false;

@@ -31,6 +31,10 @@ static constexpr u32 MAX_GOT_ENTRIES   = 96;
 static constexpr u32 STACK_TOP         = 0x80C10000;
 static constexpr u32 STACK_SIZE        = 64 * 1024;
 
+// µC/OS-II OS_TaskReturn: a created task that falls off its entry jumps here
+// instead of to $ra=0 (which walks KUSEG 0x00000000..0x4000 and halts).
+static constexpr u32 TASK_RETURN_PC    = 0x80BFFC00;
+
 
 // Exception codes
 static constexpr u32 EXC_INT    = 0;

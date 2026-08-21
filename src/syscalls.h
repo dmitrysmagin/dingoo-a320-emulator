@@ -436,6 +436,7 @@ private:
         u32 regs[32];
         u32 hi, lo;
         u32 pc;        // resume PC (separate from $ra to avoid corruption on preemption)
+        u32 task_entry; // original entry point; used if saved pc is invalid
         u32 task_arg;  // original a0 (p_arg) for the task
         u8  task_prio; // µC/OS-II task priority
         u32 wake_tick; // >0 = OSTimeDly blocks until this tick count
