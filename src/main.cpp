@@ -14,6 +14,7 @@
 int main(int argc, char* argv[]) {
     const char* app_path = nullptr;
     u32 arg_max_frames = 0;  // 0 = unlimited
+    u32 arg_max_seconds = 0;  // 0 = unlimited
     bool save_screenshots = false;
     bool nosound = false;
     int audio_latency_ms = Syscalls::AUDIO_TARGET_LATENCY_MS_DEFAULT;
@@ -21,6 +22,8 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
             arg_max_frames = (u32)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) {
+            arg_max_seconds = (u32)atoi(argv[++i]);
         } else if (strcmp(argv[i], "--save-screenshots") == 0) {
             save_screenshots = true;
         } else if (strcmp(argv[i], "--nosound") == 0) {
@@ -33,13 +36,13 @@ int main(int argc, char* argv[]) {
             app_path = argv[i];
         } else {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
-            fprintf(stderr, "Usage: %s [--frames <n>] [--save-screenshots] [--nosound] [--audio-latency <ms>] <app>\n", argv[0]);
+            fprintf(stderr, "Usage: %s [--frames <n>] [--seconds <n>] [--save-screenshots] [--nosound] [--audio-latency <ms>] <app>\n", argv[0]);
             return 1;
         }
     }
 
     if (!app_path) {
-        fprintf(stderr, "Usage: %s [--frames <n>] [--save-screenshots] [--nosound] [--audio-latency <ms>] <app>\n", argv[0]);
+        fprintf(stderr, "Usage: %s [--frames <n>] [--seconds <n>] [--save-screenshots] [--nosound] [--audio-latency <ms>] <app>\n", argv[0]);
         return 1;
     }
     printf("=== Dingoo A320 Emulator (Phase 2) ===\n\n");
@@ -158,10 +161,12 @@ int main(int argc, char* argv[]) {
     printf("[PATCH] Scheduler idle loop at 0x%08X\n", IDLE_LOOP_PC);
 
     // Write timer callback return stub at 0x80BFFF00
-    //   lw $ra, 0($sp);  addiu $sp, $sp, 8;  jr $ra;  nop
+    //   lw $ra, 0($sp);  addiu $sp, $sp, 16;  jr $ra;  nop
+    // The +16 must match the frame call_guest_function() reserves, otherwise every
+    // guest callback leaks stack.
     u32 timer_ret_stub = 0x80BFFF00;
     mem.write_u32(timer_ret_stub + 0x00, 0x8FBF0000);
-    mem.write_u32(timer_ret_stub + 0x04, 0x27BD0008);
+    mem.write_u32(timer_ret_stub + 0x04, 0x27BD0010);
     mem.write_u32(timer_ret_stub + 0x08, 0x03E00008);
     mem.write_u32(timer_ret_stub + 0x0C, 0x00000000);
     printf("[PATCH] Timer return stub at 0x%08X\n", timer_ret_stub);
@@ -240,6 +245,12 @@ int main(int argc, char* argv[]) {
     u32 max_insns_per_frame = 2000000;
     u32 frame_count = 0;
 
+    // --seconds covers the whole run, not just Phase 2: a game whose dl_main never
+    // returns would otherwise ignore the limit and hang forever.
+    const u32 run_deadline = arg_max_seconds ? SDL_GetTicks() + arg_max_seconds * 1000 : 0;
+    if (arg_max_seconds)
+        printf("[INIT] Time limit: %u seconds\n", arg_max_seconds);
+
     // =========================================================
     // Phase 1: run dl_main to completion
     // dl_main is the module initialiser — it allocates resources
@@ -266,6 +277,12 @@ int main(int argc, char* argv[]) {
             dl_frame++;
             if (dl_frame % 500 == 0)
                 printf("[PHASE 1] frame=%u PC=0x%08X insns=%llu\n", dl_frame, cpu.pc, cpu.insn_count);
+            if (run_deadline && SDL_GetTicks() >= run_deadline) {
+                printf("[PHASE 1] Time limit reached at frame %u PC=0x%08X — dl_main never returned\n",
+                       dl_frame, cpu.pc);
+                fflush(stdout);
+                return 0;
+            }
         }
         printf("[PHASE 1] dl_main returned after %u frames (insns=%llu)\n", dl_frame, cpu.insn_count);
     }
@@ -309,6 +326,11 @@ int main(int argc, char* argv[]) {
         printf("[INIT] Frame limit: %u CPU frames\n", max_frames);
 
     while (cpu.running && (max_frames == 0 || frame < max_frames)) {
+        if (run_deadline && SDL_GetTicks() >= run_deadline) {
+            printf("[HALT] Time limit reached at frame %u\n", frame);
+            break;
+        }
+
         // Process SDL events (quit, keyboard)
         if (display.pump_events()) {
             printf("[DISPLAY] Quit requested\n");

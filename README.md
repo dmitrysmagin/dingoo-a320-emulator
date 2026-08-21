@@ -23,7 +23,7 @@ Runs any standard `.app` binary with Dingoo OS syscall interception, SDL2 displa
 │  │                                                          │   │
 │  │  ┌──────────────────────────────────────────────────┐   │   │
 │  │  │           Dingoo OS Syscall Interception         │   │   │
-│  │  │ 76 implemented + 99 stubs = 175 intercepted     │   │   │
+│  │  │ 90 implemented + 90 stubs = 180 intercepted     │   │   │
 │  │  └──────────────────────────────────────────────────┘   │   │
 │  │                                                          │   │
 │  │  ┌──────────────────────────────────────────────────┐   │   │
@@ -213,11 +213,15 @@ Guest memory layout:
 
 ### Syscall API Coverage
 
-The emulator intercepts all GOT trampoline calls from the guest binary. The dispatch table has 175 entries covering all 173 documented Dingoo OS functions plus 2 extras:
+The emulator intercepts all GOT trampoline calls from the guest binary. The dispatch table has 180 entries covering all 173 documented Dingoo OS functions plus extras:
 
-- **76 implemented** — real host implementations (malloc, printf, LCD, audio, input, µC/OS-II scheduler, filesystem I/O, PCM ioctl, etc.)
-- **99 stubs** — print `[STUB]` and return (TV, accelerometer, audio/video framework, wide-FS, extra libc, and misc categories)
-- Standard 72-entry GOT apps are fully dispatched. Apps with extended GOT (Life, StopWatch, dicer with 172 imports; Yi-Chi/Overlord-Fighter with 96) are now covered for all known Dingoo OS functions — 3 extra entries beyond the 172-import max handle edge cases
+- **90 implemented** — real host implementations (malloc, printf, LCD, audio, input, µC/OS-II scheduler, filesystem I/O, PCM ioctl, µC/GUI window manager, etc.)
+- **90 stubs** — print `[STUB]` and return (TV, accelerometer, audio/video framework, wide-FS, extra libc, and misc categories)
+- Standard 72-entry GOT apps are fully dispatched. Apps with extended GOT (Life, StopWatch, dicer with 172 imports; Yi-Chi/Overlord-Fighter with 96) are now covered for all known Dingoo OS functions
+
+Arguments beyond the fourth are read from the caller's stack following the o32 ABI: the
+caller reserves 16 bytes of shadow space for `$a0`–`$a3`, so the 5th argument lives at
+`$sp+16`. `WM_CreateWindow` is currently the only 7-argument syscall.
 
 ---
 
@@ -243,7 +247,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Mojo | Playable |
 | Mushroom Roulette | Black screen |
 | Nose Breaker | Black screen |
-| Overlord-Fighter | Exits |
+| Overlord-Fighter | Boots, runs µC/GUI message loop, blank screen (needs `flydata.dlx` from the `ERPT` chunk) |
 | Platinum Sudoku | Grey screen, dl_res_*** |
 | PoPo Bash | Exits |
 | Puzzle Bobble | ⏳ Exits |
@@ -253,7 +257,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | StopWatch | ⏳ Hits `=== Starting emulation ===`, then nothing (GAP) |
 | tetris | Playable |
 | ultimate_drift | Playable |
-| Yi-Chi King Fighter | 💥 Non-standard GOT layout (96 imports) |
+| Yi-Chi King Fighter | Boots, runs µC/GUI message loop, blank screen (needs `ERPT` resources) |
 | Zhao Yun Chuan | Playable |
 
 **7days** and **tetris** are verified titles — both boot with rendered graphics and stable real-time audio (scheduler block + sem pacing).
@@ -277,13 +281,14 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Save file write path not implemented | ⚠️ Medium priority |
 | MXU audio mixing correctness unverified | ⚠️ Low priority |
 | `get_current_language` hardcoded to English | ⚠️ Low priority — may affect Chinese UI locale |
-| Non‑standard GOT apps (Yi‑Chi, Overlord‑Fighter, Life, StopWatch, dicer) not dispatched | ⚠️ Medium priority — need per‑app GOT table detection |
+| `ERPT` resource chunk not parsed (Yi‑Chi, Overlord‑Fighter) | ⚠️ Medium priority — holds `flydata.dlx`; both titles render blank without it |
+| `dl_load` / DLX dynamic modules not implemented | ⚠️ Medium priority — blocks the `ERPT` titles even once resources are readable |
 
 ---
 
-## Stubs (99 entries)
+## Stubs (90 entries)
 
-All 99 stubs print `[STUB]` and return. Categories:
+All 90 stubs print `[STUB]` and return. Categories:
 
 | Category | Functions |
 |----------|-----------|
@@ -301,7 +306,7 @@ These stubs unblock all tested apps (including Life, StopWatch, dicer with 172-i
 
 | App | Imports | Status |
 |-----|---------|--------|
-| Yi‑Chi King Fighter, Overlord‑Fighter | 96 | All 96 names now in table; dispatch works; apps still stop at audio write spin |
+| Yi‑Chi King Fighter, Overlord‑Fighter | 96 | All 96 names in table; dispatch works; both boot and pump µC/GUI messages, but render blank until the `ERPT` resource chunk is parsed |
 | Life, StopWatch, dicer | 172 | All 173 documented functions + extras in table; no more "Unknown GOT" errors |
 
 ---
@@ -363,7 +368,43 @@ Previously, Phase 2 simply jumped to AppMain and called it as a plain function, 
 
 The original dispatch table covered 87 entries (indices 0–86). Apps with extended GOT (Life, StopWatch, dicer — 172 imports) hit "Unknown GOT" errors and stopped before rendering.
 
-**Fix:** cross-referenced the full Dingoo OS API list (173 functions) and added 60 missing entries to `s_handlers[]`. The table now has 175 entries (173 documented + 2 extras). All tested apps, including 172-import GOT apps, avoid "Unknown GOT" errors. 73 functions have real implementations; 102 are stubs that print `[STUB]` and return.
+**Fix:** cross-referenced the full Dingoo OS API list (173 functions) and added the missing entries to `s_handlers[]`. The table now has 180 entries. All tested apps, including 172-import GOT apps, avoid "Unknown GOT" errors. 90 functions have real implementations; 90 are stubs that print `[STUB]` and return.
+
+### System-model check (`cmGetSysModel`)
+
+Overlord-Fighter exited within two frames. Its `AppMain` calls a guard routine that
+`memset`s a 100-byte buffer, passes it to `cmGetSysModel`, converts the result with
+`__to_locale_ansi(wchar_t*)`, and `strcmp`s it against `"GM760"` and `"A320"`. Neither
+matched, so the routine fell through, `AppMain` returned 1, and the sentinel fired.
+
+`cmGetSysModel` was a stub that wrote an ASCII string to a fixed scratch address and
+returned a pointer, leaving the caller's buffer zeroed. **Fix:** `cmGetSysModel` and
+`cmGetSysVersion` now serve both calling conventions — they fill `$a0` with a UTF-16LE
+string when it is a writable guest pointer, and still return a static ASCII copy for
+callers that pass no argument.
+
+### Minimal µC/GUI window manager
+
+Yi-Chi and Overlord-Fighter create one full-screen window with a callback, then poll
+`GUI_Exec()` forever. With `GUI_Exec` stubbed the callback never ran, so the games spun
+without producing frames (13.5M `GUI_Exec` calls in 15 seconds, 1 frame rendered).
+
+**Fix:** `GUI_Exec` now drives a real message pump. `WM_CreateWindow` records the
+callback and queues `WM_CREATE` (id 1); the first `GUI_Exec` delivers it, and later calls
+fire due `GUI_TIMER_*` timers, whose callbacks post `WM_TIMER` (id 0x113) back through
+`WM__SendMessage`. Messages use the µC/GUI layout `{ int MsgId; U16 hWin; U16 hWinSrc;
+U32 Data; }` and are delivered with `call_guest_function`, which reuses the existing
+return stub at `0x80BFFF00`. Both titles now boot and render continuously.
+
+Two supporting bugs were fixed alongside it: stack-passed syscall arguments were read 16
+bytes too high (see the ABI note above), and the callback return stub popped 8 bytes from
+a 16-byte frame, leaking stack on every guest callback.
+
+### `--seconds` now covers Phase 1
+
+The run deadline was only checked in the Phase 2 loop, so a title whose `dl_main` never
+returned (dicer, Life, StopWatch) ignored `--seconds` and hung indefinitely. The deadline
+is now established before Phase 1 and checked in both loops.
 
 ### Wall-clock-paced µC/OS-II ticks
 

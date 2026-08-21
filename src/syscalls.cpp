@@ -22,13 +22,13 @@ extern u32 g_cpu_lo;
 
 const Syscalls::GOTHandler Syscalls::s_handlers[] = {
     {"Custom_Memsic_test",      &Syscalls::impl_Custom_Memsic_test,      true},
-    {"GUI_Exec",                &Syscalls::impl_GUI_Exec,                true},
+    {"GUI_Exec",                &Syscalls::impl_GUI_Exec,                false},
     {"GUI_Lock",                &Syscalls::impl_GUI_Lock,                false},
-    {"GUI_TIMER_Create",        &Syscalls::impl_GUI_TIMER_Create,        true},
-    {"GUI_TIMER_Delete",        &Syscalls::impl_GUI_TIMER_Delete,        true},
+    {"GUI_TIMER_Create",        &Syscalls::impl_GUI_TIMER_Create,        false},
+    {"GUI_TIMER_Delete",        &Syscalls::impl_GUI_TIMER_Delete,        false},
     {"GUI_TIMER_Exec",          &Syscalls::impl_GUI_TIMER_Exec,          true},
-    {"GUI_TIMER_Restart",       &Syscalls::impl_GUI_TIMER_Restart,       true},
-    {"GUI_TIMER_SetPeriod",     &Syscalls::impl_GUI_TIMER_SetPeriod,     true},
+    {"GUI_TIMER_Restart",       &Syscalls::impl_GUI_TIMER_Restart,       false},
+    {"GUI_TIMER_SetPeriod",     &Syscalls::impl_GUI_TIMER_SetPeriod,     false},
     {"GUI_Unlock",              &Syscalls::impl_GUI_Unlock,              false},
     {"GetTickCount",            &Syscalls::impl_GetTickCount,            false},
     {"Get_X",                   &Syscalls::impl_Get_X,                   true},
@@ -62,12 +62,12 @@ const Syscalls::GOTHandler Syscalls::s_handlers[] = {
     {"U8TOU32",                 &Syscalls::impl_U8TOU32,                 true},
     {"USB_Connect",             &Syscalls::impl_USB_Connect,             true},
     {"USB_No_Connect",          &Syscalls::impl_USB_No_Connect,          true},
-    {"WM_CreateWindow",         &Syscalls::impl_WM_CreateWindow,         true},
+    {"WM_CreateWindow",         &Syscalls::impl_WM_CreateWindow,         false},
     {"WM_DefaultProc",          &Syscalls::impl_WM_DefaultProc,          true},
     {"WM_DeleteWindow",         &Syscalls::impl_WM_DeleteWindow,         true},
     {"WM_SelectWindow",         &Syscalls::impl_WM_SelectWindow,         true},
     {"WM_SetFocus",             &Syscalls::impl_WM_SetFocus,             true},
-    {"WM__SendMessage",         &Syscalls::impl_WM__SendMessage,         true},
+    {"WM__SendMessage",         &Syscalls::impl_WM__SendMessage,         false},
     {"__dcache_writeback_all",  &Syscalls::impl___dcache_writeback_all,  true},
     {"__icache_invalidate_all", &Syscalls::impl___icache_invalidate_all, true},
     {"__to_locale_ansi",        &Syscalls::impl___to_locale_ansi,        false},
@@ -106,8 +106,8 @@ const Syscalls::GOTHandler Syscalls::s_handlers[] = {
     {"av_wait_flag",            &Syscalls::impl_av_wait_flag,            true},
     {"av_wait_sem",             &Syscalls::impl_av_wait_sem,             true},
     {"av_wait_sem2",            &Syscalls::impl_av_wait_sem2,            true},
-    {"cmGetSysModel",           &Syscalls::impl_cmGetSysModel,           true},
-    {"cmGetSysVersion",         &Syscalls::impl_cmGetSysVersion,         true},
+    {"cmGetSysModel",           &Syscalls::impl_cmGetSysModel,           false},
+    {"cmGetSysVersion",         &Syscalls::impl_cmGetSysVersion,         false},
     {"delay_ms",                &Syscalls::impl_delay_ms,                true},
     {"detect_clock",            &Syscalls::impl_detect_clock,            true},
     {"dl_free",                 &Syscalls::impl_dl_free,                 true},
@@ -271,6 +271,10 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     , m_in_idle(false)
     , m_idle_pc(0)
     , m_last_timer_tick(SDL_GetTicks())
+    , m_wm_callback(0)
+    , m_wm_paint_pending(false)
+    , m_wm_msg_buf(0)
+    , m_gui_timer_msg_buf(0)
 {
     memset(m_got_call_counts, 0, sizeof(m_got_call_counts));
     m_audio_sem_reg_count = 0;
@@ -810,8 +814,10 @@ void SDLCALL Syscalls::audio_callback(void* userdata, Uint8* stream, int len) {
 
 u32 Syscalls::arg(int n) {
     if (n >= 0 && n <= 3) return g_cpu_regs[4 + n];
+    // o32 ABI: the caller reserves 16 bytes of shadow space for $a0-$a3, so the
+    // 5th argument (n == 4) sits at $sp+16, the 6th at $sp+20, and so on.
     u32 sp = g_cpu_regs[29];
-    return m_mem.read_u32(sp + 16 + (u32)n * 4);
+    return m_mem.read_u32(sp + (u32)n * 4);
 }
 
 std::string Syscalls::guest_string(u32 vaddr) {
@@ -2883,31 +2889,38 @@ void Syscalls::impl_open_gui_key_msg() {
 
 // === Non‑standard GOT app functions (Yi‑Chi, Overlord‑Fighter) ===
 
-void Syscalls::impl_cmGetSysVersion() {
-    // Return pointer to version string "V1.0" in guest memory
-    static u32 s_version_addr = 0;
-    static const char* version = "V1.0";
-    if (s_version_addr == 0) {
-        // Allocate from a scratch area (above kernel data, safe in KSEG0)
-        s_version_addr = 0x80C0FF00;
-        for (int i = 0; version[i]; i++)
-            m_mem.write_u8(s_version_addr + (u32)i, (u8)version[i]);
-        m_mem.write_u8(s_version_addr + (u32)strlen(version), 0);
+// cmGetSysVersion / cmGetSysModel are called two ways by different apps:
+//   ptr = cmGetSysXxx();          — no argument, use the returned string
+//   cmGetSysXxx(wchar_t* buf);    — fill the caller's buffer
+// The buffer form is wide (UTF-16LE): Overlord-Fighter passes the result straight
+// to __to_locale_ansi(wchar_t*) and compares it against "GM760" / "A320", exiting
+// AppMain when neither matches.  Serve both forms: fill a0 when it is a writable
+// guest pointer, and always return a static ASCII copy for the no-argument callers.
+void Syscalls::cm_write_sys_string(const char* text, u32 ascii_addr) {
+    u32 len = (u32)strlen(text);
+
+    for (u32 i = 0; i < len; i++)
+        m_mem.write_u8(ascii_addr + i, (u8)text[i]);
+    m_mem.write_u8(ascii_addr + len, 0);
+
+    u32 buf = arg(0);
+    if (buf >= 0x80000000 && (buf & 0x1FFFFFFF) + (len + 1) * 2 <= m_mem.size()) {
+        for (u32 i = 0; i < len; i++)
+            m_mem.write_u16(buf + i * 2, (u16)(u8)text[i]);
+        m_mem.write_u16(buf + len * 2, 0);
+        g_cpu_regs[2] = buf;
+        return;
     }
-    g_cpu_regs[2] = s_version_addr;
+
+    g_cpu_regs[2] = ascii_addr;
+}
+
+void Syscalls::impl_cmGetSysVersion() {
+    cm_write_sys_string("V1.0", 0x80C0FF00);
 }
 
 void Syscalls::impl_cmGetSysModel() {
-    // Return pointer to model string "A320" in guest memory
-    static u32 s_model_addr = 0;
-    static const char* model = "A320";
-    if (s_model_addr == 0) {
-        s_model_addr = 0x80C0FF20;
-        for (int i = 0; model[i]; i++)
-            m_mem.write_u8(s_model_addr + (u32)i, (u8)model[i]);
-        m_mem.write_u8(s_model_addr + (u32)strlen(model), 0);
-    }
-    g_cpu_regs[2] = s_model_addr;
+    cm_write_sys_string("A320", 0x80C0FF20);
 }
 
 void Syscalls::impl_mdelay() {
@@ -2960,19 +2973,120 @@ void Syscalls::impl_GUI_Unlock() {
     g_cpu_regs[2] = 0;
 }
 
+// --- Minimal µC/GUI window manager ---
+
+u32 Syscalls::wm_scratch(u32& slot, u32 size) {
+    if (!slot)
+        slot = heap_alloc(size);
+    return slot;
+}
+
+// Build a WM_MESSAGE { int MsgId; U16 hWin; U16 hWinSrc; U32 Data; } and run the
+// window callback as a guest call.  The callback returns through the stub at
+// 0x80BFFF00, which resumes whatever invoked us.
+void Syscalls::wm_dispatch(int msg_id, u32 data) {
+    if (!m_wm_callback)
+        return;
+    u32 msg = wm_scratch(m_wm_msg_buf, 12);
+    if (!msg)
+        return;
+    m_mem.write_u32(msg + 0, (u32)msg_id);
+    m_mem.write_u16(msg + 4, (u16)WM_MAIN_HWIN);
+    m_mem.write_u16(msg + 6, (u16)WM_MAIN_HWIN);
+    m_mem.write_u32(msg + 8, data);
+    call_guest_function(m_wm_callback, msg);
+    m_task_switched = true;
+}
+
+bool Syscalls::gui_run_due_timer() {
+    u32 now = SDL_GetTicks();
+    for (auto& t : m_gui_timers) {
+        if (!t.active || !t.callback || now < t.next_due)
+            continue;
+        // Re-arm defensively; the callback normally calls SetPeriod + Restart itself.
+        t.next_due = now + (t.period_ms ? t.period_ms : 1);
+        u32 tm = wm_scratch(m_gui_timer_msg_buf, 8);
+        if (tm) {
+            m_mem.write_u32(tm + 0, now);
+            m_mem.write_u32(tm + 4, t.context);
+        }
+        call_guest_function(t.callback, tm);
+        m_task_switched = true;
+        return true;
+    }
+    return false;
+}
+
+void Syscalls::impl_GUI_Exec() {
+    g_cpu_regs[2] = 0;
+    if (m_wm_paint_pending) {
+        m_wm_paint_pending = false;
+        wm_dispatch(WM_MSG_CREATE, 0);
+        return;
+    }
+    gui_run_due_timer();
+}
+
+void Syscalls::impl_WM__SendMessage() {
+    // WM__SendMessage(WM_HWIN hWin, WM_MESSAGE* pMsg)
+    u32 pmsg = arg(1);
+    if (!m_wm_callback || !pmsg) {
+        g_cpu_regs[2] = 0;
+        return;
+    }
+    m_mem.write_u16(pmsg + 4, (u16)arg(0));
+    m_mem.write_u16(pmsg + 6, (u16)arg(0));
+    g_cpu_regs[2] = 0;
+    call_guest_function(m_wm_callback, pmsg);
+    m_task_switched = true;
+}
+
+void Syscalls::impl_GUI_TIMER_Create() {
+    // GUI_TIMER_Create(cb, Time, Context, Flags) -> handle
+    u32 cb = arg(0);
+    u32 period = arg(1);
+    u32 context = arg(2);
+
+    int idx = -1;
+    for (size_t i = 0; i < m_gui_timers.size(); i++) {
+        if (!m_gui_timers[i].active) { idx = (int)i; break; }
+    }
+    if (idx < 0) {
+        idx = (int)m_gui_timers.size();
+        m_gui_timers.push_back({});
+    }
+    GuiTimer& t = m_gui_timers[(size_t)idx];
+    t.active = true;
+    t.callback = cb;
+    t.context = context;
+    t.period_ms = period;
+    t.next_due = SDL_GetTicks() + period;
+    printf("[µC/GUI] GUI_TIMER_Create(cb=0x%08X period=%u ctx=0x%08X) -> %d\n",
+           cb, period, context, idx + 1);
+    g_cpu_regs[2] = (u32)(idx + 1);
+}
+
 void Syscalls::impl_GUI_TIMER_SetPeriod() {
+    u32 handle = arg(0);
+    u32 period = arg(1);
+    if (handle >= 1 && handle <= m_gui_timers.size())
+        m_gui_timers[handle - 1].period_ms = period;
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_GUI_TIMER_Restart() {
+    u32 handle = arg(0);
+    if (handle >= 1 && handle <= m_gui_timers.size()) {
+        GuiTimer& t = m_gui_timers[handle - 1];
+        t.next_due = SDL_GetTicks() + t.period_ms;
+    }
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_GUI_TIMER_Delete() {
-    g_cpu_regs[2] = 0;
-}
-
-void Syscalls::impl_WM__SendMessage() {
+    u32 handle = arg(0);
+    if (handle >= 1 && handle <= m_gui_timers.size())
+        m_gui_timers[handle - 1].active = false;
     g_cpu_regs[2] = 0;
 }
 
@@ -2980,31 +3094,23 @@ void Syscalls::impl_WM_DefaultProc() {
     g_cpu_regs[2] = 0;
 }
 
-void Syscalls::impl_GUI_TIMER_Create() {
-    u32 period = arg(0);
-    u32 cb = arg(1);
-    u32 context = arg(2);
-    printf("[µC/GUI] GUI_TIMER_Create(period=%u cb=0x%08X ctx=0x%08X)\n", period, cb, context);
-    g_cpu_regs[2] = 1; // timer handle
-}
-
 void Syscalls::impl_WM_SelectWindow() {
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_WM_CreateWindow() {
-    // WM_CreateWindow(x0,y0,x1,y1,style,flags,cb,client): returns WM_HWIN
-    u32 x0 = arg(0), y0 = arg(1), x1 = arg(2), y1 = arg(3);
-    u32 cb = arg(6);
-    printf("[µC/GUI] WM_CreateWindow(%u,%u,%u,%u cb=0x%08X)\n", x0, y0, x1, y1, cb);
-    g_cpu_regs[2] = 1; // window handle
+    // WM_CreateWindow(x0, y0, width, height, Style, cb, NumExtraBytes) -> WM_HWIN
+    u32 x0 = arg(0), y0 = arg(1), w = arg(2), h = arg(3);
+    u32 style = arg(4);
+    u32 cb = arg(5);
+    printf("[µC/GUI] WM_CreateWindow(%u,%u %ux%u style=0x%X cb=0x%08X) -> hwin=%u\n",
+           x0, y0, w, h, style, cb, WM_MAIN_HWIN);
+    m_wm_callback = cb;
+    m_wm_paint_pending = true;
+    g_cpu_regs[2] = WM_MAIN_HWIN;
 }
 
 void Syscalls::impl_WM_DeleteWindow() {
-    g_cpu_regs[2] = 0;
-}
-
-void Syscalls::impl_GUI_Exec() {
     g_cpu_regs[2] = 0;
 }
 

@@ -149,6 +149,7 @@ private:
     // Non‑standard GOT apps (Yi‑Chi, Overlord‑Fighter, etc.)
     void impl_cmGetSysVersion();
     void impl_cmGetSysModel();
+    void cm_write_sys_string(const char* text, u32 ascii_addr);
     void impl_mdelay();
     void impl_fsys_clearerr();
     void impl_OSQCreate();
@@ -480,6 +481,31 @@ public:
     void process_timers();
     void call_guest_function(u32 func, u32 arg0);
     u32 m_last_timer_tick;
+
+    // === Minimal µC/GUI window manager (Overlord-Fighter, Yi-Chi) ===
+    // The app creates one full-screen window with a callback, then polls GUI_Exec()
+    // in its main loop.  GUI_Exec drives the message pump: it delivers WM_CREATE once
+    // and afterwards fires due GUI timers, which in turn post WM_TIMER back to the
+    // window callback via WM__SendMessage.  Message IDs follow µC/GUI.
+    static constexpr int WM_MSG_CREATE = 1;
+    static constexpr int WM_MSG_KEY    = 14;
+    static constexpr int WM_MSG_TIMER  = 0x113;
+    static constexpr u32 WM_MAIN_HWIN  = 1;
+    struct GuiTimer {
+        bool active;
+        u32  callback;
+        u32  context;
+        u32  period_ms;
+        u32  next_due;
+    };
+    std::vector<GuiTimer> m_gui_timers;
+    u32  m_wm_callback;
+    bool m_wm_paint_pending;   // WM_CREATE queued for the next GUI_Exec
+    u32  m_wm_msg_buf;         // guest-side scratch WM_MESSAGE
+    u32  m_gui_timer_msg_buf;  // guest-side scratch GUI_TIMER_MESSAGE
+    u32  wm_scratch(u32& slot, u32 size);
+    void wm_dispatch(int msg_id, u32 data);
+    bool gui_run_due_timer();
 
     // Directory search handles (fsys_findfirst/next/close)
     struct SearchEntry {
