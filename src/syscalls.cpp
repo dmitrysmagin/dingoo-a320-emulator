@@ -2532,7 +2532,11 @@ void Syscalls::impl_OSTaskDel() {
 }
 
 void Syscalls::impl_GetTickCount() {
-    g_cpu_regs[2] = (u32)(SDL_GetTicks());
+    // Native firmware returns ~microseconds: OSTimeGet()*10000 plus a small
+    // unsynchronized TCU remnant (see dingoo_coding). xrick (Rick-Dangerous)
+    // divides by 500/1000 treating the value as µs; returning host milliseconds
+    // made delay(50) spin for 25 seconds on a blank framebuffer.
+    g_cpu_regs[2] = (u32)((u64)SDL_GetTicks() * 1000ull);
 }
 
 void Syscalls::impl__sys_judge_event() {

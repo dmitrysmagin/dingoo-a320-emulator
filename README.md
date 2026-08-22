@@ -251,7 +251,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Platinum Sudoku | Renders |
 | PoPo Bash | Renders |
 | Puzzle Bobble | Renders |
-| Rick-Dangerous | ⏳ Loads, reads resources, then audio-write spin (timeout) |
+| Rick-Dangerous | Renders (xrick splash then title; `GetTickCount` is µs, not ms) |
 | Rubido | Renders (host-backed `dl_res_*`; no longer heap-maps 10 MB `music.snd` into the stack) |
 | snake | ⏳ Loads resources from binary, then loops on NOT FOUND (timeout) |
 | StopWatch | ⏳ Hits `=== Starting emulation ===`, then nothing (GAP) |
