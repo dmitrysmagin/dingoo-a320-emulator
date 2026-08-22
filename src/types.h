@@ -25,7 +25,7 @@ static constexpr u32 PHYS_MASK         = 0x00FFFFFF;
 static constexpr u32 RAWD_LOAD_ADDR    = 0x80A00000;
 static constexpr u32 RAWD_LOAD_PHYS    = 0x00A00000;
 static constexpr u32 GOT_ENTRY_SIZE    = 8;
-static constexpr u32 MAX_GOT_ENTRIES   = 96;
+static constexpr u32 MAX_GOT_ENTRIES   = 256;
 
 // Stack
 static constexpr u32 STACK_TOP         = 0x80C10000;

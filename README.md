@@ -236,11 +236,11 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Block Breaker | Playable, with sound |
 | Candy | Playable, with sound |
 | Decollation Warrior | Playable, with sound |
-| dicer | Stuck at Phase 1, lots of stubs: av_*** |
+| dicer | Renders title (`Dicer v0.0` / `1 d 6`). Same 172-import GOT + in-RAM `FILE*` `fread` for embedded TGA |
 | Fomula-One | Black screen, stuck |
 | Hell Striker II | Playable, with sound (mixer prio 16 gets a vsync slice so `waveout_write` can refill after the intro) |
 | Landlord | Black screen, crashes |
-| Life | Stuck at Phase 1 |
+| Life | Renders (same 172-import GOT fixes as dicer) |
 | Link'em Up | Playable |
 | Manic-Miner | Black screen |
 | Mine Sweeper | Black screen, then playfield - GetTickCount |
@@ -251,6 +251,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Platinum Sudoku | Renders |
 | PoPo Bash / Puzzle Bobble | Same game (`Puzzle Bobble - Popo Bash (Chinese).app`). Renders |
 | Rick-Dangerous | Renders with sound (xrick; same-prio mixer was starved until µC/OS-II time-slicing) |
+| StopWatch | Renders full-screen UI (same 172-import GOT fixes as dicer) |
 
 **7days** and **tetris** are verified titles — both boot with rendered graphics and stable real-time audio (scheduler block + sem pacing).
 
@@ -286,9 +287,9 @@ All 83 stubs print `[STUB]` and return. Categories:
 |----------|-----------|
 | TV out | `tv_open/close`, `tv_enable/disable_switch`, `tv_get/set_openflag`, `tv_get/set_closeflag`, `isTVON` |
 | Accelerometer | `Custom_Memsic_test`, `Memsic_SerialCommInit`, `Get_X`, `Get_Y`, `Read_Acc`, `Read_Acc0` |
-| Audio/video framework | `av_begin_thread`, `av_end_thread`, `av_create/destroy/give/wait_flag`, `av_create/destroy/give/wait_sem`, `av_wait_sem2`, `av_delay`, `av_queue_abort/end/flush/get/init/put`, `av_reg/unreg_object`, `av_resize_packet`, `av_uft8_2_unicode`, `av_upper_4cc` |
+| Audio/video framework | Queue/object leftovers: `av_queue_abort/end/flush/get/init/put`, `av_reg/unreg_object`. Sem/flag/thread/delay, `av_resize_packet`, `av_uft8_2_unicode`, `av_upper_4cc` are implemented |
 | Wide filesystem | `fsys_fcloseW`, `fsys_fclose_flash`, `fsys_fopen_flash`, `fsys_mkdir`, `fsys_removeW`, `fsys_renameW` |
-| Extra libc | `memcpy`, `memset`, `sscanf`, `vsprintf`, `_tcscmp`, `_tcscpy`, `serial_puts` |
+| Extra libc | `sscanf`, `vsprintf`, `_tcscmp`, `_tcscpy`, `serial_puts` (`memcpy` / `memset` implemented) |
 | Low-level OS | `SysDisableBkLight`, `sys_get_ccpmp_config`, `detect_clock`, `delay_ms`, `udelay` |
 | Pre-existing stubs | `vxGoHome`, `free_irq`, `fsys_RefreshCache`, `fsys_flush_cache`, `__icache_invalidate_all`, `__dcache_writeback_all`, `TaskMediaFunStop`, `serial_getc`, `USB_Connect`, `USB_No_Connect`, `udc_attached` |
 
@@ -299,7 +300,7 @@ These stubs unblock all tested apps (including Life, StopWatch, dicer with 172-i
 | App | Imports | Status |
 |-----|---------|--------|
 | Yi‑Chi King Fighter / Overlord‑Fighter (same game) | 96 | All 96 names dispatched. `flydata.dlx` loads (DLX2); splash and menu render; `open_gui_key_msg` posts `WM_KEY` so D-pad/A/Start work |
-| Life, StopWatch, dicer | 172 | All 173 documented functions + extras in table; no more "Unknown GOT" errors |
+| Life, StopWatch, dicer | 172 | Phase 1 returns. Slot 166 overridden to `OSTimeGet` (libc timer jal). dicer/Life/StopWatch render |
 
 ---
 

@@ -86,15 +86,15 @@ const Syscalls::GOTHandler Syscalls::s_handlers[] = {
     {"_waveout_set_volume",     &Syscalls::impl__waveout_set_volume,     false},
     {"abort",                   &Syscalls::impl_abort,                   false},
     {"ap_lcd_set_frame",        &Syscalls::impl_ap_lcd_set_frame,        false},
-    {"av_begin_thread",         &Syscalls::impl_av_begin_thread,         true},
-    {"av_create_flag",          &Syscalls::impl_av_create_flag,          true},
-    {"av_create_sem",           &Syscalls::impl_av_create_sem,           true},
-    {"av_delay",                &Syscalls::impl_av_delay,                true},
-    {"av_destroy_flag",         &Syscalls::impl_av_destroy_flag,         true},
-    {"av_destroy_sem",          &Syscalls::impl_av_destroy_sem,          true},
-    {"av_end_thread",           &Syscalls::impl_av_end_thread,           true},
-    {"av_give_flag",            &Syscalls::impl_av_give_flag,            true},
-    {"av_give_sem",             &Syscalls::impl_av_give_sem,             true},
+    {"av_begin_thread",         &Syscalls::impl_av_begin_thread,         false},
+    {"av_create_flag",          &Syscalls::impl_av_create_flag,          false},
+    {"av_create_sem",           &Syscalls::impl_av_create_sem,           false},
+    {"av_delay",                &Syscalls::impl_av_delay,                false},
+    {"av_destroy_flag",         &Syscalls::impl_av_destroy_flag,          false},
+    {"av_destroy_sem",          &Syscalls::impl_av_destroy_sem,          false},
+    {"av_end_thread",           &Syscalls::impl_av_end_thread,           false},
+    {"av_give_flag",            &Syscalls::impl_av_give_flag,            false},
+    {"av_give_sem",             &Syscalls::impl_av_give_sem,             false},
     {"av_queue_abort",          &Syscalls::impl_av_queue_abort,          true},
     {"av_queue_end",            &Syscalls::impl_av_queue_end,            true},
     {"av_queue_flush",          &Syscalls::impl_av_queue_flush,          true},
@@ -102,13 +102,13 @@ const Syscalls::GOTHandler Syscalls::s_handlers[] = {
     {"av_queue_init",           &Syscalls::impl_av_queue_init,           true},
     {"av_queue_put",            &Syscalls::impl_av_queue_put,            true},
     {"av_reg_object",           &Syscalls::impl_av_reg_object,           true},
-    {"av_resize_packet",        &Syscalls::impl_av_resize_packet,        true},
-    {"av_uft8_2_unicode",       &Syscalls::impl_av_uft8_2_unicode,       true},
+    {"av_resize_packet",        &Syscalls::impl_av_resize_packet,        false},
+    {"av_uft8_2_unicode",       &Syscalls::impl_av_uft8_2_unicode,       false},
     {"av_unreg_object",         &Syscalls::impl_av_unreg_object,         true},
-    {"av_upper_4cc",            &Syscalls::impl_av_upper_4cc,            true},
-    {"av_wait_flag",            &Syscalls::impl_av_wait_flag,            true},
-    {"av_wait_sem",             &Syscalls::impl_av_wait_sem,             true},
-    {"av_wait_sem2",            &Syscalls::impl_av_wait_sem2,            true},
+    {"av_upper_4cc",            &Syscalls::impl_av_upper_4cc,            false},
+    {"av_wait_flag",            &Syscalls::impl_av_wait_flag,            false},
+    {"av_wait_sem",             &Syscalls::impl_av_wait_sem,             false},
+    {"av_wait_sem2",            &Syscalls::impl_av_wait_sem2,            false},
     {"cmGetSysModel",           &Syscalls::impl_cmGetSysModel,           false},
     {"cmGetSysVersion",         &Syscalls::impl_cmGetSysVersion,         false},
     {"delay_ms",                &Syscalls::impl_delay_ms,                true},
@@ -163,8 +163,8 @@ const Syscalls::GOTHandler Syscalls::s_handlers[] = {
     {"lcd_set_frame",           &Syscalls::impl_lcd_set_frame,           false},
     {"malloc",                  &Syscalls::impl_malloc,                  false},
     {"mdelay",                  &Syscalls::impl_mdelay,                  false},
-    {"memcpy",                  &Syscalls::impl_memcpy,                  true},
-    {"memset",                  &Syscalls::impl_memset,                  true},
+    {"memcpy",                  &Syscalls::impl_memcpy,                  false},
+    {"memset",                  &Syscalls::impl_memset,                  false},
     {"open_gui_key_msg",        &Syscalls::impl_open_gui_key_msg,        false},
     {"pcm_can_read",            &Syscalls::impl_pcm_can_read,            false},
     {"pcm_can_write",           &Syscalls::impl_pcm_can_write,           false},
@@ -220,6 +220,21 @@ void Syscalls::init_slot_handlers(const std::vector<ImportEntry>& imports) {
     for (size_t i = 0; i < imports.size(); i++) {
         int hi = find_handler(imports[i].name.c_str());
         m_slot_handlers.push_back(hi);
+    }
+    // Life / StopWatch / dicer: 172-name IMPT omits GUI_Unlock, but a libc
+    // GetTickCount wrapper is still jal'd to official slot 166 (OSTimeGet).
+    // IMPT puts U8TOU16 there, so the busy-wait saw a constant delta of 0.
+    // Only this slot is overridden — the rest of the binary uses the 172-layout.
+    if (imports.size() == 172 && imports.size() > 166
+        && imports[126].name == "GUI_TIMER_Create"
+        && imports[165].name == "OSTimeGet"
+        && imports[166].name == "U8TOU16") {
+        int hi = find_handler("OSTimeGet");
+        if (hi >= 0) {
+            m_slot_handlers[166] = hi;
+            printf("[INIT] 172-import GOT: slot 166 U8TOU16 -> OSTimeGet "
+                   "(libc GetTickCount wrapper)\n");
+        }
     }
 }
 
@@ -982,7 +997,38 @@ static bool is_spk_index_bin(const std::string& path) {
             path.compare(path.size() - 4, 4, ".BIN") == 0);
 }
 
+// In-RAM FILE used by dicer (and similar): flags, cursor, data*, size, pos.
+// libc fread is called with this pointer, not a 1-based fsys handle.
+static bool memfile_parse(Memory& mem, u32 fp, u32& data, u32& size, u32& pos) {
+    if (fp < 0x80000000u) return false;
+    data = mem.read_u32(fp + 8);
+    size = mem.read_u32(fp + 12);
+    pos  = mem.read_u32(fp + 16);
+    if (data < 0x80000000u || size == 0 || size > 16u * 1024u * 1024u)
+        return false;
+    return true;
+}
+
 u32 Syscalls::do_fread(u32 ptr, u32 size, u32 nmemb, u32 file_handle) {
+    u32 mf_data, mf_size, mf_pos;
+    if (size && memfile_parse(m_mem, file_handle, mf_data, mf_size, mf_pos)) {
+        u32 total = size * nmemb;
+        u32 avail = (mf_pos < mf_size) ? (mf_size - mf_pos) : 0;
+        u32 n = (total < avail) ? total : avail;
+        if (n) {
+            u8 buf[4096];
+            u32 copied = 0;
+            while (copied < n) {
+                u32 chunk = n - copied;
+                if (chunk > sizeof(buf)) chunk = (u32)sizeof(buf);
+                m_mem.read_block(mf_data + mf_pos + copied, buf, chunk);
+                m_mem.write_block(ptr + copied, buf, chunk);
+                copied += chunk;
+            }
+            m_mem.write_u32(file_handle + 16, mf_pos + n);
+        }
+        return n / size;
+    }
     int idx = (int)file_handle - 1;
     if (idx < 0 || idx >= 64 || !m_files[idx].in_use) return 0;
     u32 total = size * nmemb;
@@ -1030,6 +1076,18 @@ u32 Syscalls::do_fwrite(u32 ptr, u32 size, u32 nmemb, u32 file_handle) {
 }
 
 u32 Syscalls::do_fseek(u32 file_handle, s32 offset, u32 whence) {
+    u32 mf_data, mf_size, mf_pos;
+    if (memfile_parse(m_mem, file_handle, mf_data, mf_size, mf_pos)) {
+        (void)mf_data;
+        s32 np = (s32)mf_pos;
+        if (whence == 0) np = offset;
+        else if (whence == 1) np = (s32)mf_pos + offset;
+        else if (whence == 2) np = (s32)mf_size + offset;
+        if (np < 0) np = 0;
+        if ((u32)np > mf_size) np = (s32)mf_size;
+        m_mem.write_u32(file_handle + 16, (u32)np);
+        return 0;
+    }
     int idx = (int)file_handle - 1;
     if (idx < 0 || idx >= 64 || !m_files[idx].in_use) return (u32)-1;
     if (m_files[idx].is_host && m_files[idx].host_file) {
@@ -1054,6 +1112,11 @@ u32 Syscalls::do_fseek(u32 file_handle, s32 offset, u32 whence) {
 }
 
 u32 Syscalls::do_ftell(u32 file_handle) {
+    u32 mf_data, mf_size, mf_pos;
+    if (memfile_parse(m_mem, file_handle, mf_data, mf_size, mf_pos)) {
+        (void)mf_data; (void)mf_size;
+        return mf_pos;
+    }
     int idx = (int)file_handle - 1;
     if (idx < 0 || idx >= 64 || !m_files[idx].in_use) return (u32)-1;
     if (m_files[idx].is_host && m_files[idx].host_file)
@@ -1062,6 +1125,11 @@ u32 Syscalls::do_ftell(u32 file_handle) {
 }
 
 u32 Syscalls::do_feof(u32 file_handle) {
+    u32 mf_data, mf_size, mf_pos;
+    if (memfile_parse(m_mem, file_handle, mf_data, mf_size, mf_pos)) {
+        (void)mf_data;
+        return mf_pos >= mf_size ? 1 : 0;
+    }
     int idx = (int)file_handle - 1;
     if (idx < 0 || idx >= 64 || !m_files[idx].in_use) return 1;
     if (m_files[idx].is_host && m_files[idx].host_file)
@@ -3602,29 +3670,123 @@ void Syscalls::impl__tcscmp()               { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl__tcscpy()               { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl__waveout_open()         { impl_waveout_open(); }
 void Syscalls::impl__waveout_set_volume()   { impl_waveout_set_volume(); }
-void Syscalls::impl_av_begin_thread()       { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_create_flag()        { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_create_sem()         { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_delay()              { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_destroy_flag()       { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_destroy_sem()        { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_end_thread()         { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_give_flag()          { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_give_sem()           { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_queue_abort()        { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_queue_end()          { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_queue_flush()        { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_queue_get()          { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_queue_init()         { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_queue_put()          { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_reg_object()         { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_resize_packet()      { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_uft8_2_unicode()     { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_unreg_object()       { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_upper_4cc()          { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_wait_flag()          { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_wait_sem()           { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_av_wait_sem2()          { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_av_begin_thread() {
+    // Typical firmware: av_begin_thread(fn, arg, name, prio [, stack]).
+    // Create a µC/OS-II task with a heap stack so media workers can run.
+    u32 fn   = arg(0);
+    u32 targ = arg(1);
+    u32 a2   = arg(2);
+    u32 a3   = arg(3);
+    u32 a4   = arg(4);
+    u32 prio = a3;
+    if (prio > 254)
+        prio = (a4 <= 254) ? a4 : 16;
+    if (prio == 0)
+        prio = 16;
+
+    static constexpr u32 TASK_STACK_SIZE = 0x4000;
+    u32 base = heap_alloc(TASK_STACK_SIZE);
+    u32 sp = base ? ((base + TASK_STACK_SIZE) & ~0xF) : 0;
+    printf("[av_begin_thread] fn=0x%08X arg=0x%08X a2=0x%08X a3=%u a4=%u prio=%u\n",
+           fn, targ, a2, a3, a4, prio);
+    if (!fn || !sp) {
+        g_cpu_regs[2] = 0;
+        return;
+    }
+
+    int creator = m_current_task;
+    g_cpu_regs[4] = fn;
+    g_cpu_regs[5] = targ;
+    g_cpu_regs[6] = sp;
+    g_cpu_regs[7] = prio;
+    impl_OSTaskCreate();
+    u32 handle = (g_cpu_regs[2] == 0 && m_task_count > 0) ? (u32)m_task_count : 0;
+    if (m_task_switched && creator >= 0 && creator < m_task_count)
+        m_tasks[creator].regs[2] = handle;
+    else
+        g_cpu_regs[2] = handle;
+}
+
+void Syscalls::impl_av_create_flag() { impl_OSSemCreate(); }
+void Syscalls::impl_av_create_sem()  { impl_OSSemCreate(); }
+
+void Syscalls::impl_av_delay() {
+    u32 ms = arg(0);
+    if (m_scheduler_started && m_current_task >= 0 && m_current_task < m_task_count) {
+        u32 ticks = (ms + 15) / 16;
+        if (ticks == 0) ticks = 1;
+        g_cpu_regs[4] = ticks;
+        impl_OSTimeDly();
+    } else {
+        g_cpu_regs[2] = 0;
+    }
+}
+
+void Syscalls::impl_av_destroy_flag() {
+    u32 ev = arg(0);
+    g_cpu_regs[4] = ev;
+    g_cpu_regs[5] = 1;
+    g_cpu_regs[6] = 0;
+    impl_OSSemDel();
+    g_cpu_regs[2] = 0;
+}
+void Syscalls::impl_av_destroy_sem() { impl_av_destroy_flag(); }
+
+void Syscalls::impl_av_end_thread() {
+    g_cpu_regs[4] = 255; // OS_PRIO_SELF
+    impl_OSTaskDel();
+}
+
+void Syscalls::impl_av_give_flag() { impl_OSSemPost(); }
+void Syscalls::impl_av_give_sem()  { impl_OSSemPost(); }
+
+void Syscalls::impl_av_queue_abort()        { g_cpu_regs[2] = 0; }
+void Syscalls::impl_av_queue_end()          { g_cpu_regs[2] = 0; }
+void Syscalls::impl_av_queue_flush()        { g_cpu_regs[2] = 0; }
+void Syscalls::impl_av_queue_get()          { g_cpu_regs[2] = 0; }
+void Syscalls::impl_av_queue_init() {
+    u32 q = arg(0);
+    if (!q || q < 0x100)
+        q = heap_alloc(32);
+    g_cpu_regs[2] = q;
+}
+void Syscalls::impl_av_queue_put()          { g_cpu_regs[2] = 0; }
+void Syscalls::impl_av_reg_object() {
+    u32 obj = arg(0);
+    g_cpu_regs[2] = obj ? obj : heap_alloc(16);
+}
+void Syscalls::impl_av_resize_packet() {
+    g_cpu_regs[2] = heap_realloc(arg(0), arg(1));
+}
+void Syscalls::impl_av_uft8_2_unicode() {
+    u32 src = arg(0);
+    u32 dst = arg(1);
+    u32 maxn = arg(2);
+    if (!src || !dst) { g_cpu_regs[2] = 0; return; }
+    if (maxn == 0 || maxn > 4096) maxn = 1024;
+    u32 n = 0;
+    for (; n < maxn - 1; n++) {
+        u8 c = m_mem.read_u8(src + n);
+        m_mem.write_u16(dst + n * 2, c);
+        if (c == 0) break;
+    }
+    m_mem.write_u16(dst + n * 2, 0);
+    g_cpu_regs[2] = n;
+}
+void Syscalls::impl_av_unreg_object()       { g_cpu_regs[2] = 0; }
+void Syscalls::impl_av_upper_4cc() {
+    u32 v = arg(0);
+    u32 out = 0;
+    for (int i = 0; i < 4; i++) {
+        u8 c = (u8)(v >> (i * 8));
+        if (c >= 'a' && c <= 'z') c = (u8)(c - 32);
+        out |= (u32)c << (i * 8);
+    }
+    g_cpu_regs[2] = out;
+}
+void Syscalls::impl_av_wait_flag() { sem_pend(arg(0), 0, 0); }
+void Syscalls::impl_av_wait_sem()  { sem_pend(arg(0), 0, 0); }
+void Syscalls::impl_av_wait_sem2() { sem_pend(arg(0), arg(1), 0); }
 void Syscalls::impl_delay_ms()              { (void)arg(0); g_cpu_regs[2] = 0; }
 void Syscalls::impl_detect_clock()          { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_fsys_fcloseW()          { printf("[STUB] %s\n", __func__); }
@@ -3634,8 +3796,42 @@ void Syscalls::impl_fsys_mkdir()            { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_fsys_removeW()          { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_fsys_renameW()          { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_isTVON()                { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_memcpy()                { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_memset()                { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_memcpy() {
+    u32 dest = arg(0);
+    u32 src = arg(1);
+    u32 n = arg(2);
+    if (n > 0 && dest && src) {
+        // Copy in chunks so we do not allocate a huge host buffer.
+        u8 buf[4096];
+        u32 copied = 0;
+        while (copied < n) {
+            u32 chunk = n - copied;
+            if (chunk > sizeof(buf)) chunk = (u32)sizeof(buf);
+            m_mem.read_block(src + copied, buf, chunk);
+            m_mem.write_block(dest + copied, buf, chunk);
+            copied += chunk;
+        }
+    }
+    g_cpu_regs[2] = dest;
+}
+
+void Syscalls::impl_memset() {
+    u32 dest = arg(0);
+    u32 c = arg(1) & 0xFF;
+    u32 n = arg(2);
+    if (n > 0 && dest) {
+        u8 buf[256];
+        memset(buf, (int)c, sizeof(buf));
+        u32 filled = 0;
+        while (filled < n) {
+            u32 chunk = n - filled;
+            if (chunk > sizeof(buf)) chunk = (u32)sizeof(buf);
+            m_mem.write_block(dest + filled, buf, chunk);
+            filled += chunk;
+        }
+    }
+    g_cpu_regs[2] = dest;
+}
 void Syscalls::impl_serial_puts()           { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_sscanf()                { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_sys_get_ccpmp_config()  { printf("[STUB] %s\n", __func__); }
