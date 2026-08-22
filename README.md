@@ -250,7 +250,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Overlord-Fighter / Yi-Chi King Fighter | Same game (`Overlord-Fighter.app` and `Yi-Chi King Fighter (Chinese).app`). FlyApp + `flydata.dlx` (DLX2): splash then menu; µC/GUI `WM_KEY` from `open_gui_key_msg` (A/Start confirm, D-pad choose); in-game frames (audio worker runs) |
 | Platinum Sudoku | Renders |
 | PoPo Bash / Puzzle Bobble | Same game (`Puzzle Bobble - Popo Bash (Chinese).app`). Renders |
-| Rick-Dangerous | Renders (xrick splash then title; `GetTickCount` is µs, not ms) |
+| Rick-Dangerous | Renders with sound (xrick; same-prio mixer was starved until µC/OS-II time-slicing) |
 
 **7days** and **tetris** are verified titles — both boot with rendered graphics and stable real-time audio (scheduler block + sem pacing).
 

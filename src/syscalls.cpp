@@ -3550,6 +3550,28 @@ bool Syscalls::simulate_vsync() {
         }
     }
 
+    // µC/OS-II time slicing: rotate ready tasks at the current priority.
+    // Rick-Dangerous creates its waveout mixer at prio 5 (same as AppMain)
+    // and busy-waits GetTickCount instead of OSTimeDly, so a priority-only
+    // switch never runs the mixer and waveout_write stays at 0.
+    if (m_current_task >= 0 && m_current_task < m_task_count
+        && m_tasks[m_current_task].active && !m_tasks[m_current_task].blocked) {
+        u8 prio = m_tasks[m_current_task].task_prio;
+        int slice = -1;
+        for (int off = 1; off < m_task_count; off++) {
+            int i = (m_current_task + off) % m_task_count;
+            if (m_tasks[i].active && !m_tasks[i].blocked && m_tasks[i].task_prio == prio) {
+                slice = i;
+                break;
+            }
+        }
+        if (slice >= 0) {
+            save_current_task();
+            switch_to_task(slice);
+            switched = true;
+        }
+    }
+
     // Keep SDL window alive without triggering frame-count dirty flag.
     m_display.present_blank();
 
