@@ -3523,6 +3523,33 @@ bool Syscalls::simulate_vsync() {
         }
     }
 
+    // Mixers (prio >= 16) pace by blocking inside waveout_write. After the
+    // ring has space they are ready again, but AppMain (prio 5) is also ready
+    // and a priority-only switch starves them — Hell Striker II plays the
+    // first fill then goes silent. Resume a ready audio worker as if
+    // waveout_write were a blocking device wait. Skip --nosound: writes
+    // never block, so a forced slice would spin the mixer forever.
+    if (!m_nosound && (m_current_task < 0
+                       || (m_current_task < m_task_count
+                           && m_tasks[m_current_task].task_prio < 16))) {
+        int audio = -1;
+        u8 best = 255;
+        for (int i = 0; i < m_task_count; i++) {
+            if (m_tasks[i].active && !m_tasks[i].blocked
+                && m_tasks[i].task_prio >= 16 && m_tasks[i].task_prio < best) {
+                best = m_tasks[i].task_prio;
+                audio = i;
+            }
+        }
+        if (audio >= 0) {
+            if (m_current_task >= 0)
+                save_current_task();
+            switch_to_task(audio);
+            switched = true;
+            m_in_idle = false;
+        }
+    }
+
     // Keep SDL window alive without triggering frame-count dirty flag.
     m_display.present_blank();
 

@@ -238,7 +238,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Decollation Warrior | Playable, with sound |
 | dicer | Stuck at Phase 1, lots of stubs: av_*** |
 | Fomula-One | Black screen, stuck |
-| Hell Striker II | Playable. no sound |
+| Hell Striker II | Playable, with sound (mixer prio 16 gets a vsync slice so `waveout_write` can refill after the intro) |
 | Landlord | Black screen, crashes |
 | Life | Stuck at Phase 1 |
 | Link'em Up | Playable |
@@ -247,18 +247,10 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Mojo | Playable |
 | Mushroom Roulette | Renders |
 | Nose Breaker | Black screen |
-| Overlord-Fighter | Loads `flydata.dlx`, splash then menu; µC/GUI `WM_KEY` from `open_gui_key_msg` (A/Start confirm, D-pad choose) |
+| Overlord-Fighter / Yi-Chi King Fighter | Same game (`Overlord-Fighter.app` and `Yi-Chi King Fighter (Chinese).app`). FlyApp + `flydata.dlx` (DLX2): splash then menu; µC/GUI `WM_KEY` from `open_gui_key_msg` (A/Start confirm, D-pad choose); in-game frames (audio worker runs) |
 | Platinum Sudoku | Renders |
-| PoPo Bash | Renders |
-| Puzzle Bobble | Renders |
+| PoPo Bash / Puzzle Bobble | Same game (`Puzzle Bobble - Popo Bash (Chinese).app`). Renders |
 | Rick-Dangerous | Renders (xrick splash then title; `GetTickCount` is µs, not ms) |
-| Rubido | Renders (host-backed `dl_res_*`; no longer heap-maps 10 MB `music.snd` into the stack) |
-| snake | ⏳ Loads resources from binary, then loops on NOT FOUND (timeout) |
-| StopWatch | ⏳ Hits `=== Starting emulation ===`, then nothing (GAP) |
-| tetris | Playable |
-| ultimate_drift | Playable |
-| Yi-Chi King Fighter | Same FlyApp engine as Overlord: DLX2 splash, then in-game frames (audio worker runs) |
-| Zhao Yun Chuan | Playable |
 
 **7days** and **tetris** are verified titles — both boot with rendered graphics and stable real-time audio (scheduler block + sem pacing).
 
@@ -281,7 +273,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Save file write path not implemented | ⚠️ Medium priority |
 | MXU audio mixing correctness unverified | ⚠️ Low priority |
 | `get_current_language` hardcoded to English | ⚠️ Low priority — may affect Chinese UI locale |
-| `ERPT` / SIZED resource archives | ✅ Parsed (`u32` count, 508-byte name/size/offset records, XOR 0x40). PoPo Bash, Puzzle Bobble, Platinum Sudoku, Mushroom Roulette render. Overlord/Yi-Chi load `.dlx` via `dl_res_*` |
+| `ERPT` / SIZED resource archives | ✅ Parsed (`u32` count, 508-byte name/size/offset records, XOR 0x40). PoPo Bash (Puzzle Bobble), Platinum Sudoku, Mushroom Roulette render. Overlord / Yi-Chi (same FlyApp) load `.dlx` via `dl_res_*` |
 | `dl_load` / DLX2 modules | ✅ `dl_load` maps archive/sidecar files into guest RAM. Overlord/Yi-Chi parse DLX2 through `dl_res_get_data` + `U8TOU32`. Splash and subsequent frames render; mixer task uses µC/OS-II `OS_TaskReturn` so it no longer KUSEG-halts |
 
 ---
@@ -306,7 +298,7 @@ These stubs unblock all tested apps (including Life, StopWatch, dicer with 172-i
 
 | App | Imports | Status |
 |-----|---------|--------|
-| Yi‑Chi King Fighter, Overlord‑Fighter | 96 | All 96 names dispatched. `flydata.dlx` loads (DLX2); splash and menu render; `open_gui_key_msg` posts `WM_KEY` so D-pad/A/Start work |
+| Yi‑Chi King Fighter / Overlord‑Fighter (same game) | 96 | All 96 names dispatched. `flydata.dlx` loads (DLX2); splash and menu render; `open_gui_key_msg` posts `WM_KEY` so D-pad/A/Start work |
 | Life, StopWatch, dicer | 172 | All 173 documented functions + extras in table; no more "Unknown GOT" errors |
 
 ---
