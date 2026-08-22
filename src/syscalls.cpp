@@ -2865,9 +2865,12 @@ void Syscalls::impl___to_locale_ansi() {
 }
 
 void Syscalls::impl_get_current_language() {
-    int lang = 0; // Chinese (0=English)
-    printf("[STUB] get_current_language -> %d (%s)\n", lang, lang == 0 ? "English" : "Chinese");
-    g_cpu_regs[2] = lang; // Chinese (0=English)
+    // Dingoo firmware IDs: 0=Simplified Chinese, 1=Traditional Chinese, 2=English.
+    // 7days.app stores this value and compares it to 2 to choose uien/ vs ui/
+    // (English vs Chinese bitmaps/fonts packed in the same .app archive).
+    const int lang = 2;
+    printf("[STUB] get_current_language -> %d (%s)\n", lang, lang == 2 ? "English" : "Chinese");
+    g_cpu_regs[2] = (u32)lang;
 }
 
 // === dl_res resource API (SPK archive by guest path) ===

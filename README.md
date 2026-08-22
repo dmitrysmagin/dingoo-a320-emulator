@@ -273,7 +273,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Most games stop before rendering loop | 🔍 Root cause varies: missing resources, GOT gaps, or title-specific logic |
 | Save file write path not implemented | ⚠️ Medium priority |
 | MXU audio mixing correctness unverified | ⚠️ Low priority |
-| `get_current_language` hardcoded to English | ⚠️ Low priority — may affect Chinese UI locale |
+| `get_current_language` returns 2 (English) | 7days.app contains both `.\ui\` (Chinese) and `.\uien\` (English) and selects English when the firmware language is 2. Return 0 for Simplified Chinese. |
 | `ERPT` / SIZED resource archives | ✅ Parsed (`u32` count, 508-byte name/size/offset records, XOR 0x40). PoPo Bash (Puzzle Bobble), Platinum Sudoku, Mushroom Roulette render. Overlord / Yi-Chi (same FlyApp) load `.dlx` via `dl_res_*` |
 | `dl_load` / DLX2 modules | ✅ `dl_load` maps archive/sidecar files into guest RAM. Overlord/Yi-Chi parse DLX2 through `dl_res_get_data` + `U8TOU32`. Splash and subsequent frames render; mixer task uses µC/OS-II `OS_TaskReturn` so it no longer KUSEG-halts |
 
