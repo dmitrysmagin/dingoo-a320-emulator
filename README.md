@@ -206,10 +206,10 @@ Guest memory layout:
 |---------|--------|
 | `fsys_fopenW`/`fread`/`fseek`/`ftell`/`fclose` | ✅ Complete — handles are 1-based (0 = failure/NULL, 1+ = valid) |
 | Resource archive parsing (.spk, up to 3216 entries) | ✅ Complete |
-| Path normalization (`.\dir\file.ext` → `dir/file.ext`) | ✅ Complete |
-| Save file writes (`slot*.sav`, `config.sdt`, `state.sdt`) | ❌ Returns NOT FOUND (game handles gracefully) |
-| `fsys_findfirst`/`findnext` | ✅ Real implementation (`opendir`/`readdir` on host) |
-| `fsys_remove`/`rename` | ✅ Real host `remove()`/`rename()` with `save/` prefix |
+| Path normalization (`a:\`, `.\`, `/` and `\`) | ✅ Complete — relative to uOS2 cwd |
+| External save/load | ✅ `home/<game>/` is the guest current directory. `fsys_fopen`/`fopenW` read and write host files (`.\record*.s3dzyz`, etc.); parent dirs are created |
+| `fsys_findfirst`/`findnext` | ✅ Lists the mapped home directory |
+| `fsys_mkdir`/`remove`/`rename` | ✅ Operate on `home/<game>/` |
 
 ### Syscall API Coverage
 
@@ -271,7 +271,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Issue | Status |
 |-------|--------|
 | Most games stop before rendering loop | 🔍 Root cause varies: missing resources, GOT gaps, or title-specific logic |
-| Save file write path not implemented | ⚠️ Medium priority |
+| External files / saves | ✅ `home/<game>/` is the uOS2 current directory (`fsys_fopen`/`fwrite`/`mkdir`/`findfirst`) |
 | MXU audio mixing correctness unverified | ⚠️ Low priority |
 | `get_current_language` returns 2 (English) | 7days.app contains both `.\ui\` (Chinese) and `.\uien\` (English) and selects English when the firmware language is 2. Return 0 for Simplified Chinese. |
 | `ERPT` / SIZED resource archives | ✅ Parsed (`u32` count, 508-byte name/size/offset records, XOR 0x40). PoPo Bash (Puzzle Bobble), Platinum Sudoku, Mushroom Roulette render. Overlord / Yi-Chi (same FlyApp) load `.dlx` via `dl_res_*` |
@@ -288,7 +288,7 @@ All 83 stubs print `[STUB]` and return. Categories:
 | TV out | `tv_open/close`, `tv_enable/disable_switch`, `tv_get/set_openflag`, `tv_get/set_closeflag`, `isTVON` |
 | Accelerometer | `Custom_Memsic_test`, `Memsic_SerialCommInit`, `Get_X`, `Get_Y`, `Read_Acc`, `Read_Acc0` |
 | Audio/video framework | Queue/object leftovers: `av_queue_abort/end/flush/get/init/put`, `av_reg/unreg_object`. Sem/flag/thread/delay, `av_resize_packet`, `av_uft8_2_unicode`, `av_upper_4cc` are implemented |
-| Wide filesystem | `fsys_fcloseW`, `fsys_fclose_flash`, `fsys_fopen_flash`, `fsys_mkdir`, `fsys_removeW`, `fsys_renameW` |
+| Wide filesystem | `fsys_fcloseW`, `fsys_fclose_flash`, `fsys_fopen_flash`, `fsys_renameW` |
 | Extra libc | `sscanf`, `vsprintf`, `_tcscmp`, `_tcscpy`, `serial_puts` (`memcpy` / `memset` implemented) |
 | Low-level OS | `SysDisableBkLight`, `sys_get_ccpmp_config`, `detect_clock`, `delay_ms`, `udelay` |
 | Pre-existing stubs | `vxGoHome`, `free_irq`, `fsys_RefreshCache`, `fsys_flush_cache`, `__icache_invalidate_all`, `__dcache_writeback_all`, `TaskMediaFunStop`, `serial_getc`, `USB_Connect`, `USB_No_Connect`, `udc_attached` |

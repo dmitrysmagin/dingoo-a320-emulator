@@ -24,7 +24,7 @@ public:
     bool got_is_stub(int index) const;
     void init_slot_handlers(const std::vector<ImportEntry>& imports);
     void set_archive(Archive* archive) { m_archive = archive; }
-    void set_app_path(const char* path) { m_app_path = path ? path : ""; }
+    void set_app_path(const char* path);
     void set_cop0(COP0* cop0) { m_cop0 = cop0; }
     void set_nosound(bool v) { m_nosound = v; }
     void set_audio_target_latency_ms(int ms);
@@ -40,6 +40,14 @@ private:
     u32 arg(int n);
     std::string guest_string(u32 vaddr);
     std::string read_guest_path(u32 vaddr);
+
+    // uOS2 current directory ↔ host "home/<game>/"
+    std::string normalize_guest_fs_path(const std::string& guest) const;
+    std::string host_path_from_guest(const std::string& guest) const;
+    bool ensure_host_dir(const std::string& dir);
+    bool ensure_host_parent(const std::string& host_file);
+    FILE* open_home_file(const std::string& guest_path, const std::string& mode,
+                         std::string* resolved);
 
     // === 72 GOT dispatch implementations ===
     // 0-10: libc
@@ -281,6 +289,7 @@ private:
     Archive* m_archive;
     COP0* m_cop0 = nullptr;
     std::string m_app_path;
+    std::string m_home_dir; // host path for the guest's uOS2 cwd
     u32 m_lcd_bpp;        // 1=indexed, 2=RGB565, 4=ARGB8888; never stored in guest RAM
     u32 m_lcd_hw_buf[2]; // phys start of the two HW frame buffers (0 = unallocated)
     bool m_lcd_back;      // which buffer is currently the back buffer

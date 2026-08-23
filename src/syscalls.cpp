@@ -3,6 +3,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <algorithm>
+#include <cctype>
 #include <sys/stat.h>
 #ifdef _WIN32
 #include <direct.h>
@@ -132,9 +133,9 @@ const Syscalls::GOTHandler Syscalls::s_handlers[] = {
     {"fsys_fclose_flash",       &Syscalls::impl_fsys_fclose_flash,       true},
     {"fsys_feof",               &Syscalls::impl_fsys_feof,               false},
     {"fsys_ferror",             &Syscalls::impl_fsys_ferror,             false},
-    {"fsys_findclose",          &Syscalls::impl_fsys_findclose,          true},
-    {"fsys_findfirst",          &Syscalls::impl_fsys_findfirst,          true},
-    {"fsys_findnext",           &Syscalls::impl_fsys_findnext,           true},
+    {"fsys_findclose",          &Syscalls::impl_fsys_findclose,          false},
+    {"fsys_findfirst",          &Syscalls::impl_fsys_findfirst,          false},
+    {"fsys_findnext",           &Syscalls::impl_fsys_findnext,           false},
     {"fsys_flush_cache",        &Syscalls::impl_fsys_flush_cache,        true},
     {"fsys_fopen",              &Syscalls::impl_fsys_fopen,              false},
     {"fsys_fopenW",             &Syscalls::impl_fsys_fopenW,             false},
@@ -143,9 +144,9 @@ const Syscalls::GOTHandler Syscalls::s_handlers[] = {
     {"fsys_fseek",              &Syscalls::impl_fsys_fseek,              false},
     {"fsys_ftell",              &Syscalls::impl_fsys_ftell,              false},
     {"fsys_fwrite",             &Syscalls::impl_fsys_fwrite,             false},
-    {"fsys_mkdir",              &Syscalls::impl_fsys_mkdir,              true},
+    {"fsys_mkdir",              &Syscalls::impl_fsys_mkdir,              false},
     {"fsys_remove",             &Syscalls::impl_fsys_remove,             false},
-    {"fsys_removeW",            &Syscalls::impl_fsys_removeW,            true},
+    {"fsys_removeW",            &Syscalls::impl_fsys_removeW,            false},
     {"fsys_rename",             &Syscalls::impl_fsys_rename,             false},
     {"fsys_renameW",            &Syscalls::impl_fsys_renameW,            true},
     {"fwrite",                  &Syscalls::impl_fwrite,                  false},
@@ -869,6 +870,114 @@ std::string Syscalls::read_guest_path(u32 vaddr) {
     return wide;
 }
 
+void Syscalls::set_app_path(const char* path) {
+    m_app_path = path ? path : "";
+    std::string name = "app";
+    if (!m_app_path.empty()) {
+        size_t slash = m_app_path.find_last_of("/\\");
+        name = (slash != std::string::npos) ? m_app_path.substr(slash + 1) : m_app_path;
+        size_t dot = name.find_last_of('.');
+        if (dot != std::string::npos)
+            name = name.substr(0, dot);
+    }
+    if (name.empty())
+        name = "app";
+    m_home_dir = std::string("home/") + name;
+    ensure_host_dir(m_home_dir);
+    printf("[INIT] uOS2 home (cwd): %s\n", m_home_dir.c_str());
+}
+
+std::string Syscalls::normalize_guest_fs_path(const std::string& guest) const {
+    std::string p = guest;
+    while (!p.empty() && (p.back() == ' ' || p.back() == '\t' || p.back() == '\0'))
+        p.pop_back();
+    for (char& c : p) {
+        if (c == '\\') c = '/';
+    }
+    if (p.size() >= 2 && p[1] == ':' && std::isalpha(static_cast<unsigned char>(p[0])))
+        p = p.substr(2);
+    while (p.size() >= 2 && p[0] == '.' && p[1] == '/')
+        p = p.substr(2);
+    while (!p.empty() && p[0] == '/')
+        p = p.substr(1);
+
+    std::string safe;
+    size_t i = 0;
+    while (i <= p.size()) {
+        size_t sl = p.find('/', i);
+        std::string part = p.substr(i, sl == std::string::npos ? std::string::npos : sl - i);
+        if (part == "..")
+            return {};
+        if (!part.empty() && part != ".") {
+            if (!safe.empty()) safe += '/';
+            safe += part;
+        }
+        if (sl == std::string::npos)
+            break;
+        i = sl + 1;
+    }
+    return safe;
+}
+
+std::string Syscalls::host_path_from_guest(const std::string& guest) const {
+    std::string rel = normalize_guest_fs_path(guest);
+    std::string root = m_home_dir.empty() ? std::string("home") : m_home_dir;
+    if (rel.empty())
+        return root;
+    return root + "/" + rel;
+}
+
+bool Syscalls::ensure_host_dir(const std::string& dir) {
+    if (dir.empty())
+        return false;
+    std::string acc;
+    for (size_t i = 0; i <= dir.size(); i++) {
+        if (i == dir.size() || dir[i] == '/' || dir[i] == '\\') {
+            if (acc.empty())
+                continue;
+#ifdef _WIN32
+            if (acc.size() == 2 && acc[1] == ':') {
+                acc.push_back(dir[i]);
+                continue;
+            }
+            _mkdir(acc.c_str());
+#else
+            mkdir(acc.c_str(), 0755);
+#endif
+            if (i < dir.size())
+                acc.push_back('/');
+        } else {
+            acc.push_back(dir[i]);
+        }
+    }
+    return true;
+}
+
+bool Syscalls::ensure_host_parent(const std::string& host_file) {
+    size_t sl = host_file.find_last_of("/\\");
+    if (sl == std::string::npos)
+        return ensure_host_dir(m_home_dir);
+    return ensure_host_dir(host_file.substr(0, sl));
+}
+
+FILE* Syscalls::open_home_file(const std::string& guest_path, const std::string& mode,
+                               std::string* resolved) {
+    std::string host = host_path_from_guest(guest_path);
+    if (host.empty())
+        return nullptr;
+    if (resolved)
+        *resolved = host;
+    std::string m = mode.empty() ? "rb" : mode;
+    if (m.find('b') == std::string::npos && m.find('t') == std::string::npos)
+        m += 'b';
+    bool writing = m.find('w') != std::string::npos
+                || m.find('a') != std::string::npos
+                || m.find('+') != std::string::npos;
+    if (writing)
+        ensure_host_parent(host);
+    return fopen(host.c_str(), m.c_str());
+}
+
 const char* Syscalls::got_name(int index) const {
     if (index >= 0 && index < (int)m_slot_handlers.size()) {
         int hi = m_slot_handlers[index];
@@ -1069,6 +1178,7 @@ u32 Syscalls::do_fwrite(u32 ptr, u32 size, u32 nmemb, u32 file_handle) {
         std::vector<u8> buf(total);
         m_mem.read_block(ptr, buf.data(), total);
         size_t written = fwrite(buf.data(), 1, total, m_files[idx].host_file);
+        fflush(m_files[idx].host_file);
         m_files[idx].offset += (u32)written;
         return (u32)(written / size);
     }
@@ -1647,11 +1757,18 @@ void Syscalls::impl__kbd_get_key() {
 void Syscalls::impl_fsys_fopen() {
     u32 path_addr = arg(0);
     u32 mode_addr = arg(1);
-    std::string path = guest_string(path_addr);
+    std::string path = read_guest_path(path_addr);
     std::string mode = guest_string(mode_addr);
+    bool writing = mode.find('w') != std::string::npos
+                || mode.find('a') != std::string::npos
+                || mode.find('+') != std::string::npos;
 
-    if (m_archive && !is_spk_index_bin(path)) {
+    // Read-only resource opens still come from the SPK first.
+    if (!writing && m_archive && !is_spk_index_bin(path)) {
         const ArchiveEntry* entry = m_archive->find(path);
+        if (!entry && path.size() > 2 && path[0] == '.' &&
+            (path[1] == '\\' || path[1] == '/'))
+            entry = m_archive->find(path.substr(2));
         if (entry) {
             int idx = alloc_file_handle();
             if (idx < 0) { g_cpu_regs[2] = 0; return; }
@@ -1659,31 +1776,28 @@ void Syscalls::impl_fsys_fopen() {
             m_files[idx].archive = m_archive;
             m_files[idx].archive_entry = entry;
             m_files[idx].offset = 0;
+            printf("[FSYS] fopen('%s','%s') -> handle %d (archive, %u bytes)\n",
+                   path.c_str(), mode.c_str(), idx + 1, (u32)entry->size);
             g_cpu_regs[2] = (u32)idx + 1;
             return;
         }
     }
 
-    // Try host file for write/append mode
     int idx = alloc_file_handle();
     if (idx < 0) { g_cpu_regs[2] = 0; return; }
-    if (mode.find('w') != std::string::npos || mode.find('+') != std::string::npos ||
-        mode.find('a') != std::string::npos) {
-#ifdef _WIN32
-        _mkdir("save");
-#else
-        mkdir("save", 0755);
-#endif
-        std::string host_path = "save/" + path;
-        FILE* f = fopen(host_path.c_str(), mode.c_str());
-        if (f) {
-            m_files[idx].is_host = true;
-            m_files[idx].host_file = f;
-            g_cpu_regs[2] = (u32)idx + 1;
-            return;
-        }
+    std::string host;
+    FILE* f = open_home_file(path, mode, &host);
+    if (f) {
+        m_files[idx].is_host = true;
+        m_files[idx].host_file = f;
+        printf("[FSYS] fopen('%s','%s') -> handle %d (%s)\n",
+               path.c_str(), mode.c_str(), idx + 1, host.c_str());
+        g_cpu_regs[2] = (u32)idx + 1;
+        return;
     }
 
+    printf("[FSYS] fopen('%s','%s') -> NOT FOUND (tried %s)\n",
+           path.c_str(), mode.c_str(), host.c_str());
     m_files[idx].in_use = false;
     g_cpu_regs[2] = 0;
 }
@@ -1731,34 +1845,24 @@ void Syscalls::impl_fsys_ftell() {
 void Syscalls::impl_fsys_remove() {
     u32 path_addr = arg(0);
     if (!path_addr) { g_cpu_regs[2] = (u32)-1; return; }
-    std::string path = guest_string(path_addr);
-    printf("[FSYS] remove('%s')\n", path.c_str());
-
-    // Try save/ prefix first (games write to save/ directory)
-    std::string host_path = "save/" + path;
-    if (remove(host_path.c_str()) == 0) { g_cpu_regs[2] = 0; return; }
-
-    // Fallback: try path as-is
-    if (remove(path.c_str()) == 0) { g_cpu_regs[2] = 0; return; }
-
-    g_cpu_regs[2] = (u32)-1;
+    std::string path = read_guest_path(path_addr);
+    std::string host = host_path_from_guest(path);
+    printf("[FSYS] remove('%s') -> %s\n", path.c_str(), host.c_str());
+    g_cpu_regs[2] = (remove(host.c_str()) == 0) ? 0 : (u32)-1;
 }
 
 void Syscalls::impl_fsys_rename() {
     u32 old_addr = arg(0);
     u32 new_addr = arg(1);
     if (!old_addr || !new_addr) { g_cpu_regs[2] = (u32)-1; return; }
-    std::string old_path = guest_string(old_addr);
-    std::string new_path = guest_string(new_addr);
-    printf("[FSYS] rename('%s' -> '%s')\n", old_path.c_str(), new_path.c_str());
-
-    // Try save/ prefix first, then fallback to as-is
-    std::string host_old = "save/" + old_path;
-    std::string host_new = "save/" + new_path;
-    if (rename(host_old.c_str(), host_new.c_str()) == 0) { g_cpu_regs[2] = 0; return; }
-    if (rename(old_path.c_str(), new_path.c_str()) == 0) { g_cpu_regs[2] = 0; return; }
-
-    g_cpu_regs[2] = (u32)-1;
+    std::string old_path = read_guest_path(old_addr);
+    std::string new_path = read_guest_path(new_addr);
+    std::string host_old = host_path_from_guest(old_path);
+    std::string host_new = host_path_from_guest(new_path);
+    printf("[FSYS] rename('%s' -> '%s') (%s -> %s)\n",
+           old_path.c_str(), new_path.c_str(), host_old.c_str(), host_new.c_str());
+    ensure_host_parent(host_new);
+    g_cpu_regs[2] = (rename(host_old.c_str(), host_new.c_str()) == 0) ? 0 : (u32)-1;
 }
 
 void Syscalls::impl_fsys_ferror() {
@@ -1774,7 +1878,10 @@ void Syscalls::impl_fsys_fwrite() {
     u32 size   = arg(1);
     u32 nmemb  = arg(2);
     u32 handle = arg(3);
-    g_cpu_regs[2] = do_fwrite(buf, size, nmemb, handle);
+    u32 n = do_fwrite(buf, size, nmemb, handle);
+    printf("[FWRITE] handle=%u size=%u*%u=%u -> %u items\n",
+           handle, size, nmemb, size * nmemb, n);
+    g_cpu_regs[2] = n;
 }
 
 int Syscalls::alloc_search_handle() {
@@ -1804,24 +1911,18 @@ void Syscalls::impl_fsys_findfirst() {
 
     if (!info_addr) { g_cpu_regs[2] = (u32)-1; return; }
 
-    // Normalise path: strip 'a:\' / '.\' and keep directory part
-    std::string dir_path;
+    // Directory part of the pattern, mapped into the uOS2 home (cwd).
+    std::string dir_guest = path;
     {
-        size_t star = path.find('*');
-        if (star != std::string::npos) path = path.substr(0, star);
-        size_t last_slash = path.find_last_of("/\\");
-        dir_path = (last_slash != std::string::npos) ? path.substr(0, last_slash) : ".";
-        // Strip leading .\ ./
-        while (dir_path.size() >= 2 && dir_path[0] == '.' && (dir_path[1] == '\\' || dir_path[1] == '/'))
-            dir_path = dir_path.substr(2);
-        // Strip leading "a:" or "A:"
-        if (dir_path.size() >= 2 && dir_path[1] == ':')
-            dir_path = dir_path.substr(2);
-        if (dir_path.empty()) dir_path = ".";
-        // Append backslash for opendir safety
-        if (dir_path.back() != '/' && dir_path.back() != '\\')
-            dir_path += '/';
+        size_t star = dir_guest.find('*');
+        if (star != std::string::npos)
+            dir_guest = dir_guest.substr(0, star);
+        size_t last_slash = dir_guest.find_last_of("/\\");
+        dir_guest = (last_slash != std::string::npos) ? dir_guest.substr(0, last_slash) : "";
     }
+    std::string dir_path = host_path_from_guest(dir_guest);
+    if (!dir_path.empty() && dir_path.back() != '/' && dir_path.back() != '\\')
+        dir_path += '/';
 
     int idx = alloc_search_handle();
     m_searches[idx].dir = opendir(dir_path.c_str());
@@ -1829,13 +1930,8 @@ void Syscalls::impl_fsys_findfirst() {
     m_searches[idx].dir_path = dir_path;
 
     if (!m_searches[idx].dir) {
-        // Fallback: try save/ prefix
-        std::string alt = "save/" + dir_path;
-        m_searches[idx].dir = opendir(alt.c_str());
-        if (m_searches[idx].dir) m_searches[idx].dir_path = alt;
-    }
-    if (!m_searches[idx].dir) {
-        printf("[FSYS] findfirst: cannot open '%s'\n", dir_path.c_str());
+        printf("[FSYS] findfirst: cannot open '%s' (guest '%s')\n",
+               dir_path.c_str(), path.c_str());
         free_search_handle(idx);
         g_cpu_regs[2] = (u32)-1;
         return;
@@ -2738,7 +2834,10 @@ void Syscalls::impl_fsys_fopenW() {
         }
     }*/
 
-    if (m_archive && !is_spk_index_bin(search_path)) {
+    bool writing = mode.find('w') != std::string::npos
+                || mode.find('a') != std::string::npos
+                || mode.find('+') != std::string::npos;
+    if (!writing && m_archive && !is_spk_index_bin(search_path)) {
         const ArchiveEntry* entry = m_archive->find(search_path);
         if (!entry && search_path.size() > 2 && search_path[0] == '.' &&
             (search_path[1] == '\\' || search_path[1] == '/'))
@@ -2765,38 +2864,22 @@ void Syscalls::impl_fsys_fopenW() {
         }
     }
 
-    // Try host filesystem for save files
+    // Host home directory (uOS2 cwd) for saves and other external files
     int idx = alloc_file_handle();
     if (idx < 0) { g_cpu_regs[2] = 0; return; }
-
-    if (mode.find('w') != std::string::npos || mode.find('+') != std::string::npos) {
-        std::string host_path = "save/" + path;
-        FILE* f = fopen(host_path.c_str(), mode.c_str());
-        if (f) {
-            m_files[idx].is_host = true;
-            m_files[idx].host_file = f;
-            printf("[fopenW] '%s' mode='%s' -> handle %d (host write)\n",
-                   path.c_str(), mode.c_str(), idx + 1);
-            g_cpu_regs[2] = (u32)idx + 1;
-            return;
-        }
+    std::string host;
+    FILE* f = open_home_file(search_path, mode, &host);
+    if (f) {
+        m_files[idx].is_host = true;
+        m_files[idx].host_file = f;
+        printf("[fopenW] '%s' mode='%s' -> handle %d (%s)\n",
+               search_path.c_str(), mode.c_str(), idx + 1, host.c_str());
+        g_cpu_regs[2] = (u32)idx + 1;
+        return;
     }
 
-    // Try reading from host save/ too
-    if (mode.find('r') != std::string::npos) {
-        std::string host_path = "save/" + path;
-        FILE* f = fopen(host_path.c_str(), "rb");
-        if (f) {
-            m_files[idx].is_host = true;
-            m_files[idx].host_file = f;
-            printf("[fopenW] '%s' mode='%s' -> handle %d (host read)\n",
-                   path.c_str(), mode.c_str(), idx + 1);
-            g_cpu_regs[2] = (u32)idx + 1;
-            return;
-        }
-    }
-
-    printf("[fopenW] '%s' mode='%s' -> NOT FOUND\n", search_path.c_str(), mode.c_str());
+    printf("[fopenW] '%s' mode='%s' -> NOT FOUND (tried %s)\n",
+           search_path.c_str(), mode.c_str(), host.c_str());
     m_files[idx].in_use = false;
     g_cpu_regs[2] = 0;
 }
@@ -3795,8 +3878,18 @@ void Syscalls::impl_detect_clock()          { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_fsys_fcloseW()          { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_fsys_fclose_flash()     { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_fsys_fopen_flash()      { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_fsys_mkdir()            { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_fsys_removeW()          { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_fsys_mkdir() {
+    std::string path = read_guest_path(arg(0));
+    std::string host = host_path_from_guest(path);
+    printf("[FSYS] mkdir('%s') -> %s\n", path.c_str(), host.c_str());
+    g_cpu_regs[2] = ensure_host_dir(host) ? 0 : (u32)-1;
+}
+void Syscalls::impl_fsys_removeW() {
+    std::string path = read_guest_path(arg(0));
+    std::string host = host_path_from_guest(path);
+    printf("[FSYS] removeW('%s') -> %s\n", path.c_str(), host.c_str());
+    g_cpu_regs[2] = (remove(host.c_str()) == 0) ? 0 : (u32)-1;
+}
 void Syscalls::impl_fsys_renameW()          { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_isTVON()                { printf("[STUB] %s\n", __func__); }
 void Syscalls::impl_memcpy() {

@@ -25,7 +25,7 @@ all: $(TARGET)
 $(OBJDIR):
 	mkdir -p $(OBJDIR)
 
-$(OBJDIR)/%.o: $(SRCDIR)/%.cpp $(SRCDIR)/types.h | $(OBJDIR)
+$(OBJDIR)/%.o: $(SRCDIR)/%.cpp $(SRCDIR)/types.h $(SRCDIR)/syscalls.h | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -c $< -o $@
 
 $(TARGET): $(OBJECTS)
