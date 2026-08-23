@@ -243,6 +243,8 @@ Syscalls::Syscalls(Memory& mem, Display& display)
     : m_mem(mem)
     , m_display(display)
     , m_heap_top(0x00020000)  // phys: zone1 above exception vectors, zone2 at 0x04000000 (above archive)
+    , m_guest_image_phys(RAWD_LOAD_PHYS)
+    , m_guest_image_size(0)
     , m_lcd_bpp(2)       // default RGB565 — updated by rgb_user_init
     , m_lcd_back(false)
     , m_lcd_pending_buf(0)
@@ -885,6 +887,11 @@ void Syscalls::set_app_path(const char* path) {
     m_home_dir = std::string("home/") + name;
     ensure_host_dir(m_home_dir);
     printf("[INIT] uOS2 home (cwd): %s\n", m_home_dir.c_str());
+}
+
+void Syscalls::set_guest_image(u32 load_addr, u32 rawd_size) {
+    m_guest_image_phys = load_addr & 0x1FFFFFFF;
+    m_guest_image_size = rawd_size;
 }
 
 std::string Syscalls::normalize_guest_fs_path(const std::string& guest) const {
@@ -2176,6 +2183,24 @@ void Syscalls::impl_waveout_write() {
 
     m_last_waveout_bytes = -1;
     int bytes = audio_do_write(buf_addr, size);
+    if (bytes > 0 && buf_addr && size >= 2) {
+        static bool s_logged_audible = false;
+        if (!s_logged_audible) {
+            int peak = 0;
+            u32 n = size / 2;
+            if (n > 400) n = 400;
+            for (u32 i = 0; i < n; i++) {
+                s16 s = (s16)m_mem.read_u16(buf_addr + i * 2);
+                int a = s >= 0 ? s : -s;
+                if (a > peak) peak = a;
+            }
+            if (peak > 64) {
+                printf("[AUDIO] first audible write #%u peak=%d\n",
+                       m_audio_write_count, peak);
+                s_logged_audible = true;
+            }
+        }
+    }
     m_audio_write_count++;
     if (bytes > 0)
         m_audio_hw_chunk_bytes = (u32)bytes;
@@ -3072,13 +3097,21 @@ void Syscalls::impl_dl_res_get_data() {
     }
 
     // Copy into a guest buffer when dest is KSEG0 RAM and the length fits.
-    // Full-size dumps (PoPo) always copy. Partial reads (Overlord DLX2 header
-    // and records) skip dest in the RAWD/code window so leftover $a1 from
-    // brick-style callers cannot smash the guest image.
+    // Full-size dumps always copy — PoPo uses the emulator heap, Nose Breaker
+    // uses an in-image malloc pool inside RAWD. Partial reads (Overlord DLX2
+    // header/records) skip dest that overlaps the file-backed image so leftover
+    // $a1 from brick-style callers cannot smash guest code.
     u32 phys = dest & 0x1FFFFFFF;
     bool dest_ok = dest >= 0x80000000 && dest < 0x82000000;
-    bool in_rawd = phys >= 0x00A00000 && phys < 0x00BF0000;
-    if (dest_ok && nbytes > 0 && nbytes <= remaining && !in_rawd && host) {
+    bool full_dump = nbytes == remaining || nbytes == m_dl_res[idx].size;
+    bool overlaps_code = false;
+    if (!full_dump && m_guest_image_size && nbytes > 0) {
+        u32 img0 = m_guest_image_phys;
+        u32 img1 = img0 + m_guest_image_size;
+        u32 d1 = phys + nbytes;
+        overlaps_code = phys < img1 && d1 > img0;
+    }
+    if (dest_ok && nbytes > 0 && nbytes <= remaining && !overlaps_code && host) {
         m_mem.write_block(dest, host + m_dl_res[idx].offset, nbytes);
         m_dl_res[idx].offset += nbytes;
         g_cpu_regs[2] = dest;

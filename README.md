@@ -246,7 +246,7 @@ Test suite: 29 `.app` files under `games/`. All tested with `SDL_VIDEODRIVER=dum
 | Mine Sweeper | Black screen, then playfield - GetTickCount |
 | Mojo | Playable |
 | Mushroom Roulette | Renders |
-| Nose Breaker | Black screen |
+| Nose Breaker | Title screen with sound (SFX were gated on an uninitialized `soundOn` flag; heap is zeroed here, leftover junk on hardware) |
 | Overlord-Fighter / Yi-Chi King Fighter | Same game (`Overlord-Fighter.app` and `Yi-Chi King Fighter (Chinese).app`). FlyApp + `flydata.dlx` (DLX2): splash then menu; µC/GUI `WM_KEY` from `open_gui_key_msg` (A/Start confirm, D-pad choose); in-game frames (audio worker runs) |
 | Platinum Sudoku | Renders |
 | PoPo Bash / Puzzle Bobble | Same game (`Puzzle Bobble - Popo Bash (Chinese).app`). Renders |

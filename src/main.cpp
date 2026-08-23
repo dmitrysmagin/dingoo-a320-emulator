@@ -118,6 +118,17 @@ int main(int argc, char* argv[]) {
     }
     mem.write_u16(name_addr + (u32)game_name.size() * 2, 0); // null terminator
 
+    // Nose Breaker PlaySfx (0x80A0082C) returns immediately when game+108 is 0.
+    // The ctor never stores 1 there; on hardware that byte was typically leftover
+    // heap junk, so menu clicks made sound. Our heap starts zeroed, so the same
+    // path stays muted. NOP the "if (!soundOn) return" branches. SetSound(false)
+    // still writes the byte but playback no longer depends on it.
+    if (game_name == "Nose Breaker") {
+        mem.write_u32(0x80A00848, 0x00000000); // beq v0, zero, skip → nop
+        mem.write_u32(0x80A007E0, 0x00000000); // same check on the other PlaySfx
+        printf("[PATCH] Nose Breaker: PlaySfx no longer gated on unset soundOn\n");
+    }
+
     // Note: code section protection was intentionally REMOVED.
     // The game's idle/task stacks are in the RAWD/BSS boundary area (see KUSEG bug history).
     // Real Dingoo A320 has no read-only code protection, so neither should we.
@@ -225,6 +236,7 @@ int main(int argc, char* argv[]) {
     Syscalls syscalls(mem, display);
     syscalls.set_archive(archive_ptr);
     syscalls.set_app_path(app_path);
+    syscalls.set_guest_image(app.load_addr, (u32)app.raw_data.size());
     syscalls.set_nosound(nosound);
     syscalls.set_audio_target_latency_ms(audio_latency_ms);
     if (audio_latency_ms != Syscalls::AUDIO_TARGET_LATENCY_MS_DEFAULT) {

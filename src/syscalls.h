@@ -25,6 +25,7 @@ public:
     void init_slot_handlers(const std::vector<ImportEntry>& imports);
     void set_archive(Archive* archive) { m_archive = archive; }
     void set_app_path(const char* path);
+    void set_guest_image(u32 load_addr, u32 rawd_size);
     void set_cop0(COP0* cop0) { m_cop0 = cop0; }
     void set_nosound(bool v) { m_nosound = v; }
     void set_audio_target_latency_ms(int ms);
@@ -287,6 +288,8 @@ private:
     u32 do_ferror(u32 file_handle);
 
     Archive* m_archive;
+    u32 m_guest_image_phys;
+    u32 m_guest_image_size;
     COP0* m_cop0 = nullptr;
     std::string m_app_path;
     std::string m_home_dir; // host path for the guest's uOS2 cwd
