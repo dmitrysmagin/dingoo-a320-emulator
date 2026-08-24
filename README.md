@@ -144,135 +144,135 @@ Native 320×240 framebuffer captures (first / mid / last rendered frame) from [`
 
 ### 7days
 
-<img src="docs/screenshots/7days-1.png" width="200" alt="7days 1">
-<img src="docs/screenshots/7days-2.png" width="200" alt="7days 2">
-<img src="docs/screenshots/7days-3.png" width="200" alt="7days 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![7days 1](docs/screenshots/7days-1.png) | ![7days 2](docs/screenshots/7days-2.png) | ![7days 3](docs/screenshots/7days-3.png) |
 
 ### AliBaba
 
-<img src="docs/screenshots/alibaba-1.png" width="200" alt="AliBaba 1">
-<img src="docs/screenshots/alibaba-2.png" width="200" alt="AliBaba 2">
-<img src="docs/screenshots/alibaba-3.png" width="200" alt="AliBaba 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![AliBaba 1](docs/screenshots/alibaba-1.png) | ![AliBaba 2](docs/screenshots/alibaba-2.png) | ![AliBaba 3](docs/screenshots/alibaba-3.png) |
 
 ### Block Breaker
 
-<img src="docs/screenshots/block-breaker-1.png" width="200" alt="Block Breaker 1">
-<img src="docs/screenshots/block-breaker-2.png" width="200" alt="Block Breaker 2">
-<img src="docs/screenshots/block-breaker-3.png" width="200" alt="Block Breaker 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![Block Breaker 1](docs/screenshots/block-breaker-1.png) | ![Block Breaker 2](docs/screenshots/block-breaker-2.png) | ![Block Breaker 3](docs/screenshots/block-breaker-3.png) |
 
 ### Candy
 
-<img src="docs/screenshots/candy-1.png" width="200" alt="Candy 1">
-<img src="docs/screenshots/candy-2.png" width="200" alt="Candy 2">
-<img src="docs/screenshots/candy-3.png" width="200" alt="Candy 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![Candy 1](docs/screenshots/candy-1.png) | ![Candy 2](docs/screenshots/candy-2.png) | ![Candy 3](docs/screenshots/candy-3.png) |
 
 ### Decollation Warrior
 
-<img src="docs/screenshots/decollation-warrior-1.png" width="200" alt="Decollation Warrior 1">
-<img src="docs/screenshots/decollation-warrior-2.png" width="200" alt="Decollation Warrior 2">
-<img src="docs/screenshots/decollation-warrior-3.png" width="200" alt="Decollation Warrior 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![Decollation Warrior 1](docs/screenshots/decollation-warrior-1.png) | ![Decollation Warrior 2](docs/screenshots/decollation-warrior-2.png) | ![Decollation Warrior 3](docs/screenshots/decollation-warrior-3.png) |
 
 ### Formula-One
 
-<img src="docs/screenshots/formula-one-1.png" width="200" alt="Formula-One 1">
-<img src="docs/screenshots/formula-one-2.png" width="200" alt="Formula-One 2">
-<img src="docs/screenshots/formula-one-3.png" width="200" alt="Formula-One 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![Formula-One 1](docs/screenshots/formula-one-1.png) | ![Formula-One 2](docs/screenshots/formula-one-2.png) | ![Formula-One 3](docs/screenshots/formula-one-3.png) |
 
 ### Hell Striker II
 
-<img src="docs/screenshots/hell-striker-ii-1.png" width="200" alt="Hell Striker II 1">
-<img src="docs/screenshots/hell-striker-ii-2.png" width="200" alt="Hell Striker II 2">
-<img src="docs/screenshots/hell-striker-ii-3.png" width="200" alt="Hell Striker II 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![Hell Striker II 1](docs/screenshots/hell-striker-ii-1.png) | ![Hell Striker II 2](docs/screenshots/hell-striker-ii-2.png) | ![Hell Striker II 3](docs/screenshots/hell-striker-ii-3.png) |
 
 ### Landlord
 
-<img src="docs/screenshots/landlord-1.png" width="200" alt="Landlord 1">
-<img src="docs/screenshots/landlord-2.png" width="200" alt="Landlord 2">
-<img src="docs/screenshots/landlord-3.png" width="200" alt="Landlord 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![Landlord 1](docs/screenshots/landlord-1.png) | ![Landlord 2](docs/screenshots/landlord-2.png) | ![Landlord 3](docs/screenshots/landlord-3.png) |
 
 ### Link'em Up
 
-<img src="docs/screenshots/linkem-up-1.png" width="200" alt="Link'em Up 1">
-<img src="docs/screenshots/linkem-up-2.png" width="200" alt="Link'em Up 2">
-<img src="docs/screenshots/linkem-up-3.png" width="200" alt="Link'em Up 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![Link'em Up 1](docs/screenshots/linkem-up-1.png) | ![Link'em Up 2](docs/screenshots/linkem-up-2.png) | ![Link'em Up 3](docs/screenshots/linkem-up-3.png) |
 
 ### Manic-Miner
 
-<img src="docs/screenshots/manic-miner-1.png" width="200" alt="Manic-Miner 1">
-<img src="docs/screenshots/manic-miner-2.png" width="200" alt="Manic-Miner 2">
-<img src="docs/screenshots/manic-miner-3.png" width="200" alt="Manic-Miner 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![Manic-Miner 1](docs/screenshots/manic-miner-1.png) | ![Manic-Miner 2](docs/screenshots/manic-miner-2.png) | ![Manic-Miner 3](docs/screenshots/manic-miner-3.png) |
 
 ### Mushroom Roulette
 
-<img src="docs/screenshots/mushroom-roulette-1.png" width="200" alt="Mushroom Roulette 1">
-<img src="docs/screenshots/mushroom-roulette-2.png" width="200" alt="Mushroom Roulette 2">
-<img src="docs/screenshots/mushroom-roulette-3.png" width="200" alt="Mushroom Roulette 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![Mushroom Roulette 1](docs/screenshots/mushroom-roulette-1.png) | ![Mushroom Roulette 2](docs/screenshots/mushroom-roulette-2.png) | ![Mushroom Roulette 3](docs/screenshots/mushroom-roulette-3.png) |
 
 ### Nose Breaker
 
-<img src="docs/screenshots/nose-breaker-1.png" width="200" alt="Nose Breaker 1">
-<img src="docs/screenshots/nose-breaker-2.png" width="200" alt="Nose Breaker 2">
-<img src="docs/screenshots/nose-breaker-3.png" width="200" alt="Nose Breaker 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![Nose Breaker 1](docs/screenshots/nose-breaker-1.png) | ![Nose Breaker 2](docs/screenshots/nose-breaker-2.png) | ![Nose Breaker 3](docs/screenshots/nose-breaker-3.png) |
 
 ### Platinum Sudoku
 
-<img src="docs/screenshots/platinum-sudoku-1.png" width="200" alt="Platinum Sudoku 1">
-<img src="docs/screenshots/platinum-sudoku-2.png" width="200" alt="Platinum Sudoku 2">
-<img src="docs/screenshots/platinum-sudoku-3.png" width="200" alt="Platinum Sudoku 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![Platinum Sudoku 1](docs/screenshots/platinum-sudoku-1.png) | ![Platinum Sudoku 2](docs/screenshots/platinum-sudoku-2.png) | ![Platinum Sudoku 3](docs/screenshots/platinum-sudoku-3.png) |
 
 ### Puzzle Bobble - PoPo Bash
 
-<img src="docs/screenshots/popo-bash-1.png" width="200" alt="PoPo Bash 1">
-<img src="docs/screenshots/popo-bash-2.png" width="200" alt="PoPo Bash 2">
-<img src="docs/screenshots/popo-bash-3.png" width="200" alt="PoPo Bash 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![PoPo Bash 1](docs/screenshots/popo-bash-1.png) | ![PoPo Bash 2](docs/screenshots/popo-bash-2.png) | ![PoPo Bash 3](docs/screenshots/popo-bash-3.png) |
 
 ### Rick-Dangerous
 
-<img src="docs/screenshots/rick-dangerous-1.png" width="200" alt="Rick-Dangerous 1">
-<img src="docs/screenshots/rick-dangerous-2.png" width="200" alt="Rick-Dangerous 2">
-<img src="docs/screenshots/rick-dangerous-3.png" width="200" alt="Rick-Dangerous 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![Rick-Dangerous 1](docs/screenshots/rick-dangerous-1.png) | ![Rick-Dangerous 2](docs/screenshots/rick-dangerous-2.png) | ![Rick-Dangerous 3](docs/screenshots/rick-dangerous-3.png) |
 
 ### Rubido
 
-<img src="docs/screenshots/rubido-1.png" width="200" alt="Rubido 1">
-<img src="docs/screenshots/rubido-2.png" width="200" alt="Rubido 2">
-<img src="docs/screenshots/rubido-3.png" width="200" alt="Rubido 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![Rubido 1](docs/screenshots/rubido-1.png) | ![Rubido 2](docs/screenshots/rubido-2.png) | ![Rubido 3](docs/screenshots/rubido-3.png) |
 
 ### snake
 
-<img src="docs/screenshots/snake-1.png" width="200" alt="snake 1">
-<img src="docs/screenshots/snake-2.png" width="200" alt="snake 2">
-<img src="docs/screenshots/snake-3.png" width="200" alt="snake 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![snake 1](docs/screenshots/snake-1.png) | ![snake 2](docs/screenshots/snake-2.png) | ![snake 3](docs/screenshots/snake-3.png) |
 
 ### tetris
 
-<img src="docs/screenshots/tetris-1.png" width="200" alt="tetris 1">
-<img src="docs/screenshots/tetris-2.png" width="200" alt="tetris 2">
-<img src="docs/screenshots/tetris-3.png" width="200" alt="tetris 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![tetris 1](docs/screenshots/tetris-1.png) | ![tetris 2](docs/screenshots/tetris-2.png) | ![tetris 3](docs/screenshots/tetris-3.png) |
 
 ### ultimate_drift
 
-<img src="docs/screenshots/ultimate-drift-1.png" width="200" alt="ultimate_drift 1">
-<img src="docs/screenshots/ultimate-drift-2.png" width="200" alt="ultimate_drift 2">
-<img src="docs/screenshots/ultimate-drift-3.png" width="200" alt="ultimate_drift 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![ultimate_drift 1](docs/screenshots/ultimate-drift-1.png) | ![ultimate_drift 2](docs/screenshots/ultimate-drift-2.png) | ![ultimate_drift 3](docs/screenshots/ultimate-drift-3.png) |
 
 ### Yi-Chi King Fighter (Overlord Fighter)
 
-<img src="docs/screenshots/yi-chi-king-fighter-1.png" width="200" alt="Yi-Chi King Fighter 1">
-<img src="docs/screenshots/yi-chi-king-fighter-2.png" width="200" alt="Yi-Chi King Fighter 2">
-<img src="docs/screenshots/yi-chi-king-fighter-3.png" width="200" alt="Yi-Chi King Fighter 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![Yi-Chi King Fighter 1](docs/screenshots/yi-chi-king-fighter-1.png) | ![Yi-Chi King Fighter 2](docs/screenshots/yi-chi-king-fighter-2.png) | ![Yi-Chi King Fighter 3](docs/screenshots/yi-chi-king-fighter-3.png) |
 
 ### Zhao Yun Chuan (Chinese)
 
-<img src="docs/screenshots/zhao-yun-chuan-1.png" width="200" alt="Zhao Yun Chuan (Chinese) 1">
-<img src="docs/screenshots/zhao-yun-chuan-2.png" width="200" alt="Zhao Yun Chuan (Chinese) 2">
-<img src="docs/screenshots/zhao-yun-chuan-3.png" width="200" alt="Zhao Yun Chuan (Chinese) 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![Zhao Yun Chuan (Chinese) 1](docs/screenshots/zhao-yun-chuan-1.png) | ![Zhao Yun Chuan (Chinese) 2](docs/screenshots/zhao-yun-chuan-2.png) | ![Zhao Yun Chuan (Chinese) 3](docs/screenshots/zhao-yun-chuan-3.png) |
 
 ### Zhao Yun Chuan (English)
 
-<img src="docs/screenshots/zhao-yun-chuan-en-1.png" width="200" alt="Zhao Yun Chuan (English) 1">
-<img src="docs/screenshots/zhao-yun-chuan-en-2.png" width="200" alt="Zhao Yun Chuan (English) 2">
-<img src="docs/screenshots/zhao-yun-chuan-en-3.png" width="200" alt="Zhao Yun Chuan (English) 3">
+| 1 | 2 | 3 |
+|:---:|:---:|:---:|
+| ![Zhao Yun Chuan (English) 1](docs/screenshots/zhao-yun-chuan-en-1.png) | ![Zhao Yun Chuan (English) 2](docs/screenshots/zhao-yun-chuan-en-2.png) | ![Zhao Yun Chuan (English) 3](docs/screenshots/zhao-yun-chuan-en-3.png) |
 
 ## Performance
 

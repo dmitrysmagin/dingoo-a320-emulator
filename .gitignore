@@ -2,7 +2,7 @@
 *.exe
 *.txt
 *.bmp
-screenshots/
+/screenshots/
 emulator
 null
 nul
