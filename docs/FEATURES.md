@@ -44,6 +44,7 @@ Guest memory layout:
 | DMA controller logging (phys 0x10042000) | ✅ Complete |
 | Screenshot (F12 → `screenshots/<game><n>.png` at 320×240; `--save-screenshots` BMP dumps) | ✅ Complete |
 | Offscreen/headless mode (SDL_VIDEODRIVER=offscreen) | ✅ Complete |
+| `--rotate 90` / `-90` / `270` (SDL window + D-pad; screenshots stay 320×240) | ✅ Complete |
 
 ## Audio
 

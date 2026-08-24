@@ -39,6 +39,10 @@ public:
     bool init();
     void shutdown();
 
+    // 0 (default), 90 (CW), or -90 (CCW). 270 is accepted as an alias for -90.
+    bool set_rotate(int degrees);
+    int  get_rotate() const { return m_rotate; }
+
     // Framebuffer access
     u16* get_framebuffer() { return m_framebuffer.get(); }
     u32  get_frame_addr() const { return m_frame_addr; }
@@ -105,9 +109,12 @@ private:
     std::queue<u32> m_input_events;
     std::queue<u32> m_key_events;
     std::string m_game_name;
+    int m_rotate;  // 0, 90 (CW), or -90 (CCW)
     static constexpr size_t MAX_INPUT_EVENTS = 64;
 
     void save_f12_screenshot();
+    void copy_texture();
+    u32 map_view_dpad(u32 dkey) const;
 };
 
 #endif // DISPLAY_H

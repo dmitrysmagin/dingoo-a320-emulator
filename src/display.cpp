@@ -25,6 +25,7 @@ Display::Display()
     , m_dingoo_keys(0)
     , m_hw_keys(0)
     , m_prev_dingoo_keys(0)
+    , m_rotate(0)
 {
     memset(m_framebuffer.get(), 0, WIDTH * HEIGHT * sizeof(u16));
     memset(m_argb_cache.get(),  0, WIDTH * HEIGHT * sizeof(u32));
@@ -34,16 +35,28 @@ Display::~Display() {
     shutdown();
 }
 
+bool Display::set_rotate(int degrees) {
+    if (degrees == 270)
+        degrees = -90;
+    if (degrees != 0 && degrees != 90 && degrees != -90)
+        return false;
+    m_rotate = degrees;
+    return true;
+}
+
 bool Display::init() {
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
         fprintf(stderr, "[SDL] Failed to init: %s\n", SDL_GetError());
         return false;
     }
 
+    const int win_w = (m_rotate == 0) ? WIDTH * SCALE : HEIGHT * SCALE;
+    const int win_h = (m_rotate == 0) ? HEIGHT * SCALE : WIDTH * SCALE;
+
     m_window = SDL_CreateWindow(
         "7days - Dingoo A320 Emulator",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        WIDTH * SCALE, HEIGHT * SCALE,
+        win_w, win_h,
         SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
     );
     if (!m_window) {
@@ -82,7 +95,10 @@ bool Display::init() {
         SDL_Quit();
         return false;
     }
-    printf("[DISPLAY] SDL2 initialized: %dx%d (scale %d)\n", WIDTH * SCALE, HEIGHT * SCALE, SCALE);
+    printf("[DISPLAY] SDL2 initialized: %dx%d (scale %d)", win_w, win_h, SCALE);
+    if (m_rotate)
+        printf(" rotate=%d", m_rotate);
+    printf("\n");
 
     m_initialized = true;
     return true;
@@ -212,24 +228,56 @@ static u32 sdl_to_dingoo(SDL_Keycode sym) {
     }
 }
 
-// Game-correct hardware bits for KEY_STATUS.status, matching
-// AstroLander control.h D-Pad/button bit positions.
-static u32 sdl_to_game_hw(SDL_Keycode sym) {
-    switch (sym) {
-    case SDLK_UP:       return 1u << 20;  // CONTROL_DPAD_UP
-    case SDLK_DOWN:     return 1u << 27;  // CONTROL_DPAD_DOWN
-    case SDLK_LEFT:     return 1u << 28;  // CONTROL_DPAD_LEFT
-    case SDLK_RIGHT:    return 1u << 18;  // CONTROL_DPAD_RIGHT
-    case SDLK_RETURN:   return 1u << 11;  // CONTROL_BUTTON_START
-    case SDLK_TAB:      return 1u << 10;  // CONTROL_BUTTON_SELECT
-    case SDLK_z:        return 1u << 31;  // CONTROL_BUTTON_A
-    case SDLK_x:        return 1u << 21;  // CONTROL_BUTTON_B
-    case SDLK_a:        return 1u << 16;  // CONTROL_BUTTON_X
-    case SDLK_s:        return 1u << 6;   // CONTROL_BUTTON_Y
-    case SDLK_q:        return 1u << 8;   // CONTROL_TRIGGER_LEFT
-    case SDLK_w:        return 1u << 29;  // CONTROL_TRIGGER_RIGHT
-    default:            return 0;
+u32 Display::map_view_dpad(u32 dkey) const {
+    if (m_rotate == 0)
+        return dkey;
+    // Arrow keys follow the rotated window: window-up is visual up.
+    // 90 CW:  window up/down/left/right -> guest left/right/down/up
+    // -90 CCW: window up/down/left/right -> guest right/left/up/down
+    if (m_rotate == 90) {
+        switch (dkey) {
+        case DKEY_UP:    return DKEY_LEFT;
+        case DKEY_DOWN:  return DKEY_RIGHT;
+        case DKEY_LEFT:  return DKEY_DOWN;
+        case DKEY_RIGHT: return DKEY_UP;
+        default:         return dkey;
+        }
     }
+    switch (dkey) {
+    case DKEY_UP:    return DKEY_RIGHT;
+    case DKEY_DOWN:  return DKEY_LEFT;
+    case DKEY_LEFT:  return DKEY_UP;
+    case DKEY_RIGHT: return DKEY_DOWN;
+    default:         return dkey;
+    }
+}
+
+void Display::copy_texture() {
+    if (!m_renderer || !m_texture) return;
+    if (m_rotate == 0) {
+        SDL_RenderCopy(m_renderer, m_texture, nullptr, nullptr);
+        return;
+    }
+
+    int win_w = 0, win_h = 0;
+    SDL_GetRendererOutputSize(m_renderer, &win_w, &win_h);
+    if (win_w <= 0 || win_h <= 0)
+        SDL_GetWindowSize(m_window, &win_w, &win_h);
+
+    // After ±90°, the presented image is HEIGHT × WIDTH. Fit that in the window,
+    // then place the un-rotated dest rect so RenderCopyEx rotates about its center.
+    const float fit_w = (float)win_w / (float)HEIGHT;
+    const float fit_h = (float)win_h / (float)WIDTH;
+    const float fit = (fit_w < fit_h) ? fit_w : fit_h;
+    const int dst_w = (int)((float)WIDTH * fit + 0.5f);
+    const int dst_h = (int)((float)HEIGHT * fit + 0.5f);
+    SDL_Rect dst = {
+        win_w / 2 - dst_w / 2,
+        win_h / 2 - dst_h / 2,
+        dst_w,
+        dst_h
+    };
+    SDL_RenderCopyEx(m_renderer, m_texture, nullptr, &dst, (double)m_rotate, nullptr, SDL_FLIP_NONE);
 }
 
 void Display::present_blank() {
@@ -238,7 +286,7 @@ void Display::present_blank() {
     // undefined back buffer and crashes some Windows drivers. Offscreen
     // software backends hide that.
     SDL_RenderClear(m_renderer);
-    SDL_RenderCopy(m_renderer, m_texture, nullptr, nullptr);
+    copy_texture();
     SDL_RenderPresent(m_renderer);
 }
 
@@ -527,7 +575,7 @@ bool Display::pump_events() {
                     save_f12_screenshot();
                 continue;
             }
-            u32 dk = sdl_to_dingoo(event.key.keysym.sym);
+            u32 dk = map_view_dpad(sdl_to_dingoo(event.key.keysym.sym));
             if (dk && !(m_dingoo_keys & dk) && m_input_events.size() < MAX_INPUT_EVENTS) {
                 u32 code = bitmask_to_keycode(dk);
                 if (code) {
@@ -537,10 +585,10 @@ bool Display::pump_events() {
                 }
             }
             m_dingoo_keys |= dk;
-            m_hw_keys |= sdl_to_game_hw(event.key.keysym.sym);
+            m_hw_keys |= dkey_to_hw(dk);
         }
         if (event.type == SDL_KEYUP) {
-            u32 dk = sdl_to_dingoo(event.key.keysym.sym);
+            u32 dk = map_view_dpad(sdl_to_dingoo(event.key.keysym.sym));
             if (dk && (m_dingoo_keys & dk) && m_input_events.size() < MAX_INPUT_EVENTS) {
                 u32 code = bitmask_to_keycode(dk);
                 if (code) {
@@ -550,7 +598,7 @@ bool Display::pump_events() {
                 }
             }
             m_dingoo_keys &= ~dk;
-            m_hw_keys &= ~sdl_to_game_hw(event.key.keysym.sym);
+            m_hw_keys &= ~dkey_to_hw(dk);
         }
     }
     return false;

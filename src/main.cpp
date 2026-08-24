@@ -11,6 +11,10 @@
 #include <ctime>
 #include <algorithm>
 
+static void print_usage(const char* argv0) {
+    fprintf(stderr, "Usage: %s [--frames <n>] [--seconds <n>] [--save-screenshots] [--nosound] [--audio-latency <ms>] [--rotate <90|-90|270>] <app>\n", argv0);
+}
+
 int main(int argc, char* argv[]) {
     const char* app_path = nullptr;
     u32 arg_max_frames = 0;  // 0 = unlimited
@@ -18,6 +22,8 @@ int main(int argc, char* argv[]) {
     bool save_screenshots = false;
     bool nosound = false;
     int audio_latency_ms = Syscalls::AUDIO_TARGET_LATENCY_MS_DEFAULT;
+    int arg_rotate = 0;
+    bool have_rotate = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
@@ -32,17 +38,28 @@ int main(int argc, char* argv[]) {
             audio_latency_ms = atoi(argv[i] + 16);
         } else if (strcmp(argv[i], "--audio-latency") == 0 && i + 1 < argc) {
             audio_latency_ms = atoi(argv[++i]);
+        } else if (strncmp(argv[i], "--rotate=", 9) == 0) {
+            arg_rotate = atoi(argv[i] + 9);
+            have_rotate = true;
+        } else if (strcmp(argv[i], "--rotate") == 0 && i + 1 < argc) {
+            arg_rotate = atoi(argv[++i]);
+            have_rotate = true;
         } else if (argv[i][0] != '-') {
             app_path = argv[i];
         } else {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
-            fprintf(stderr, "Usage: %s [--frames <n>] [--seconds <n>] [--save-screenshots] [--nosound] [--audio-latency <ms>] <app>\n", argv[0]);
+            print_usage(argv[0]);
             return 1;
         }
     }
 
     if (!app_path) {
-        fprintf(stderr, "Usage: %s [--frames <n>] [--seconds <n>] [--save-screenshots] [--nosound] [--audio-latency <ms>] <app>\n", argv[0]);
+        print_usage(argv[0]);
+        return 1;
+    }
+    if (have_rotate && arg_rotate != 90 && arg_rotate != -90 && arg_rotate != 270) {
+        fprintf(stderr, "--rotate must be 90, -90, or 270\n");
+        print_usage(argv[0]);
         return 1;
     }
     printf("=== Dingoo A320 Emulator (Phase 2) ===\n\n");
@@ -213,6 +230,10 @@ int main(int argc, char* argv[]) {
 
     // Initialize display (SDL2)
     Display display;
+    if (have_rotate && !display.set_rotate(arg_rotate)) {
+        fprintf(stderr, "--rotate must be 90, -90, or 270\n");
+        return 1;
+    }
     if (!display.init()) {
         fprintf(stderr, "Failed to initialize SDL2 display\n");
         return 1;

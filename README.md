@@ -94,6 +94,7 @@ Options:
   --save-screenshots  Save BMP screenshots periodically
   --nosound           Disable audio output
   --audio-latency <ms>  Max queued audio ahead of playback (default 80, range 20–500)
+  --rotate <deg>      Rotate the SDL window and D-pad (90, -90, or 270)
 ```
 
 ### Examples
@@ -102,6 +103,7 @@ Options:
 ./emulator.exe ../7days.app
 ./emulator.exe --frames 5000 --save-screenshots ../tetris.app
 ./emulator.exe --audio-latency 60 ../tetris.app
+./emulator.exe --rotate 90 games/tetris.app
 SDL_VIDEODRIVER=offscreen ./emulator.exe --frames 1000 ../snake.app
 ```
 
@@ -128,9 +130,13 @@ Key bit positions within `KEY_STATUS.status` follow the Dingoo SDK convention
 | Screenshot    | F12              | —      |
 | Quit          | Escape           | —      |
 
-F12 writes a PNG of the native 320×240 framebuffer (not the scaled window) to
+F12 writes a PNG of the native 320×240 framebuffer (not the scaled or rotated window) to
 `screenshots/<game_name><n>.png`, for example `screenshots/tetris1.png`. The
 number increments so existing files are not overwritten.
+
+`--rotate 90` turns the window clockwise (portrait 240×320) and remaps the D-pad
+so arrow keys follow the screen. `--rotate -90` and `--rotate 270` are
+counter-clockwise (the same transform). A/B/X/Y and other buttons are unchanged.
 
 ---
 
