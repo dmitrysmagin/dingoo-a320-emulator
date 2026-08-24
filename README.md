@@ -148,6 +148,10 @@ CPU, display, audio, syscall coverage, app compatibility, and internals are docu
 
 Native 320×240 framebuffer captures (first / mid / last rendered frame) from [`docs/screenshots/`](docs/screenshots/). Compatibility notes are in [docs/FEATURES.md](docs/FEATURES.md#app-compatibility).
 
+The emulator reports English as the firmware language. Games that can switch locales (for example **7 Days Salvation**) therefore start in English. Many other titles shipped only in Chinese and were never officially localized.
+
+**Zhao Yun Chuan** (赵云传, *Legend of Zhao Yun*) is a 16-bit-style RPG with a large amount of dialogue. The original release is Chinese-only. The English build here is an unofficial localization: in-game dialogue and inscriptions were translated with AI tools so the story is readable.
+
 ### 7days
 
 | 1 | 2 | 3 |
@@ -274,7 +278,7 @@ Native 320×240 framebuffer captures (first / mid / last rendered frame) from [`
 |:---:|:---:|:---:|
 | ![Zhao Yun Chuan (Chinese) 1](docs/screenshots/zhao-yun-chuan-1.png) | ![Zhao Yun Chuan (Chinese) 2](docs/screenshots/zhao-yun-chuan-2.png) | ![Zhao Yun Chuan (Chinese) 3](docs/screenshots/zhao-yun-chuan-3.png) |
 
-### Zhao Yun Chuan (English)
+### Zhao Yun Chuan (English — Legend of Zhao Yun)
 
 | 1 | 2 | 3 |
 |:---:|:---:|:---:|
