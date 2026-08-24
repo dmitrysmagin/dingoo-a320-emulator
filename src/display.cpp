@@ -3,6 +3,12 @@
 #include <cstring>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <vector>
+#include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 
 Display::Display()
     : m_window(nullptr)
@@ -236,34 +242,205 @@ void Display::present_blank() {
     SDL_RenderPresent(m_renderer);
 }
 
-void Display::save_screenshot(const char* path) {
-    if (!m_initialized) return;
-
-    SDL_Surface* dst = nullptr;
-    if (m_argb_valid) {
+static SDL_Surface* snapshot_rgb24(bool argb_valid, u32* argb, u16* rgb565) {
+    SDL_Surface* src;
+    if (argb_valid) {
         // flip_argb8888 path (32bpp ARGB8888 — normal Dingoo A320 game mode).
         // Read from m_argb_cache which is kept in sync with every flip_argb8888 call.
         // We cannot reliably use SDL_RenderReadPixels after SDL_RenderPresent because
         // double-buffered backends swap the back buffer, leaving it undefined.
-        SDL_Surface* src = SDL_CreateRGBSurfaceWithFormatFrom(
-            m_argb_cache.get(), WIDTH, HEIGHT, 32, WIDTH * sizeof(u32), SDL_PIXELFORMAT_ARGB8888);
-        if (!src) return;
-        dst = SDL_ConvertSurfaceFormat(src, SDL_PIXELFORMAT_BGR24, 0);
-        SDL_FreeSurface(src);
+        src = SDL_CreateRGBSurfaceWithFormatFrom(
+            argb, Display::WIDTH, Display::HEIGHT, 32,
+            Display::WIDTH * (int)sizeof(u32), SDL_PIXELFORMAT_ARGB8888);
     } else {
         // flip / flip_strided path (16bpp RGB565).
-        // Replicate the 5/6-bit component values into the vacated LSBs (e.g. 0x1F → 0xFF).
-        SDL_Surface* src = SDL_CreateRGBSurfaceWithFormatFrom(
-            m_framebuffer.get(), WIDTH, HEIGHT, 16, WIDTH * PIXEL_SIZE, SDL_PIXELFORMAT_RGB565);
-        if (!src) return;
-        dst = SDL_ConvertSurfaceFormat(src, SDL_PIXELFORMAT_BGR24, 0);
-        SDL_FreeSurface(src);
+        src = SDL_CreateRGBSurfaceWithFormatFrom(
+            rgb565, Display::WIDTH, Display::HEIGHT, 16,
+            Display::WIDTH * Display::PIXEL_SIZE, SDL_PIXELFORMAT_RGB565);
     }
+    if (!src) return nullptr;
+    SDL_Surface* dst = SDL_ConvertSurfaceFormat(src, SDL_PIXELFORMAT_RGB24, 0);
+    SDL_FreeSurface(src);
+    return dst;
+}
 
+void Display::save_screenshot(const char* path) {
+    if (!m_initialized) return;
+
+    SDL_Surface* rgb = snapshot_rgb24(m_argb_valid, m_argb_cache.get(), m_framebuffer.get());
+    if (!rgb) return;
+    SDL_Surface* dst = SDL_ConvertSurfaceFormat(rgb, SDL_PIXELFORMAT_BGR24, 0);
+    SDL_FreeSurface(rgb);
     if (!dst) return;
     SDL_SaveBMP(dst, path);
     SDL_FreeSurface(dst);
     printf("[DISPLAY] Screenshot saved: %s\n", path);
+}
+
+namespace {
+
+u32 crc32_update(u32 crc, const u8* data, size_t len) {
+    static u32 table[256];
+    static bool ready = false;
+    if (!ready) {
+        for (u32 i = 0; i < 256; i++) {
+            u32 c = i;
+            for (int k = 0; k < 8; k++)
+                c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+            table[i] = c;
+        }
+        ready = true;
+    }
+    for (size_t i = 0; i < len; i++)
+        crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+    return crc;
+}
+
+void put_be32(FILE* f, u32 v) {
+    u8 b[4] = { (u8)(v >> 24), (u8)(v >> 16), (u8)(v >> 8), (u8)v };
+    fwrite(b, 1, 4, f);
+}
+
+void write_png_chunk(FILE* f, const char type[4], const u8* data, u32 len) {
+    put_be32(f, len);
+    fwrite(type, 1, 4, f);
+    if (len && data)
+        fwrite(data, 1, len, f);
+    u32 crc = 0xFFFFFFFFu;
+    crc = crc32_update(crc, reinterpret_cast<const u8*>(type), 4);
+    if (len && data)
+        crc = crc32_update(crc, data, len);
+    put_be32(f, crc ^ 0xFFFFFFFFu);
+}
+
+u32 adler32(const u8* data, size_t len) {
+    u32 a = 1, b = 0;
+    while (len) {
+        size_t n = len > 5552 ? 5552 : len;
+        for (size_t i = 0; i < n; i++) {
+            a += data[i];
+            b += a;
+        }
+        a %= 65521;
+        b %= 65521;
+        data += n;
+        len -= n;
+    }
+    return (b << 16) | a;
+}
+
+bool write_png_rgb24(const char* path, const u8* pixels, int width, int height, int pitch) {
+    FILE* f = fopen(path, "wb");
+    if (!f) return false;
+
+    static const u8 sig[8] = { 137, 80, 78, 71, 13, 10, 26, 10 };
+    fwrite(sig, 1, 8, f);
+
+    u8 ihdr[13] = {};
+    ihdr[0] = (u8)(width >> 24); ihdr[1] = (u8)(width >> 16);
+    ihdr[2] = (u8)(width >> 8);  ihdr[3] = (u8)width;
+    ihdr[4] = (u8)(height >> 24); ihdr[5] = (u8)(height >> 16);
+    ihdr[6] = (u8)(height >> 8);  ihdr[7] = (u8)height;
+    ihdr[8] = 8;   // bit depth
+    ihdr[9] = 2;   // color type: truecolor RGB
+    write_png_chunk(f, "IHDR", ihdr, 13);
+
+    const size_t row_raw = 1 + (size_t)width * 3;
+    std::vector<u8> raw((size_t)height * row_raw);
+    for (int y = 0; y < height; y++) {
+        u8* dst = raw.data() + (size_t)y * row_raw;
+        dst[0] = 0; // filter None
+        memcpy(dst + 1, pixels + (size_t)y * (size_t)pitch, (size_t)width * 3);
+    }
+
+    // zlib-wrapped uncompressed DEFLATE stored blocks (no extra library).
+    const size_t raw_len = raw.size();
+    const size_t nblocks = (raw_len + 65534) / 65535;
+    std::vector<u8> zbuf(2 + nblocks * 5 + raw_len + 4);
+    size_t z = 0;
+    zbuf[z++] = 0x78;
+    zbuf[z++] = 0x01;
+    size_t off = 0;
+    size_t remain = raw_len;
+    while (remain) {
+        size_t chunk = remain > 65535 ? 65535 : remain;
+        bool last = (remain == chunk);
+        zbuf[z++] = last ? 0x01 : 0x00;
+        zbuf[z++] = (u8)(chunk & 0xFF);
+        zbuf[z++] = (u8)(chunk >> 8);
+        u16 nlen = (u16)~(u16)chunk;
+        zbuf[z++] = (u8)(nlen & 0xFF);
+        zbuf[z++] = (u8)(nlen >> 8);
+        memcpy(zbuf.data() + z, raw.data() + off, chunk);
+        z += chunk;
+        off += chunk;
+        remain -= chunk;
+    }
+    u32 adler = adler32(raw.data(), raw_len);
+    zbuf[z++] = (u8)(adler >> 24);
+    zbuf[z++] = (u8)(adler >> 16);
+    zbuf[z++] = (u8)(adler >> 8);
+    zbuf[z++] = (u8)adler;
+
+    write_png_chunk(f, "IDAT", zbuf.data(), (u32)z);
+    write_png_chunk(f, "IEND", nullptr, 0);
+
+    bool ok = ferror(f) == 0;
+    fclose(f);
+    return ok;
+}
+
+} // namespace
+
+void Display::save_screenshot_png(const char* path) {
+    if (!m_initialized) return;
+
+    SDL_Surface* rgb = snapshot_rgb24(m_argb_valid, m_argb_cache.get(), m_framebuffer.get());
+    if (!rgb) return;
+
+    SDL_LockSurface(rgb);
+    bool ok = write_png_rgb24(path, static_cast<const u8*>(rgb->pixels),
+                              rgb->w, rgb->h, rgb->pitch);
+    SDL_UnlockSurface(rgb);
+    SDL_FreeSurface(rgb);
+
+    if (!ok)
+        fprintf(stderr, "[DISPLAY] Failed to write PNG: %s\n", path);
+    else
+        printf("[DISPLAY] Screenshot saved: %s (%dx%d)\n", path, WIDTH, HEIGHT);
+}
+
+void Display::set_game_name(const char* name) {
+    m_game_name = (name && name[0]) ? name : "screenshot";
+}
+
+void Display::save_f12_screenshot() {
+#ifdef _WIN32
+    _mkdir("screenshots");
+#else
+    mkdir("screenshots", 0755);
+#endif
+
+    std::string stem = m_game_name.empty() ? "screenshot" : m_game_name;
+    for (char& c : stem) {
+        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' ||
+            c == '"' || c == '<' || c == '>' || c == '|')
+            c = '_';
+    }
+
+    char path[512];
+    int n = 1;
+    for (;;) {
+        snprintf(path, sizeof(path), "screenshots/%s%d.png", stem.c_str(), n);
+        struct stat st;
+        if (stat(path, &st) != 0)
+            break;
+        if (++n > 99999) {
+            fprintf(stderr, "[DISPLAY] Screenshot: too many files in screenshots/\n");
+            return;
+        }
+    }
+    save_screenshot_png(path);
 }
 
 static u32 dkey_to_hw(u32 dk) {
@@ -340,16 +517,15 @@ u32 Display::pop_key_event() {
 }
 
 bool Display::pump_events() {
-    static int screenshot_idx = 0;
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_QUIT) return true;
         if (event.type == SDL_KEYDOWN) {
             if (event.key.keysym.sym == SDLK_ESCAPE) return true;
             if (event.key.keysym.sym == SDLK_F12) {
-                char path[64];
-                snprintf(path, sizeof(path), "screenshot_%03d.bmp", screenshot_idx++);
-                save_screenshot(path);
+                if (!event.key.repeat)
+                    save_f12_screenshot();
+                continue;
             }
             u32 dk = sdl_to_dingoo(event.key.keysym.sym);
             if (dk && !(m_dingoo_keys & dk) && m_input_events.size() < MAX_INPUT_EVENTS) {

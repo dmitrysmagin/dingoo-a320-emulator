@@ -5,6 +5,7 @@
 #include <SDL2/SDL.h>
 #include <queue>
 #include <memory>
+#include <string>
 
 // Dingoo A320 key bitmasks for _kbd_get_status / get_key_val.
 // Values match the VK_GAME_* constants in gamelib.h (gameplay/gamelib.h):
@@ -59,7 +60,9 @@ public:
     bool pump_events();
     void present_blank();    // SDL_RenderPresent without touching dirty flag or framebuffer
     void upload_and_present(); // convert RGB565 → ARGB8888, upload to texture, present
-    void save_screenshot(const char* path);
+    void set_game_name(const char* name);
+    void save_screenshot(const char* path);      // BMP (used by --save-screenshots)
+    void save_screenshot_png(const char* path);  // PNG at native 320×240
     bool is_dirty() const { return m_dirty; }
     void clear_dirty() { m_dirty = false; }
 
@@ -101,7 +104,10 @@ private:
     u32 m_prev_dingoo_keys;
     std::queue<u32> m_input_events;
     std::queue<u32> m_key_events;
+    std::string m_game_name;
     static constexpr size_t MAX_INPUT_EVENTS = 64;
+
+    void save_f12_screenshot();
 };
 
 #endif // DISPLAY_H

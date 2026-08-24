@@ -125,7 +125,12 @@ Key bit positions within `KEY_STATUS.status` follow the Dingoo SDK convention
 | D-Pad Left    | ←                | 28     |
 | D-Pad Right   | →                | 18     |
 | Volume +/-    | = / -            | —      |
+| Screenshot    | F12              | —      |
 | Quit          | Escape           | —      |
+
+F12 writes a PNG of the native 320×240 framebuffer (not the scaled window) to
+`screenshots/<game_name><n>.png`, for example `screenshots/tetris1.png`. The
+number increments so existing files are not overwritten.
 
 ---
 
@@ -171,7 +176,7 @@ Guest memory layout:
 | Double-buffering (front/back via `_lcd_set_frame` / `_lcd_get_frame`) | ✅ Complete |
 | Palette CLUT write handler at 0x13050100 | ✅ Complete |
 | DMA controller logging (phys 0x10042000) | ✅ Complete |
-| Screenshot auto-save (F12 manual, or --save-screenshots) | ✅ Complete |
+| Screenshot (F12 → `screenshots/<game><n>.png` at 320×240; `--save-screenshots` BMP dumps) | ✅ Complete |
 | Offscreen/headless mode (SDL_VIDEODRIVER=offscreen) | ✅ Complete |
 
 ### Audio

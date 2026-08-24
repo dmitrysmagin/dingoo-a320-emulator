@@ -217,6 +217,7 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "Failed to initialize SDL2 display\n");
         return 1;
     }
+    display.set_game_name(game_name.c_str());
 
     // Load SPK resource archive on the host (served via dl_res_* and fsys_fopenW).
     Archive archive;
