@@ -18,7 +18,8 @@ SOURCES = $(SRCDIR)/main.cpp \
           $(SRCDIR)/syscalls.cpp \
           $(SRCDIR)/mxu.cpp \
           $(SRCDIR)/display.cpp \
-          $(SRCDIR)/archive.cpp
+          $(SRCDIR)/archive.cpp \
+          $(SRCDIR)/jit/jit.cpp
 
 OBJECTS = $(patsubst $(SRCDIR)/%.cpp,$(OBJDIR)/%.o,$(SOURCES))
 
@@ -32,7 +33,8 @@ $(OBJDIR):
 	mkdir -p $(OBJDIR)
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.cpp $(SRCDIR)/types.h $(SRCDIR)/syscalls.h | $(OBJDIR)
-	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -c $< -o $(OBJDIR)/$*.o
+	mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -c $< -o $@
 
 $(TARGET): $(OBJECTS)
 	TMPDIR=/c/Users/user/AppData/Local/Temp TMP=/c/Users/user/AppData/Local/Temp TEMP=/c/Users/user/AppData/Local/Temp $(CXX) $(CXXFLAGS) -Wl,--stack,8388608 -o $@ $^ $(SDL_LIBS)

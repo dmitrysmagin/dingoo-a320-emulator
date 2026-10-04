@@ -4,6 +4,7 @@
 #include "display.h"
 #include "archive.h"
 #include "syscalls.h"
+#include "jit/jit.h"
 #undef main
 #include <cstdio>
 #include <cstdlib>
@@ -12,7 +13,7 @@
 #include <algorithm>
 
 static void print_usage(const char* argv0) {
-    fprintf(stderr, "Usage: %s [--frames <n>] [--seconds <n>] [--save-screenshots] [--nosound] [--audio-latency <ms>] [--rotate <90|-90|270>] <app>\n", argv0);
+    fprintf(stderr, "Usage: %s [--frames <n>] [--seconds <n>] [--save-screenshots] [--nosound] [--audio-latency <ms>] [--rotate <90|-90|270>] [--jit={off,on}] [--jit-stats] <app>\n", argv0);
 }
 
 int main(int argc, char* argv[]) {
@@ -24,6 +25,8 @@ int main(int argc, char* argv[]) {
     int audio_latency_ms = Syscalls::AUDIO_TARGET_LATENCY_MS_DEFAULT;
     int arg_rotate = 0;
     bool have_rotate = false;
+    JitMode arg_jit = JIT_OFF;
+    bool arg_jit_stats = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
@@ -34,6 +37,12 @@ int main(int argc, char* argv[]) {
             save_screenshots = true;
         } else if (strcmp(argv[i], "--nosound") == 0) {
             nosound = true;
+        } else if (strcmp(argv[i], "--jit=off") == 0) {
+            arg_jit = JIT_OFF;
+        } else if (strcmp(argv[i], "--jit=on") == 0) {
+            arg_jit = JIT_ON;
+        } else if (strcmp(argv[i], "--jit-stats") == 0) {
+            arg_jit_stats = true;
         } else if (strncmp(argv[i], "--audio-latency=", 16) == 0) {
             audio_latency_ms = atoi(argv[i] + 16);
         } else if (strcmp(argv[i], "--audio-latency") == 0 && i + 1 < argc) {
@@ -296,6 +305,28 @@ int main(int argc, char* argv[]) {
 
     printf("[INIT] RAM size: %u MB\n", mem.size() / (1024 * 1024));
     printf("[INIT] Display: %dx%d (scale %d)\n", Display::WIDTH, Display::HEIGHT, Display::SCALE);
+    printf("[INIT] JIT: %s\n", arg_jit == JIT_ON ? "on (Phase-0 proof TB)" : "off (interpreter)");
+
+    // === Phase-0 JIT harness: prove exec-alloc + ABI before interpreting ===
+    // --jit=on runs one hand-encoded TB (v0=1) against a scratch copy of the
+    // CPU regs. Game emulation below is untouched (still the interpreter).
+    Jit jit;
+    if (arg_jit == JIT_ON) {
+        if (jit.init()) {
+            u32 scratch[32];
+            memset(scratch, 0, sizeof(scratch));
+            u32 exit = jit.run_proof(scratch);
+            printf("[JIT] proof TB: exit=%u v0=%u (expect 0/1)\n", exit, scratch[2]);
+            if (exit != (u32)JIT_EXIT_DONE || scratch[2] != 1) {
+                printf("[JIT] proof FAILED — continuing on interpreter\n");
+            }
+            if (arg_jit_stats)
+                jit.print_stats();
+        } else {
+            printf("[JIT] init failed — continuing on interpreter\n");
+        }
+    }
+
     printf("[INIT] Imported APIs:\n");
     for (u32 i = 0; i < (u32)app.imports.size() && i < MAX_GOT_ENTRIES; i++) {
         const char* name = app.imports[i].name.c_str();
@@ -521,6 +552,9 @@ int main(int argc, char* argv[]) {
                i, cpu.regs[i], i+1, cpu.regs[i+1], i+2, cpu.regs[i+2], i+3, cpu.regs[i+3]);
     }
     printf("  HI: %08X  LO: %08X\n", cpu.hi, cpu.lo);
+
+    if (arg_jit_stats)
+        jit.print_stats();
 
     fflush(stdout);
     syscalls.shutdown_audio();
