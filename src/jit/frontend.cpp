@@ -1,0 +1,201 @@
+#include "frontend.h"
+
+// Bit helpers (match cpu.cpp decode).
+static inline u32 field_op(u32 w) { return (w >> 26) & 0x3F; }
+static inline u32 field_rs(u32 w) { return (w >> 21) & 0x1F; }
+static inline u32 field_rt(u32 w) { return (w >> 16) & 0x1F; }
+static inline u32 field_rd(u32 w) { return (w >> 11) & 0x1F; }
+static inline u32 field_sa(u32 w) { return (w >> 6) & 0x1F; }
+static inline u32 field_func(u32 w) { return w & 0x3F; }
+static inline s32 sext16(u32 w) { return (s32)(s16)(w & 0xFFFF); }
+
+static JitOpProbe probe_special(u32 rs, u32 rt, u32 rd, u32 sa, u32 func) {
+    JitOpProbe p;
+    p.valid = false;
+    p.stop = JIT_STOP_UNKNOWN;
+    JitAluInsn o;
+    o.rs = rs; o.rt = rt; o.rd = rd; o.sa = sa; o.imm = 0; o.uimm = 0;
+    switch (func) {
+    case 0x00: o.op = JIT_ALU_SLL; break;
+    case 0x02: o.op = JIT_ALU_SRL; break;
+    case 0x03: o.op = JIT_ALU_SRA; break;
+    case 0x0A: o.op = JIT_ALU_MOVZ; break;
+    case 0x0B: o.op = JIT_ALU_MOVN; break;
+    case 0x0F: o.op = JIT_ALU_NOP; break;  // SYNC
+    case 0x10: o.op = JIT_ALU_MFHI; break;
+    case 0x11: o.op = JIT_ALU_MTHI; break;
+    case 0x12: o.op = JIT_ALU_MFLO; break;
+    case 0x13: o.op = JIT_ALU_MTLO; break;
+    case 0x18: o.op = JIT_ALU_MULT; break;
+    case 0x19: o.op = JIT_ALU_MULTU; break;
+    case 0x1A: o.op = JIT_ALU_DIV; break;
+    case 0x1B: o.op = JIT_ALU_DIVU; break;
+    case 0x20: o.op = JIT_ALU_ADDU; break;  // ADD: trap disabled (MAME parity)
+    case 0x21: o.op = JIT_ALU_ADDU; break;
+    case 0x22: o.op = JIT_ALU_SUBU; break;  // SUB: trap disabled
+    case 0x23: o.op = JIT_ALU_SUBU; break;
+    case 0x24: o.op = JIT_ALU_AND; break;
+    case 0x25: o.op = JIT_ALU_OR; break;
+    case 0x26: o.op = JIT_ALU_XOR; break;
+    case 0x27: o.op = JIT_ALU_NOR; break;
+    case 0x2A: o.op = JIT_ALU_SLT; break;
+    case 0x2B: o.op = JIT_ALU_SLTU; break;
+    case 0x08: case 0x09:
+        p.stop = JIT_STOP_JR; return p;     // JR/JALR: delay slot + GOT
+    case 0x0C: case 0x0D:
+        p.stop = JIT_STOP_TRAP; return p;   // SYSCALL/BREAK
+    default:
+        return p;  // SLLV/SRLV/SRAV + non-standard: not in Phase 1
+    }
+    if (rd == 0 && (func == 0x00 || func == 0x02 || func == 0x03 ||
+                    func == 0x0A || func == 0x0B || func == 0x10 ||
+                    func == 0x12 || (func >= 0x20 && func <= 0x2B)))
+        o.op = JIT_ALU_NOP;
+    p.valid = true;
+    p.op = o;
+    return p;
+}
+static JitOpProbe probe_special3(u32 insn, u32 rs, u32 rt, u32 rd, u32 func) {
+    JitOpProbe p;
+    p.valid = false;
+    p.stop = JIT_STOP_SPECIAL3;
+    // cpu.cpp exec_special3: func 0x00 = EXT, func 0x04 = INS.
+    // pos = sa (bits 10:6), size = rd+1 (EXT) — NOT the SPECIAL2 CLZ pattern.
+    // EXT Rd encoding: op=0x1F rs rt rd pos func=0x00 (rd holds msb, NOT rd+1!).
+    // Per MIPS32 spec: size = msb-lsb+1 where msb=rd, lsb=pos(sa).
+    if (func == 0x00) {  // EXT
+        JitAluInsn o;
+        o.op = JIT_ALU_EXT;
+        o.rs = rs; o.rt = rt; o.rd = rd;
+        o.sa = 0;
+        o.imm = (s32)insn;  // emitter re-decodes pos/msb
+        o.uimm = 0;
+        if (rt == 0)
+            o.op = JIT_ALU_NOP;
+        p.valid = true;
+        p.op = o;
+        return p;
+    }
+    if (func == 0x04) {  // INS
+        JitAluInsn o;
+        o.op = JIT_ALU_INS;
+        o.rs = rs; o.rt = rt; o.rd = rd;
+        o.sa = 0;
+        o.imm = (s32)insn;
+        o.uimm = 0;
+        if (rt == 0)
+            o.op = JIT_ALU_NOP;
+        p.valid = true;
+        p.op = o;
+        return p;
+    }
+    return p;  // CLZ/CLO live in SPECIAL2 (op 0x1C), not here
+}
+
+static JitOpProbe probe_imm(u32 op, u32 rs, u32 rt, u32 insn) {
+    JitOpProbe p;
+    p.valid = false;
+    p.stop = JIT_STOP_UNKNOWN;
+    JitAluInsn o;
+    o.rs = rs; o.rt = rt; o.rd = 0; o.sa = 0;
+    o.imm = sext16(insn);
+    o.uimm = insn & 0xFFFF;
+    switch (op) {
+    case 0x08: o.op = JIT_ALU_ADDI; break;
+    case 0x09: o.op = JIT_ALU_ADDIU; break;
+    case 0x0A: o.op = JIT_ALU_SLTI; break;
+    case 0x0B: o.op = JIT_ALU_SLTIU; break;
+    case 0x0C: o.op = JIT_ALU_ANDI; break;
+    case 0x0D: o.op = JIT_ALU_ORI; break;
+    case 0x0E: o.op = JIT_ALU_XORI; break;
+    case 0x0F: o.op = JIT_ALU_LUI; break;
+    default:
+        return p;
+    }
+    if (rt == 0)
+        o.op = JIT_ALU_NOP;
+    p.valid = true;
+    p.op = o;
+    return p;
+}
+
+static bool is_mem_op(u32 op) {
+    switch (op) {
+    case 0x1A: case 0x1B:  // LDLD/LD, STC/SC (LL/SC live here)
+    case 0x20: case 0x21: case 0x22: case 0x23: case 0x24: case 0x25:
+    case 0x26: case 0x27: case 0x28: case 0x29: case 0x2A: case 0x2B:
+    case 0x2E: case 0x2F:  // SWL/SWC1
+    case 0x30: case 0x31: case 0x32: case 0x33:
+    case 0x34: case 0x35: case 0x36: case 0x37: case 0x38: case 0x39:
+    case 0x3A: case 0x3B: case 0x3C: case 0x3D: case 0x3E: case 0x3F:
+        return true;  // LB..LW/LBU.. /SB..SW/LWL/LWR/SWL/SWR/LL/SC/LWCx/SWCx/CACHE
+    default:
+        return false;
+    }
+}
+
+JitOpProbe jit_probe_op(u32 insn) {
+    u32 op = field_op(insn);
+    u32 rs = field_rs(insn), rt = field_rt(insn), rd = field_rd(insn);
+    u32 sa = field_sa(insn), func = field_func(insn);
+    if (op == 0x00)
+        return probe_special(rs, rt, rd, sa, func);
+    if (op == 0x1C) {  // SPECIAL2
+        // MUL (func 0x02) is MIPS-only (no MXU1 conflict per cpu.cpp:133).
+        // MADD/MADDU/MSUB/MSUBU/CLZ/CLO conflict with MXU1 when MXU_EN is set
+        // at RUNTIME (mxu.state.ctrl bit 0) — the JIT cannot know statically,
+        // so they stay interpreter-only (Phase 4). Same for all MXU1 funcs.
+        if (func == 0x02) {
+            JitOpProbe p;
+            p.valid = true;
+            p.stop = JIT_STOP_NONE;
+            p.op.op = JIT_ALU_MUL;
+            p.op.rs = rs; p.op.rt = rt; p.op.rd = rd;
+            p.op.sa = 0; p.op.imm = 0; p.op.uimm = 0;
+            if (rd == 0)
+                p.op.op = JIT_ALU_NOP;
+            return p;
+        }
+        JitOpProbe p; p.valid = false; p.stop = JIT_STOP_SPECIAL2; return p;
+    }
+    if (op == 0x1F)
+        return probe_special3(insn, rs, rt, rd, func);
+    switch (op) {  // branches + jumps — Phase 2 (all have delay slots)
+    case 0x01: case 0x02: case 0x03:
+    case 0x04: case 0x05: case 0x06: case 0x07:
+    case 0x14: case 0x15: case 0x16: case 0x17: {
+        JitOpProbe p; p.valid = false; p.stop = JIT_STOP_BRANCH; return p;
+    }
+    default:
+        break;
+    }
+    if (op == 0x10 || op == 0x11 || op == 0x12 || op == 0x13) {
+        JitOpProbe p; p.valid = false; p.stop = JIT_STOP_COP; return p;
+    }
+    if (is_mem_op(op)) {
+        JitOpProbe p; p.valid = false; p.stop = JIT_STOP_MEM; return p;
+    }
+    return probe_imm(op, rs, rt, insn);
+}
+
+JitTbPlan jit_decode_tb(const u32* insns, u32 avail) {
+    JitTbPlan plan;
+    plan.count = 0;
+    plan.stop = JIT_STOP_CAP;
+    plan.stop_pc = 0;
+    if (!insns || avail == 0)
+        return plan;
+    u32 n = (avail < JIT_TB_MAX_INSNS) ? avail : JIT_TB_MAX_INSNS;
+    for (u32 i = 0; i < n; i++) {
+        JitOpProbe pr = jit_probe_op(insns[i]);
+        if (!pr.valid) {
+            plan.stop = pr.stop;
+            plan.stop_pc = i * 4;  // offset from TB start (caller adds base)
+            return plan;
+        }
+        plan.ops[plan.count++] = pr.op;
+    }
+    plan.stop = JIT_STOP_CAP;
+    plan.stop_pc = plan.count * 4;
+    return plan;
+}

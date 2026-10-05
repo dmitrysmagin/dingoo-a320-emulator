@@ -5,6 +5,7 @@
 #include "archive.h"
 #include "syscalls.h"
 #include "jit/jit.h"
+#include "jit/jit_test.h"
 #undef main
 #include <cstdio>
 #include <cstdlib>
@@ -13,10 +14,23 @@
 #include <algorithm>
 
 static void print_usage(const char* argv0) {
-    fprintf(stderr, "Usage: %s [--frames <n>] [--seconds <n>] [--save-screenshots] [--nosound] [--audio-latency <ms>] [--rotate <90|-90|270>] [--jit={off,on}] [--jit-stats] <app>\n", argv0);
+    fprintf(stderr, "Usage: %s [--frames <n>] [--seconds <n>] [--save-screenshots] [--nosound] [--audio-latency <ms>] [--rotate <90|-90|270>] [--jit={off,on}] [--jit-stats] [--jit-tests] <app>\n", argv0);
 }
 
 int main(int argc, char* argv[]) {
+    // --jit-tests runs the Phase-1 discharge tests with no ROM and exits.
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--jit-tests") == 0) {
+            bool verbose = false;
+            for (int j = 1; j < argc; j++)
+                if (strcmp(argv[j], "--jit-stats") == 0) verbose = true;
+            printf("=== JIT Phase-1 discharge tests ===\n");
+            fflush(stdout);
+            JitTestResult r = jit_run_phase1_tests(verbose);
+            printf("=== JIT tests: passed=%d failed=%d ===\n", r.passed, r.failed);
+            return r.failed ? 1 : 0;
+        }
+    }
     const char* app_path = nullptr;
     u32 arg_max_frames = 0;  // 0 = unlimited
     u32 arg_max_seconds = 0;  // 0 = unlimited

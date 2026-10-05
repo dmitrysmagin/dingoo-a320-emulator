@@ -19,7 +19,10 @@ SOURCES = $(SRCDIR)/main.cpp \
           $(SRCDIR)/mxu.cpp \
           $(SRCDIR)/display.cpp \
           $(SRCDIR)/archive.cpp \
-          $(SRCDIR)/jit/jit.cpp
+          $(SRCDIR)/jit/jit.cpp \
+          $(SRCDIR)/jit/frontend.cpp \
+          $(SRCDIR)/jit/emit_alu.cpp \
+          $(SRCDIR)/jit/jit_test.cpp
 
 OBJECTS = $(patsubst $(SRCDIR)/%.cpp,$(OBJDIR)/%.o,$(SOURCES))
 
@@ -33,6 +36,12 @@ $(OBJDIR):
 	mkdir -p $(OBJDIR)
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.cpp $(SRCDIR)/types.h $(SRCDIR)/syscalls.h | $(OBJDIR)
+	mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -c $< -o $@
+
+# Nested obj dirs (src/jit/*.cpp -> obj/jit/*.o): the single-% rule above
+# does not match paths with extra slashes, so spell these out.
+$(OBJDIR)/jit/%.o: $(SRCDIR)/jit/%.cpp $(SRCDIR)/types.h | $(OBJDIR)
 	mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -c $< -o $@
 
