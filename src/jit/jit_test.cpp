@@ -246,10 +246,6 @@ void test_stops() {
     // Decoder stop classification (no exec needed).
     struct Case { u32 word; JitStop stop; const char* name; };
     const Case cases[] = {
-        {0x08000000u, JIT_STOP_BRANCH, "J"},
-        {0x0C000000u, JIT_STOP_BRANCH, "JAL"},
-        {0x10000000u, JIT_STOP_BRANCH, "BEQ"},
-        {0x04000000u, JIT_STOP_BRANCH, "REGIMM"},
         {0x8C000000u, JIT_STOP_MEM, "LW"},
         {0xAC000000u, JIT_STOP_MEM, "SW"},
         {0xC0000000u, JIT_STOP_MEM, "LL"},
@@ -261,7 +257,7 @@ void test_stops() {
         {0x0000000Cu, JIT_STOP_TRAP, "SYSCALL"},
         {0x0000000Du, JIT_STOP_TRAP, "BREAK"},
         {0x70000000u, JIT_STOP_SPECIAL2, "MADD"},
-        {0x7C000000u, JIT_STOP_SPECIAL3, "SPECIAL3-other"},
+        {0x7C000001u, JIT_STOP_SPECIAL3, "SPECIAL3-other"},  // func=1 (not EXT/INS)
         {0x00000004u, JIT_STOP_UNKNOWN, "SLLV"},
     };
     for (const Case& c : cases) {
@@ -269,6 +265,11 @@ void test_stops() {
         CHECK(!pr.valid && pr.stop == c.stop, "stop %s: valid=%d stop=%d want=%d",
               c.name, pr.valid, pr.stop, c.stop);
     }
+    // Branch opcodes are now compilable in Phase 2
+    CHECK(jit_probe_op(0x08000000u).valid, "J valid");
+    CHECK(jit_probe_op(0x0C000000u).valid, "JAL valid");
+    CHECK(jit_probe_op(0x10000000u).valid, "BEQ valid");
+    CHECK(jit_probe_op(0x04000000u).valid, "REGIMM (BGEZ/BLTZ) valid");
     // MUL decodes valid; EXT/INS decode valid.
     CHECK(jit_probe_op(w_special2_mul(4, 5, 6)).valid, "MUL valid");
     CHECK(jit_probe_op(w_ext(4, 5, 15, 0)).valid, "EXT valid");

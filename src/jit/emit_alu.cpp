@@ -42,6 +42,25 @@ static void emit_store_slot(JitEmit& e, u32 off, u32 host) {
     emit_u8(e, (u8)(0x80 | (host << 3) | 0x02));
     emit_u32(e, off);
 }
+// mov [rdx+disp32], imm32 — store imm into slot.
+void emit_mov_rdx_disp32(JitEmit& e, u32 disp32, u32 imm) {
+    if (e.len + 10 > e.cap) {
+        e.oom = true;
+        return;
+    }
+    
+    // REX.W + MOV [RDX+disp32], imm32
+    // Encoding: 48 C7 82 <disp32> <imm32>
+    //   REX.W (48) + opcode (C7) + ModR/M (82) + disp32 + imm32
+    
+    u8* buf = e.buf + e.len;
+    buf[0] = 0x48;           // REX.W
+    buf[1] = 0xC7;           // MOV r/m32, imm32
+    buf[2] = 0x82;           // ModR/M: mod=00 (disp32), reg=010 (RDX), r/m=010 (RDX)
+    *((u32*)(buf + 3)) = disp32;   // disp32
+    *((u32*)(buf + 7)) = imm;      // imm32
+    e.len += 11;
+}
 static inline u32 slot_off(u32 reg) { return JIT_OFF_GPR + reg * 4; }
 
 // prolog: state* (RDI or RCX) -> RDX. Emits both moves; harmless duplicate.
@@ -67,8 +86,8 @@ static void emit_shift_imm(JitEmit& e, u32 sub, u32 amt) {
     emit_u8(e, (u8)(amt & 0x1F));
 }
 // mov r32, imm32: B8+rd
-static void emit_mov_imm(JitEmit& e, u32 host, u32 imm) {
-    emit_u8(e, (u8)(0xB8 + host));
+void emit_mov_imm(JitEmit& e, u32 host_reg, u32 imm) {
+    emit_u8(e, (u8)(0xB8 + host_reg));
     emit_u32(e, imm);
 }
 // test r/m32, r32 (mod=11): 85 /r
@@ -453,6 +472,16 @@ u32 jit_compile_tb(const JitTbPlan& plan, u8* buf, u32 cap, u32 exit_code) {
     e.buf = buf; e.cap = cap; e.len = 0; e.oom = false;
     emit_prolog(e);
     for (u32 i = 0; i < plan.count; i++) {
+        // Handle branch opcodes: J, JAL, BEQ, BNE, BEQL, BNEL, BLEZ, BGTZ, BLEZL, BGTZL
+        if (plan.ops[i].op == JIT_ALU_J || plan.ops[i].op == JIT_ALU_JAL ||
+            plan.ops[i].op == JIT_ALU_BEQ || plan.ops[i].op == JIT_ALU_BNE ||
+            plan.ops[i].op == JIT_ALU_BEQL || plan.ops[i].op == JIT_ALU_BNEL ||
+            plan.ops[i].op == JIT_ALU_BLEZ || plan.ops[i].op == JIT_ALU_BGTZ ||
+            plan.ops[i].op == JIT_ALU_BLEZL || plan.ops[i].op == JIT_ALU_BGTZL) {
+            // Emit branch exit: set next_pc to target
+            emit_branch_exit(e, plan.ops[i], compute_branch_target(plan.ops[i], 0));
+            continue;
+        }
         if (!emit_one(e, plan.ops[i]) || e.oom)
             return 0;
     }
@@ -544,6 +573,18 @@ void jit_run_reference(const JitTbPlan& plan, u32 regs[32], u32* hi, u32* lo) {
         }
         case JIT_ALU_CLZ: regs[o.rd] = ref_clz(regs[o.rs]); break;
         case JIT_ALU_CLO: regs[o.rd] = ref_clz(~regs[o.rs]); break;
+        // Phase 2: branch ops (set next_pc, no state change in reference)
+        case JIT_ALU_J: case JIT_ALU_JAL:
+            // J/JAL: unconditional jump, set next_pc to target
+            // For reference, we don't actually jump; just set next_pc
+            break;
+        case JIT_ALU_BEQ: case JIT_ALU_BNE:
+        case JIT_ALU_BEQL: case JIT_ALU_BNEL:
+        case JIT_ALU_BLEZ: case JIT_ALU_BGTZ:
+        case JIT_ALU_BLEZL: case JIT_ALU_BGTZL:
+            // Conditional branches: in reference, no actual branch taken
+            // The actual branch is handled by the dispatcher
+            break;
         }
         regs[0] = 0;  // $0 hardwired (safety; decoder already folds $0 dests)
     }

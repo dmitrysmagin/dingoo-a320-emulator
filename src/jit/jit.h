@@ -25,11 +25,16 @@ struct JitState {
     u32 gpr[32];      // MIPS GPRs; gpr[31] = ra
     u32 exit_code;    // why the TB returned (see JitExit)
     u32 exit_arg;     // extra info (e.g. proof-TB marker)
+    u32 next_pc;      // Phase 2: computed branch target for EXIT_NEXT_PC
+    u32 pc;           // Phase 2: current PC (for delay slot)
+    u32 hi;           // Phase 1: HI register
+    u32 lo;           // Phase 1: LO register
 };
 
 enum JitExit : u32 {
     JIT_EXIT_DONE = 0,   // proof TB executed v0=1 successfully
     JIT_EXIT_ERROR = 1,  // TB failed / not available
+    JIT_EXIT_NEXT_PC = 2 // Phase 2: exit to dispatcher with next_pc set
 };
 
 enum JitMode {

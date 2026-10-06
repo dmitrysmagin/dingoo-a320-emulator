@@ -36,8 +36,12 @@
 
 // JitState byte offsets (checked with static_assert in emit_alu.cpp).
 static constexpr u32 JIT_OFF_GPR = 0;            // gpr[i] at i*4
-static constexpr u32 JIT_OFF_HI = 32 * 4;        // 128
-static constexpr u32 JIT_OFF_LO = 32 * 4 + 4;    // 132
+static constexpr u32 JIT_OFF_HI = 32 * 4;        // 128 - exit_code / HI
+static constexpr u32 JIT_OFF_LO = 32 * 4 + 4;    // 132 - exit_arg / LO
+static constexpr u32 JIT_OFF_NEXT_PC = 32 * 4 + 8; // 136 - Phase 2: branch target
+static constexpr u32 JIT_OFF_PC = 32 * 4 + 12;     // 140 - Phase 2: current PC
+static constexpr u32 JIT_OFF_HI_VAL = 32 * 4 + 16; // 144 - HI register value
+static constexpr u32 JIT_OFF_LO_VAL = 32 * 4 + 20; // 148 - LO register value
 
 // Emitter cursor over a raw byte buffer.
 struct JitEmit {
@@ -53,6 +57,14 @@ struct JitEmit {
 // overflow/unsupported op. Always appends the exit epilog on success.
 u32 jit_compile_tb(const JitTbPlan& plan, u8* buf, u32 cap,
                    u32 exit_code = (u32)JIT_EXIT_DONE);
+
+// Branch helpers for Phase 2: compute target, emit conditional/unconditional exit.
+u32 compute_branch_target(const JitAluInsn& op, u32 pc);
+void emit_branch_exit(JitEmit& e, const JitAluInsn& op, u32 target);
+
+// Emitter helpers (used by both emit_alu and emit_branch)
+void emit_mov_imm(JitEmit& e, u32 host_reg, u32 imm);
+void emit_mov_rdx_disp32(JitEmit& e, u32 disp32, u32 imm);
 
 // Discharge-test helper: run a plan against regs[32]+hi/lo without any
 // executable memory. Implements the same semantics as the emitted code in

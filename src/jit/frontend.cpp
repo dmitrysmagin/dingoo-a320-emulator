@@ -9,6 +9,20 @@ static inline u32 field_sa(u32 w) { return (w >> 6) & 0x1F; }
 static inline u32 field_func(u32 w) { return w & 0x3F; }
 static inline s32 sext16(u32 w) { return (s32)(s16)(w & 0xFFFF); }
 
+static inline u32 decode_j_target(u32 insn, u32 pc)
+{
+    // J-type: target = (imm26 << 2) | (pc & 0xF0000000)
+    u32 imm26 = insn & 0x03FFFFFF;
+    return (imm26 << 2) | (pc & 0xF0000000);
+}
+
+static inline u32 decode_branch_target(u32 insn, u32 pc)
+{
+    // I-type branches: target = pc + 4 + (sext16(imm16) << 2)
+    s32 offset = sext16(insn & 0xFFFF);
+    return (u32)((s32)pc + 4 + (offset << 2));
+}
+
 static JitOpProbe probe_special(u32 rs, u32 rt, u32 rd, u32 sa, u32 func) {
     JitOpProbe p;
     p.valid = false;
@@ -160,11 +174,78 @@ JitOpProbe jit_probe_op(u32 insn) {
     }
     if (op == 0x1F)
         return probe_special3(insn, rs, rt, rd, func);
-    switch (op) {  // branches + jumps — Phase 2 (all have delay slots)
-    case 0x01: case 0x02: case 0x03:
-    case 0x04: case 0x05: case 0x06: case 0x07:
-    case 0x14: case 0x15: case 0x16: case 0x17: {
+    switch (op) {  // branches + jumps — Phase 2 (decode for inline delay slot)
+    case 0x01: {  // REGIMM: BLTZ/BGEZ/BLTZAL/BGEZAL (+ likely variants)
+        if (rt == 0 || rt == 1 || rt == 16 || rt == 17) {  // BLTZ, BGEZ, BLTZAL, BGEZAL
+            JitOpProbe p; p.valid = true; p.stop = JIT_STOP_NONE;
+            p.op.op = (rt == 0) ? JIT_ALU_BLTZ : (rt == 1) ? JIT_ALU_BGEZ :
+                      (rt == 16) ? JIT_ALU_BLTZAL : JIT_ALU_BGEZAL;
+            p.op.rs = rs; p.op.rt = rt; p.op.rd = 0;
+            p.op.sa = 0; p.op.imm = sext16(insn); p.op.uimm = insn;
+            return p;
+        }
+        // Other REGIMM ops are stop reasons
         JitOpProbe p; p.valid = false; p.stop = JIT_STOP_BRANCH; return p;
+    }
+    case 0x02: {  // J: unconditional jump
+        JitOpProbe p; p.valid = true; p.stop = JIT_STOP_NONE;
+        p.op.op = JIT_ALU_J; p.op.rs = 0; p.op.rt = 0; p.op.rd = 0;
+        p.op.sa = 0; p.op.imm = (s32)decode_j_target(insn, 0); p.op.uimm = insn;
+        return p;
+    }
+    case 0x03: {  // JAL: unconditional jump + link
+        JitOpProbe p; p.valid = true; p.stop = JIT_STOP_NONE;
+        p.op.op = JIT_ALU_JAL; p.op.rs = 0; p.op.rt = 0; p.op.rd = 0;
+        p.op.sa = 0; p.op.imm = (s32)decode_j_target(insn, 0); p.op.uimm = insn;
+        return p;
+    }
+    case 0x04: {  // BEQ
+        JitOpProbe p; p.valid = true; p.stop = JIT_STOP_NONE;
+        p.op.op = JIT_ALU_BEQ; p.op.rs = rs; p.op.rt = rt; p.op.rd = 0;
+        p.op.sa = 0; p.op.imm = sext16(insn); p.op.uimm = insn;
+        return p;
+    }
+    case 0x05: {  // BNE
+        JitOpProbe p; p.valid = true; p.stop = JIT_STOP_NONE;
+        p.op.op = JIT_ALU_BNE; p.op.rs = rs; p.op.rt = rt; p.op.rd = 0;
+        p.op.sa = 0; p.op.imm = sext16(insn); p.op.uimm = insn;
+        return p;
+    }
+    case 0x06: {  // BLEZ
+        JitOpProbe p; p.valid = true; p.stop = JIT_STOP_NONE;
+        p.op.op = JIT_ALU_BLEZ; p.op.rs = rs; p.op.rt = 0; p.op.rd = 0;
+        p.op.sa = 0; p.op.imm = sext16(insn); p.op.uimm = insn;
+        return p;
+    }
+    case 0x07: {  // BGTZ
+        JitOpProbe p; p.valid = true; p.stop = JIT_STOP_NONE;
+        p.op.op = JIT_ALU_BGTZ; p.op.rs = rs; p.op.rt = 0; p.op.rd = 0;
+        p.op.sa = 0; p.op.imm = sext16(insn); p.op.uimm = insn;
+        return p;
+    }
+    case 0x14: {  // BEQL (likely)
+        JitOpProbe p; p.valid = true; p.stop = JIT_STOP_NONE;
+        p.op.op = JIT_ALU_BEQL; p.op.rs = rs; p.op.rt = rt; p.op.rd = 0;
+        p.op.sa = 0; p.op.imm = sext16(insn); p.op.uimm = insn;
+        return p;
+    }
+    case 0x15: {  // BNEL (likely)
+        JitOpProbe p; p.valid = true; p.stop = JIT_STOP_NONE;
+        p.op.op = JIT_ALU_BNEL; p.op.rs = rs; p.op.rt = rt; p.op.rd = 0;
+        p.op.sa = 0; p.op.imm = sext16(insn); p.op.uimm = insn;
+        return p;
+    }
+    case 0x16: {  // BLEZL (likely)
+        JitOpProbe p; p.valid = true; p.stop = JIT_STOP_NONE;
+        p.op.op = JIT_ALU_BLEZL; p.op.rs = rs; p.op.rt = 0; p.op.rd = 0;
+        p.op.sa = 0; p.op.imm = sext16(insn); p.op.uimm = insn;
+        return p;
+    }
+    case 0x17: {  // BGTZL (likely)
+        JitOpProbe p; p.valid = true; p.stop = JIT_STOP_NONE;
+        p.op.op = JIT_ALU_BGTZL; p.op.rs = rs; p.op.rt = 0; p.op.rd = 0;
+        p.op.sa = 0; p.op.imm = sext16(insn); p.op.uimm = insn;
+        return p;
     }
     default:
         break;

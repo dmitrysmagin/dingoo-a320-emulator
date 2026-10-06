@@ -30,6 +30,7 @@ enum JitStop {
 
 // Compilable ALU op ids. One enum value per emitter case in emit_alu.cpp.
 enum JitAluOp {
+    // Phase 1: ALU ops
     JIT_ALU_SLL, JIT_ALU_SRL, JIT_ALU_SRA,
     JIT_ALU_ADDU, JIT_ALU_SUBU, JIT_ALU_AND, JIT_ALU_OR,
     JIT_ALU_XOR, JIT_ALU_NOR, JIT_ALU_SLT, JIT_ALU_SLTU,
@@ -42,6 +43,24 @@ enum JitAluOp {
     JIT_ALU_MUL,
     JIT_ALU_CLZ, JIT_ALU_CLO,
     JIT_ALU_NOP,  // SYNC or rd==0-dropped op (emits nothing)
+
+    // Phase 2: Branch + jump ops (delay slot compiled inline)
+    JIT_ALU_J,       // J target
+    JIT_ALU_JAL,     // JAL target
+    JIT_ALU_JR,      // JR rs
+    JIT_ALU_JALR,    // JALR rs (rd=ra implicit)
+    JIT_ALU_BEQ,     // BEQ rs, rt, offset
+    JIT_ALU_BNE,     // BNE rs, rt, offset
+    JIT_ALU_BLEZ,    // BLEZ rs, offset
+    JIT_ALU_BGTZ,    // BGTZ rs, offset
+    JIT_ALU_BLTZ,    // BLTZ rs, offset (REGIMM rt=0)
+    JIT_ALU_BGEZ,    // BGEZ rs, offset (REGIMM rt=1)
+    JIT_ALU_BLTZAL,  // BLTZAL rs, offset (REGIMM rt=16)
+    JIT_ALU_BGEZAL,  // BGEZAL rs, offset (REGIMM rt=17)
+    JIT_ALU_BEQL,    // BEQL rs, rt, offset (likely not taken)
+    JIT_ALU_BNEL,    // BNEL rs, rt, offset (likely not taken)
+    JIT_ALU_BLEZL,   // BLEZL rs, offset (likely not taken)
+    JIT_ALU_BGTZL,   // BGTZL rs, offset (likely not taken)
 };
 
 struct JitAluInsn {
