@@ -66,6 +66,8 @@ struct JitStats {
     u64 tb_hits = 0;      // cache hits (TB executed)
     u64 tb_misses = 0;    // cache misses that compiled OK
     u64 tb_uncompilable = 0;  // eligible PCs whose TB failed to compile
+    u64 tb_branches = 0;  // compiled TBs ending in a static branch
+    u64 tb_nextpc = 0;    // NEXT_PC exits taken (branches via TBs)
     u64 tb_insns = 0;     // guest insns executed via TBs
     u64 interp_insns = 0;  // guest insns executed via interpreter fallback
     u64 slow_exits = 0;   // TB slow-mem exits (faulting op ran on interpreter)
@@ -149,6 +151,7 @@ private:
     u32 m_cached_gen = 0;  // g_code_gen at last flush
     bool m_gen_valid = false;
     JitStats m_stats;
+    JitState m_st;  // Phase 6 persistent slots (resident across TBs)
 
     static constexpr u32 kPoolSize = 1 << 20;  // 1 MB exec pools
     static constexpr u32 kMaxTbs = 4096;       // flush-all LRU cap

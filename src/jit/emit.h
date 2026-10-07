@@ -75,9 +75,32 @@ u32 jit_compile_tb(const JitTbPlan& plan, u8* buf, u32 cap,
 u32 compute_branch_target(const JitAluInsn& op, u32 pc);
 void emit_branch_exit(JitEmit& e, const JitAluInsn& op, u32 target);
 
+// Phase 6: compile a branch-ended TB — prefix ops[0, branch_idx) via
+// jit_emit_op, then the terminal branch ops[branch_idx] with its delay
+// slot ops[branch_idx+1], ending in a NEXT_PC exit (st.next_pc = target).
+// entry_pc is the TB's guest address (link/target/fallthrough derive from
+// it, matching cpu.cpp execute/execute_one order: link before delay,
+// condition evaluated before delay, likely-not-taken skips delay).
+// Returns emitted length, or 0 on overflow/unsupported op.
+u32 jit_compile_branch_tb(const JitTbPlan& plan, u32 branch_idx, u32 entry_pc,
+                          u8* buf, u32 cap);
+
 // Emitter helpers (used by both emit_alu and emit_branch)
 void emit_mov_imm(JitEmit& e, u32 host_reg, u32 imm);
 void emit_mov_rdx_disp32(JitEmit& e, u32 disp32, u32 imm);
+
+// Phase 6 shared raw-output primitives (thin wrappers over emit_alu
+// statics, so branch/mem emitters need no duplication).
+void jit_emit_prolog(JitEmit& e);              // state* -> RDX per host ABI
+void jit_emit_epilog(JitEmit& e, u32 exit_code);  // mov eax, exit; ret
+void jit_emit_tick_add(JitEmit& e, u32 count);    // tick_delta += count
+u32 emit_jcc32(JitEmit& e, u8 cc);             // 0F cc + rel32 placeholder
+u32 emit_jmp32(JitEmit& e);                    // E9 + rel32 placeholder
+void emit_patch32(JitEmit& e, u32 pos);        // patch placeholder to here
+// Emit one already-validated op (ALU/COP; mem allowed with op_idx for the
+// slow-exit arg). Used for TB prefixes and delay slots. Returns false on
+// overflow/unsupported op.
+bool jit_emit_op(JitEmit& e, const JitAluInsn& op, u32 op_idx);
 
 // Phase 3: emit one fast-path load/store (LB/LH/LW/LBU/LHU/SB/SH/SW).
 // Slow cases (unmapped/MMIO/code-section/null base) exit the TB with

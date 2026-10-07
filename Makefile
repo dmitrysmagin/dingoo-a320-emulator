@@ -38,13 +38,19 @@ all: $(TARGET)
 $(OBJDIR):
 	mkdir -p $(OBJDIR)
 
-$(OBJDIR)/%.o: $(SRCDIR)/%.cpp $(SRCDIR)/types.h $(SRCDIR)/syscalls.h | $(OBJDIR)
+# Header dependencies (must be complete: jit.h/cpu.h change class layouts;
+# a stale object file with an old sizeof() smashes its stack neighbours).
+HEADERS = $(SRCDIR)/types.h $(SRCDIR)/syscalls.h $(SRCDIR)/cpu.h \
+          $(SRCDIR)/memory.h $(SRCDIR)/cop0.h $(SRCDIR)/mxu.h \
+          $(SRCDIR)/jit/jit.h $(SRCDIR)/jit/frontend.h $(SRCDIR)/jit/emit.h
+
+$(OBJDIR)/%.o: $(SRCDIR)/%.cpp $(HEADERS) | $(OBJDIR)
 	mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -c $< -o $@
 
 # Nested obj dirs (src/jit/*.cpp -> obj/jit/*.o): the single-% rule above
 # does not match paths with extra slashes, so spell these out.
-$(OBJDIR)/jit/%.o: $(SRCDIR)/jit/%.cpp $(SRCDIR)/types.h | $(OBJDIR)
+$(OBJDIR)/jit/%.o: $(SRCDIR)/jit/%.cpp $(HEADERS) | $(OBJDIR)
 	mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -c $< -o $@
 

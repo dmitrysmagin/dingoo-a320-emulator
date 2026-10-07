@@ -16,21 +16,6 @@
 #include <unistd.h>
 #endif
 
-// A TB may only start (and continue) on plain KSEG0/KSEG1 RAM. Everything
-// else goes through CPU::execute_one(), which owns the exact semantics:
-//   - KUSEG/KSEG2/3 (bit31 clear or unmapped): fetch-0/log + [KUSEG] halt rules
-//   - OS area [0x80000000, 0x80A00000): fetch() returns JR $ra (mirrors cpu.cpp)
-//   - GOT addresses: syscall dispatch + task-switch resume
-static bool tb_eligible_pc(Memory* mem, u32 pc) {
-    if ((pc & 0x80000000u) == 0)
-        return false;
-    if (pc >= 0x80000000u && pc < 0x80A00000u)
-        return false;
-    if (mem->is_got_address(pc))
-        return false;
-    return mem->is_mapped(pc);
-}
-
 // Hand-encoded x86-64 proof TB. Disassembly (Win64 shown; SysV uses RDI):
 //
 //   mov DWORD PTR [rcx + 8], 1   ; gpr[2] (v0) = 1  (offsetof(JitState,gpr[2]) == 8)
@@ -71,6 +56,7 @@ Jit::Jit()
     , m_ready(false)
     , m_proof_runs(0)
     , m_last_exit((u32)JIT_EXIT_ERROR) {
+    memset(&m_st, 0, sizeof(m_st));
 }
 
 Jit::~Jit() {
@@ -180,6 +166,8 @@ void Jit::print_stats() const {
     printf("[JIT] tb_compiled=%llu hits=%llu misses-compiled=%llu uncompilable=%llu\n",
            (unsigned long long)m_stats.tb_compiled, (unsigned long long)m_stats.tb_hits,
            (unsigned long long)m_stats.tb_misses, (unsigned long long)m_stats.tb_uncompilable);
+    printf("[JIT] branch_tbs=%llu nextpc_exits=%llu\n",
+           (unsigned long long)m_stats.tb_branches, (unsigned long long)m_stats.tb_nextpc);
     printf("[JIT] tb_insns=%llu interp_insns=%llu slow_exits=%llu flushes=%llu cache=%u pools=%u\n",
            (unsigned long long)m_stats.tb_insns, (unsigned long long)m_stats.interp_insns,
            (unsigned long long)m_stats.slow_exits, (unsigned long long)m_stats.flushes,
@@ -217,37 +205,32 @@ u8* Jit::pool_alloc(u32 len) {
 
 bool Jit::compile_tb(CPU* cpu, u32 pc, u32 stop_pc, u32 alt_stop_pc,
                      TbFunc& func, u32& count) {
-    Memory* mem = cpu->mem;
-    u32 words[JIT_TB_MAX_INSNS];
-    u32 n = 0;
-    for (; n < JIT_TB_MAX_INSNS; n++) {
-        u32 pn = pc + n * 4;
-        // Never overshoot a stop PC: the loop condition must see it.
-        if (pn == stop_pc || (alt_stop_pc && pn == alt_stop_pc))
-            break;
-        if (!tb_eligible_pc(mem, pn))
-            break;
-        words[n] = mem->read_u32(pn);  // eligible => mapped RAM, no log spam
-    }
-    if (n == 0)
+    // Phase 6 formation: linear run + optional terminal branch (with
+    // validated delay slot). Shared with discharge tests (frontend.cpp).
+    JitFormed formed = jit_form_tb(cpu->mem, pc, stop_pc, alt_stop_pc);
+    if (formed.n == 0)
         return false;
-    JitTbPlan plan = jit_decode_tb(words, n);
-    // Phase 2 branch ops decode valid but have no emitter yet: truncate the
-    // TB before the first one (it runs on the interpreter next iteration).
-    // Without this, any TB reaching a branch fails wholesale and is
-    // retried on every visit (35M wasted compiles in tetris).
-    for (u32 i = 0; i < plan.count; i++) {
-        JitAluOp op = plan.ops[i].op;
-        if (op >= JIT_ALU_J && op <= JIT_ALU_BGTZL) {
-            plan.count = i;
-            break;
-        }
-    }
-    if (plan.count == 0)
-        return false;  // control op at head (branch/GOT/trap/COP-stop/...)
+    JitTbPlan plan = jit_decode_tb(formed.words, formed.n);
+    // Decode is deterministic over validated words: a formed run decodes
+    // 1:1 (branches validate by construction). Bail if it ever doesn't.
+    if (plan.count != formed.n)
+        return false;
     // Emit into a stack buffer first so a failed compile wastes no pool.
     u8 tmp[16 << 10];
-    u32 len = jit_compile_tb(plan, tmp, (u32)sizeof(tmp), (u32)JIT_EXIT_DONE);
+    u32 len = 0;
+    u32 equiv = plan.count;  // execute_one-equivalents (ticks + insn_count)
+    if (formed.has_branch) {
+        // Defensive: the branch must be where formation put it.
+        if (formed.branch_idx + 2 > plan.count ||
+            !jit_op_is_branch(plan.ops[formed.branch_idx].op))
+            return false;
+        len = jit_compile_branch_tb(plan, formed.branch_idx, pc, tmp, (u32)sizeof(tmp));
+        // Branch+delay share one tick/insn_count with the interpreter
+        // (execute_one ticks once for both): prefix + 1.
+        equiv = formed.branch_idx + 1;
+    } else {
+        len = jit_compile_tb(plan, tmp, (u32)sizeof(tmp), (u32)JIT_EXIT_DONE);
+    }
     if (!len) {
         m_stats.tb_uncompilable++;
         return false;
@@ -263,12 +246,15 @@ bool Jit::compile_tb(CPU* cpu, u32 pc, u32 stop_pc, u32 alt_stop_pc,
 #else
     __builtin___clear_cache((char*)dst, (char*)dst + len);
 #endif
-    u32 phys = mem->vaddr_to_phys(pc, false);
-    m_cache[phys] = TbEntry{(TbFunc)dst, plan.count};
+    // Phase 6: key by entry vaddr (not phys). J-targets embed
+    // (pc & 0xF0000000), so KSEG0/KSEG1 aliases need separate TBs.
+    m_cache[pc] = TbEntry{(TbFunc)dst, equiv};
     m_stats.tb_compiled++;
     m_stats.tb_misses++;
+    if (formed.has_branch)
+        m_stats.tb_branches++;
     func = (TbFunc)dst;
-    count = plan.count;
+    count = equiv;
     return true;
 }
 
@@ -279,8 +265,21 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
         return;
     }
     Memory* mem = cpu->mem;
-    JitState st;
-    memset(&st, 0, sizeof(st));
+    // Phase 6 persistent state: slots stay resident across TBs (no per-TB
+    // memcpy). Synced cpu->st once here, st->cpu around each fallback and
+    // once at exit. Sticky pointers are set once per call (mappings are
+    // stable; generation flushes cover remaps).
+    JitState& st = m_st;
+    memcpy(st.gpr, cpu->regs, sizeof(st.gpr));
+    st.hi = cpu->hi;
+    st.lo = cpu->lo;
+    st.mem_base = (u64)(uintptr_t)mem->get_raw_ptr();
+    st.mem_size = mem->size();
+    st.code_start = mem->code_start();
+    st.code_end = mem->code_end();
+    st.wc_base = (u64)(uintptr_t)mem->write_counts_base();
+    st.cop0 = &cpu->cop0;
+    st.mxu = &cpu->mxu;
     u32 executed = 0;
     while (cpu->running && cpu->pc != stop_pc && executed < max_insns) {
         if (alt_stop_pc && cpu->pc == alt_stop_pc)
@@ -292,9 +291,8 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
         u32 pc = cpu->pc;
         TbFunc func = nullptr;
         u32 count = 0;
-        if (tb_eligible_pc(mem, pc)) {
-            u32 phys = mem->vaddr_to_phys(pc, false);
-            auto it = m_cache.find(phys);
+        if (jit_pc_eligible(mem, pc)) {
+            auto it = m_cache.find(pc);  // vaddr-keyed (J-target aliasing)
             if (it != m_cache.end()) {
                 func = it->second.func;
                 count = it->second.count;
@@ -304,52 +302,70 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
             }
         }
         if (!func) {
-            // Control flow, stops, GOT, unmapped: the interpreter owns it.
+            // JR/JALR, stops, GOT, unmapped, awkward delay slots: the
+            // interpreter owns it. Sync state around the call.
+            memcpy(cpu->regs, st.gpr, sizeof(st.gpr));
+            cpu->hi = st.hi;
+            cpu->lo = st.lo;
             cpu->execute_one();
+            memcpy(st.gpr, cpu->regs, sizeof(st.gpr));
+            st.hi = cpu->hi;
+            st.lo = cpu->lo;
             executed++;
             m_stats.interp_insns++;
             continue;
         }
-        // Sync interpreter -> TB. COP0/MXU/RAM are pointer-shared (no copy);
-        // tick_delta restarts per TB and is flushed below.
-        memcpy(st.gpr, cpu->regs, sizeof(st.gpr));
-        st.hi = cpu->hi;
-        st.lo = cpu->lo;
-        st.pc = pc;
-        st.next_pc = 0;
-        st.exit_arg = 0;
-        st.mem_base = (u64)(uintptr_t)mem->get_raw_ptr();
-        st.mem_size = mem->size();
-        st.code_start = mem->code_start();
-        st.code_end = mem->code_end();
-        st.wc_base = (u64)(uintptr_t)mem->write_counts_base();
-        st.cop0 = &cpu->cop0;
-        st.mxu = &cpu->mxu;
+        // Only the tick counter is per-TB (everything else is resident).
         st.tick_delta = 0;
         u32 exit = func(&st);
-        // SLOW_MEM applied exit_arg ops (the faulting op is still pending);
-        // DONE applied the whole TB.
-        u32 applied = (exit == (u32)JIT_EXIT_SLOW_MEM) ? st.exit_arg : count;
-        memcpy(cpu->regs, st.gpr, sizeof(st.gpr));
-        cpu->hi = st.hi;
-        cpu->lo = st.lo;
-        cpu->pc = pc + applied * 4;
-        for (u32 i = 0; i < st.tick_delta; i++)
-            cpu->cop0.tick();
-        cpu->insn_count += applied;
-        executed += applied;
-        m_stats.tb_insns += applied;
         if (exit == (u32)JIT_EXIT_SLOW_MEM) {
+            // Prefix applied exit_arg ops (branch, if any, never reached).
+            u32 applied = st.exit_arg;
+            cpu->pc = pc + applied * 4;
             m_stats.slow_exits++;
             // Faulting op (MMIO/unmapped/code) via the interpreter, which
             // owns palette/GPIO/log semantics plus its own tick + count.
+            memcpy(cpu->regs, st.gpr, sizeof(st.gpr));
+            cpu->hi = st.hi;
+            cpu->lo = st.lo;
+            for (u32 i = 0; i < st.tick_delta; i++)
+                cpu->cop0.tick();
+            cpu->insn_count += applied;
+            executed += applied;
+            m_stats.tb_insns += applied;
             cpu->execute_one();
+            memcpy(st.gpr, cpu->regs, sizeof(st.gpr));
+            st.hi = cpu->hi;
+            st.lo = cpu->lo;
             executed++;
             m_stats.interp_insns++;
-        } else if (exit != (u32)JIT_EXIT_DONE) {
+        } else if (exit == (u32)JIT_EXIT_DONE) {
+            cpu->pc = pc + count * 4;
+            for (u32 i = 0; i < st.tick_delta; i++)
+                cpu->cop0.tick();
+            cpu->insn_count += count;
+            executed += count;
+            m_stats.tb_insns += count;
+        } else if (exit == (u32)JIT_EXIT_NEXT_PC) {
+            // Branch TB: st.next_pc holds taken/fallthrough target.
+            cpu->pc = st.next_pc;
+            m_stats.tb_nextpc++;
+            for (u32 i = 0; i < st.tick_delta; i++)
+                cpu->cop0.tick();
+            cpu->insn_count += count;
+            executed += count;
+            m_stats.tb_insns += count;
+        } else {
             printf("[JIT] unexpected exit=%u at PC=0x%08X — halting\n", exit, pc);
+            memcpy(cpu->regs, st.gpr, sizeof(st.gpr));
+            cpu->hi = st.hi;
+            cpu->lo = st.lo;
             cpu->running = false;
         }
         // NOTE: max_insns may overshoot by <1 TB (bounded, documented).
     }
+    // Slots are live: write back so do_vsync/main see current state.
+    memcpy(cpu->regs, st.gpr, sizeof(st.gpr));
+    cpu->hi = st.hi;
+    cpu->lo = st.lo;
 }

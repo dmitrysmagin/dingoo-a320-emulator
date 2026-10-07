@@ -1,6 +1,7 @@
 #include "jit_test.h"
 #include "emit.h"
 #include "frontend.h"
+#include "../memory.h"
 
 #include <cstdio>
 #include <cstring>
@@ -681,6 +682,244 @@ void test_mixed(ExecPage& pg) {
     if (g_verbose) printf("[jit-test] mixed done\n");
 }
 
+// Expected outcome per cpu.cpp execute() semantics.
+static bool branch_taken(const JitAluInsn& br, const u32 regs[32]) {
+    switch (br.op) {
+    case JIT_ALU_J: case JIT_ALU_JAL: return true;
+    case JIT_ALU_BEQ: case JIT_ALU_BEQL: return regs[br.rs] == regs[br.rt];
+    case JIT_ALU_BNE: case JIT_ALU_BNEL: return regs[br.rs] != regs[br.rt];
+    case JIT_ALU_BLEZ: case JIT_ALU_BLEZL: return (s32)regs[br.rs] <= 0;
+    case JIT_ALU_BGTZ: case JIT_ALU_BGTZL: return (s32)regs[br.rs] > 0;
+    case JIT_ALU_BLTZ: case JIT_ALU_BLTZAL: return (s32)regs[br.rs] < 0;
+    default: return (s32)regs[br.rs] >= 0;  // BGEZ/BGEZAL
+    }
+}
+
+static u32 branch_target(const JitAluInsn& br, u32 branch_pc) {
+    if (br.op == JIT_ALU_J || br.op == JIT_ALU_JAL)
+        return ((br.uimm & 0x03FFFFFFu) << 2) | ((branch_pc + 4) & 0xF0000000u);
+    return (u32)((s32)branch_pc + 4 + (br.imm << 2));
+}
+
+static bool branch_likely(JitAluOp op) {
+    return op == JIT_ALU_BEQL || op == JIT_ALU_BNEL ||
+           op == JIT_ALU_BLEZL || op == JIT_ALU_BGTZL;
+}
+
+static bool branch_link(JitAluOp op) {
+    return op == JIT_ALU_JAL || op == JIT_ALU_BLTZAL || op == JIT_ALU_BGEZAL;
+}
+
+static void diff_branch(ExecPage& pg, const JitTbPlan& plan, u32 branch_idx,
+                        u32 entry_pc, ExecState init, const char* tag) {
+    // Reference mirrors cpu order: cond from pre-delay regs, link, delay
+    // (unless likely-not-taken), then target selection.
+    ExecState b = init;
+    for (u32 i = 0; i < branch_idx; i++)
+        jit_apply_alu(plan.ops[i], b.gpr, b.hi, b.lo);
+    const JitAluInsn& br = plan.ops[branch_idx];
+    u32 branch_pc = entry_pc + branch_idx * 4;
+    bool taken = branch_taken(br, b.gpr);
+    u32 want_next = taken ? branch_target(br, branch_pc) : branch_pc + 8;
+    if (branch_link(br.op)) b.gpr[31] = branch_pc + 8;
+    if (!branch_likely(br.op) || taken)
+        jit_apply_alu(plan.ops[branch_idx + 1], b.gpr, b.hi, b.lo);
+    u32 want_tick = init.tick_delta + branch_idx + 1;
+
+    ExecState a = init;
+    u8* buf = (u8*)pg.p;
+    u32 len = jit_compile_branch_tb(plan, branch_idx, entry_pc, buf, pg.size);
+    CHECK(len != 0, "%s: compiled", tag);
+    if (!len)
+        return;
+#ifdef _WIN32
+    FlushInstructionCache(GetCurrentProcess(), buf, len);
+#else
+    __builtin___clear_cache((char*)buf, (char*)buf + len);
+#endif
+    TbFunc fn = (TbFunc)buf;
+    u32 exit = fn((JitState*)&a);
+    CHECK(exit == (u32)JIT_EXIT_NEXT_PC, "%s: exit=%u", tag, exit);
+    if (exit != (u32)JIT_EXIT_NEXT_PC)
+        return;
+    CHECK(a.next_pc == want_next, "%s: next emit=0x%08X want=0x%08X", tag, a.next_pc, want_next);
+    for (int r = 0; r < 32; r++)
+        CHECK(a.gpr[r] == b.gpr[r], "%s: r%d emit=0x%08X ref=0x%08X",
+              tag, r, a.gpr[r], b.gpr[r]);
+    CHECK(a.hi == b.hi && a.lo == b.lo, "%s: hilo", tag);
+    CHECK(a.tick_delta == want_tick, "%s: tick emit=%u want=%u", tag, a.tick_delta, want_tick);
+}
+
+void test_branch(ExecPage& pg) {
+    Rng rng; rng.s = 0x8BACC123u;
+    // (kind, word-builder-tag). Words built per-iteration below.
+    const JitAluOp kinds[] = {JIT_ALU_J, JIT_ALU_JAL,
+        JIT_ALU_BEQ, JIT_ALU_BNE, JIT_ALU_BLEZ, JIT_ALU_BGTZ,
+        JIT_ALU_BLTZ, JIT_ALU_BGEZ, JIT_ALU_BLTZAL, JIT_ALU_BGEZAL,
+        JIT_ALU_BEQL, JIT_ALU_BNEL, JIT_ALU_BLEZL, JIT_ALU_BGTZL};
+    auto w_j = [](u32 op26, u32 tgt26) { return (op26 << 26) | (tgt26 & 0x03FFFFFFu); };
+    auto w_br = [](u32 op26, u32 rs, u32 rt, u32 imm) {
+        return (op26 << 26) | ((rs & 0x1Fu) << 21) | ((rt & 0x1Fu) << 16) | (imm & 0xFFFFu);
+    };
+    auto w_regimm = [](u32 rtfield, u32 rs, u32 imm) {
+        return (0x01u << 26) | ((rs & 0x1Fu) << 21) | ((rtfield & 0x1Fu) << 16) | (imm & 0xFFFFu);
+    };
+    int tb = 0;
+    for (JitAluOp kind : kinds) {
+        for (int force = -1; force <= 1; force++) {  // -1 random, 0 bias not-taken, 1 bias taken
+            for (int rep = 0; rep < 4; rep++, tb++) {
+                u32 rs = rng.nzreg(), rt = rng.nzreg();
+                u32 word = 0;
+                // Bias the outcome: same index forces taken for EQ (a reg
+                // always equals itself); different indices bias BNE taken.
+                // Other kinds rely on random values (both directions appear
+                // over reps); diff_branch verifies actual outcome either way.
+                switch (kind) {
+                case JIT_ALU_J: word = w_j(0x02, rng.next() & 0x03FFFFFFu); break;
+                case JIT_ALU_JAL: word = w_j(0x03, rng.next() & 0x03FFFFFFu); break;
+                case JIT_ALU_BEQ: case JIT_ALU_BEQL:
+                    if (force > 0) rt = rs;
+                    else if (force == 0 && rt == rs) rt = (u32)(rs % 31) + 1;
+                    word = w_br(0x04, rs, rt, rng.next() & 0xFFFFu);
+                    break;
+                case JIT_ALU_BNE: case JIT_ALU_BNEL:
+                    if (force > 0 && rt == rs) rt = (u32)(rs % 31) + 1;
+                    word = w_br(0x05, rs, rt, rng.next() & 0xFFFFu);
+                    break;
+                case JIT_ALU_BLEZ: case JIT_ALU_BLEZL:
+                    word = w_br(0x06, rs, 0, rng.next() & 0xFFFFu); break;
+                case JIT_ALU_BGTZ: case JIT_ALU_BGTZL:
+                    word = w_br(0x07, rs, 0, rng.next() & 0xFFFFu); break;
+                case JIT_ALU_BLTZ: word = w_regimm(0, rs, rng.next() & 0xFFFFu); break;
+                case JIT_ALU_BGEZ: word = w_regimm(1, rs, rng.next() & 0xFFFFu); break;
+                case JIT_ALU_BLTZAL: word = w_regimm(16, rs, rng.next() & 0xFFFFu); break;
+                default: word = w_regimm(17, rs, rng.next() & 0xFFFFu); break;  // BGEZAL
+                }
+                // Prefix 0-2 ALU ops + delay op (sometimes clobbering rs/rt/ra).
+                u32 nprefix = (u32)(rng.next() % 3);
+                u32 words[8];
+                for (u32 i = 0; i < nprefix; i++)
+                    words[i] = w_special(rng.nzreg(), rng.nzreg(), rng.nzreg(), rng.next() % 32, 0x21);
+                words[nprefix] = word;
+                u32 dchoice = rng.next() % 6;
+                u32 drd = (dchoice < 2) ? rs : (dchoice < 4) ? rt : (dchoice == 4 ? 31 : rng.nzreg());
+                u32 d_op = w_special(rng.nzreg(), rng.nzreg(), drd, rng.next() % 32,
+                                     dchoice == 5 ? 0x25 : 0x21);
+                words[nprefix + 1] = d_op;
+                u32 n = nprefix + 2;
+                JitTbPlan plan = jit_decode_tb(words, n);
+                // Plan must hold prefix + branch + delay exactly.
+                if (plan.count != n)
+                    continue;  // degenerate (e.g. rd==0 NOP is fine — still counts)
+                ExecState init; memset(&init, 0, sizeof(init));
+                for (int r = 0; r < 32; r++) init.gpr[r] = rng.word();
+                init.gpr[0] = 0;
+                init.hi = rng.word(); init.lo = rng.word();
+                init.tick_delta = rng.next();
+                u32 entry_pc = 0x80A00000u + (rng.next() % 0x10000u & ~3u);
+                if ((tb & 15) == 0) entry_pc = 0xA0000000u + (rng.next() % 0x10000u & ~3u);
+                char tag[96];
+                snprintf(tag, sizeof(tag), "branch tb=%d kind=%d", tb, (int)kind);
+                diff_branch(pg, plan, nprefix, entry_pc, init, tag);
+            }
+        }
+    }
+    // Segment-edge J: branch at 0x8FFFFFFC uses (A+4) high bits like cpu.cpp.
+    {
+        u32 words[2] = {w_j(0x02, 0x123456u), w_special(1, 2, 3, 0, 0x21)};
+        JitTbPlan plan = jit_decode_tb(words, 2);
+        ExecState init; memset(&init, 0, sizeof(init));
+        init.gpr[1] = 0x11111111u; init.gpr[2] = 0x22222222u;
+        diff_branch(pg, plan, 0, 0x8FFFFFFCu, init, "branch segedge");
+    }
+    // KSEG1 JAL link + target high bits.
+    {
+        u32 words[2] = {w_j(0x03, 0x654321u), 0x00000000u};
+        JitTbPlan plan = jit_decode_tb(words, 2);
+        ExecState init; memset(&init, 0, sizeof(init));
+        diff_branch(pg, plan, 0, 0xA0A01000u, init, "branch kseg1jal");
+    }
+    if (g_verbose) printf("[jit-test] branch done\n");
+}
+
+void test_formation() {
+    // Formation against a real Memory (no CPU needed).
+    Memory mem;
+    auto put = [&](u32 vaddr, u32 w) { mem.write_u32(vaddr, w); };
+    u32 alu = w_special(2, 3, 4, 0, 0x21);  // addu r4,r2,r3
+    u32 beq = (0x04u << 26) | (2 << 21) | (3 << 16) | 0x10;
+    u32 j = (0x02u << 26) | 0x123456u;
+    u32 lw = w_mem(0x23, 1, 2, 0);
+    const u32 B = 0x80A01000u;  // above the OS-area guard (< 0x80A00000)
+    // 1. straight run (JR terminates; zero RAM would be a NOP slide).
+    for (u32 i = 0; i < 5; i++) put(B + i * 4, alu);
+    put(B + 20, 0x03E00008u);  // JR $ra
+    {
+        JitFormed f = jit_form_tb(&mem, B, 0, 0);
+        CHECK(f.n == 5 && !f.has_branch, "form straight n=%u br=%d", f.n, f.has_branch);
+    }
+    // 2. branch + delay included, trailing op excluded.
+    put(B + 8, beq);
+    put(B + 12, alu);
+    put(B + 16, alu);
+    {
+        JitFormed f = jit_form_tb(&mem, B, 0, 0);
+        CHECK(f.n == 4 && f.has_branch && f.branch_idx == 2,
+              "form branch n=%u br=%d idx=%u", f.n, f.has_branch, f.branch_idx);
+    }
+    // 3. mem delay slot -> truncate before branch.
+    put(B + 12, lw);
+    {
+        JitFormed f = jit_form_tb(&mem, B, 0, 0);
+        CHECK(f.n == 2 && !f.has_branch, "form memdelay n=%u", f.n);
+    }
+    put(B + 12, alu);
+    // 4. branch delay slot -> truncate.
+    put(B + 12, beq);
+    {
+        JitFormed f = jit_form_tb(&mem, B, 0, 0);
+        CHECK(f.n == 2 && !f.has_branch, "form brdelay n=%u", f.n);
+    }
+    put(B + 12, alu);
+    // 5. stop PC at delay slot -> truncate before branch.
+    {
+        JitFormed f = jit_form_tb(&mem, B, B + 12, 0);
+        CHECK(f.n == 2 && !f.has_branch, "form stopdelay n=%u", f.n);
+    }
+    // 6. GOT range stops formation.
+    mem.set_got_range(B + 16, 2);
+    {
+        JitFormed f = jit_form_tb(&mem, B, 0, 0);
+        CHECK(f.n == 4 && f.has_branch, "form got n=%u", f.n);
+        JitFormed g = jit_form_tb(&mem, B + 16, 0, 0);
+        CHECK(g.n == 0, "form gothead n=%u", g.n);
+    }
+    mem.set_got_range(0, 0);
+    // 7. KUSEG / OS-area PCs never form.
+    CHECK(jit_form_tb(&mem, 0x00001000u, 0, 0).n == 0, "form kuseg");
+    CHECK(jit_form_tb(&mem, 0x80000000u, 0, 0).n == 0, "form osarea");
+    // 8. J at head with valid delay.
+    put(B + 20, j);
+    put(B + 24, alu);
+    {
+        JitFormed f = jit_form_tb(&mem, B + 20, 0, 0);
+        CHECK(f.n == 2 && f.has_branch && f.branch_idx == 0, "form jhead");
+    }
+    // 9. cap at 64.
+    for (u32 i = 0; i < 70; i++) put(B + 0x100 + i * 4, alu);
+    {
+        JitFormed f = jit_form_tb(&mem, B + 0x100, 0, 0);
+        CHECK(f.n == 64 && !f.has_branch, "form cap n=%u", f.n);
+    }
+    // 10. ERET delay slot truncates (ERET never validates).
+    put(B + 12, 0x42000018u);
+    {
+        JitFormed f = jit_form_tb(&mem, B, 0, 0);
+        CHECK(f.n == 2 && !f.has_branch, "form eretdelay n=%u", f.n);
+    }
+    if (g_verbose) printf("[jit-test] formation done\n");
+}
+
 void test_stops() {
     // Decoder stop classification (no exec needed).
     struct Case { u32 word; JitStop stop; const char* name; };
@@ -798,7 +1037,11 @@ JitTestResult jit_run_phase1_tests(bool verbose) {
     test_cop(pg);
     printf("[jit-test] cop done, mixed...\n"); fflush(stdout);
     test_mixed(pg);
-    printf("[jit-test] mixed done, stops...\n"); fflush(stdout);
+    printf("[jit-test] mixed done, branch...\n"); fflush(stdout);
+    test_branch(pg);
+    printf("[jit-test] branch done, formation...\n"); fflush(stdout);
+    test_formation();
+    printf("[jit-test] formation done, stops...\n"); fflush(stdout);
     test_stops();
     // Overflow: tiny buffer must fail cleanly (return 0, no crash).
     {

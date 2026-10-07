@@ -536,3 +536,34 @@ u32 jit_compile_tb(const JitTbPlan& plan, u8* buf, u32 cap, u32 exit_code) {
     if (e.oom) return 0;
     return e.len;
 }
+
+// Phase 6 shared primitives for branch-TB assembly (emit_branch.cpp).
+void jit_emit_prolog(JitEmit& e) { emit_prolog(e); }
+void jit_emit_epilog(JitEmit& e, u32 exit_code) { emit_epilog(e, exit_code); }
+
+void jit_emit_tick_add(JitEmit& e, u32 count) {
+    if (count == 0 || count > 127)
+        { e.oom = true; return; }
+    emit_u8(e, 0x83); emit_u8(e, 0x82); emit_u32(e, JIT_OFF_TICK_DELTA);
+    emit_u8(e, (u8)count);
+}
+
+u32 emit_jcc32(JitEmit& e, u8 cc) {
+    emit_u8(e, 0x0F); emit_u8(e, cc);
+    u32 p = e.len;
+    emit_u32(e, 0);
+    return p;
+}
+
+u32 emit_jmp32(JitEmit& e) {
+    emit_u8(e, 0xE9);
+    u32 p = e.len;
+    emit_u32(e, 0);
+    return p;
+}
+
+void emit_patch32(JitEmit& e, u32 pos) { patch_rel32(e, pos); }
+
+bool jit_emit_op(JitEmit& e, const JitAluInsn& op, u32 op_idx) {
+    return emit_one(e, op, op_idx);
+}

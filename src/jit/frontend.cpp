@@ -1,4 +1,5 @@
 #include "frontend.h"
+#include "../memory.h"
 
 // Bit helpers (match cpu.cpp decode).
 static inline u32 field_op(u32 w) { return (w >> 26) & 0x3F; }
@@ -384,4 +385,73 @@ JitTbPlan jit_decode_tb(const u32* insns, u32 avail) {
     plan.stop = JIT_STOP_CAP;
     plan.stop_pc = plan.count * 4;
     return plan;
+}
+
+bool jit_op_is_branch(JitAluOp op) {
+    return op >= JIT_ALU_J && op <= JIT_ALU_BGTZL;
+}
+
+bool jit_op_is_mem(JitAluOp op) {
+    switch (op) {
+    case JIT_ALU_LB: case JIT_ALU_LH: case JIT_ALU_LW:
+    case JIT_ALU_LBU: case JIT_ALU_LHU:
+    case JIT_ALU_SB: case JIT_ALU_SH: case JIT_ALU_SW:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool jit_pc_eligible(Memory* mem, u32 pc) {
+    if ((pc & 0x80000000u) == 0)
+        return false;
+    if (pc >= 0x80000000u && pc < 0x80A00000u)
+        return false;
+    if (mem->is_got_address(pc))
+        return false;
+    return mem->is_mapped(pc);
+}
+
+JitFormed jit_form_tb(Memory* mem, u32 pc, u32 stop_pc, u32 alt_stop_pc) {
+    JitFormed f;
+    f.n = 0;
+    f.has_branch = false;
+    f.branch_idx = 0;
+    for (; f.n < JIT_TB_MAX_INSNS;) {
+        u32 pn = pc + f.n * 4;
+        // Never overshoot a stop PC: the run loop must observe it.
+        if (pn == stop_pc || (alt_stop_pc && pn == alt_stop_pc))
+            break;
+        if (!jit_pc_eligible(mem, pn))
+            break;
+        u32 w = mem->read_u32(pn);  // eligible => mapped RAM, no log spam
+        JitOpProbe pr = jit_probe_op(w);
+        if (!pr.valid)
+            break;  // control op / stop for the interpreter
+        if (!jit_op_is_branch(pr.op.op)) {
+            f.words[f.n++] = w;
+            continue;
+        }
+        // Terminal branch: needs its delay slot validated (valid,
+        // non-branch, non-mem — mem slow-exits can't express a pending
+        // branch, and nested branches mirror to the interpreter).
+        u32 dp = pn + 4;
+        if (dp == stop_pc || (alt_stop_pc && dp == alt_stop_pc))
+            break;  // delay slot is the stop: run branch on interpreter
+        if (!jit_pc_eligible(mem, dp))
+            break;
+        u32 dw = mem->read_u32(dp);
+        JitOpProbe dpr = jit_probe_op(dw);
+        if (!dpr.valid || jit_op_is_branch(dpr.op.op) || jit_op_is_mem(dpr.op.op))
+            break;  // awkward delay slot: whole branch falls back
+        if (f.n + 2 > JIT_TB_MAX_INSNS)
+            break;
+        f.words[f.n] = w;
+        f.words[f.n + 1] = dw;
+        f.has_branch = true;
+        f.branch_idx = f.n;
+        f.n += 2;
+        break;
+    }
+    return f;
 }
