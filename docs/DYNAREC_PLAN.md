@@ -210,10 +210,9 @@ struct alignas(16) CpuState {
   paced, so a slower runner takes different delay/timeout paths through
   timing-sensitive game code. Tetris `--frames 60`: identical Final PC,
   insn counts match to 18/120M (budget overshoot <1 TB, documented).
-- Known gap: JIT is ~3–6× slower per guest insn than the interpreter
-  (per-TB sync + fallback-per-branch; avg ~5 insns/TB). Speed is
-  explicitly Phase 6 (GPR pinning, chaining, bigger TBs); Phase 5 keeps
-  `--jit=off` as the reference forever.
+- Known gap at the time (closed by Phase 6 below): JIT was ~3–6× slower
+  per guest insn than the interpreter (per-TB sync + fallback-per-branch;
+  avg ~5 insns/TB). `--jit=off` stays the reference forever.
 
 ### Phase 6 — optimise (only after sweep is green)
 - GPR/host-reg pinning, constprop across TB (copy Lightrec `constprop.c` idea),
@@ -221,6 +220,34 @@ struct alignas(16) CpuState {
   profiling (Lightrec-style: first slow, then patch direct if always RAM).
 - Optional: threaded compile on loading zones (Lightrec `reaper.c` model).
 - Gate: ≥3× end-to-end fps on `7days` title CG; `--jit-stats` shows >90% TB hits.
+- Status ✅ DONE (2026-10-07): branch-as-exit TBs + persistent JIT state.
+  TBs now span one terminal static branch (`src/jit/emit_branch.cpp`:
+  delay slot inline, link before delay, condition evaluated before delay
+  and spilled on the stack, likely-not-taken skips delay, `NEXT_PC` exit;
+  JR/JALR and mem delay slots stay interpreter-side by formation rule in
+  `jit_form_tb`). `JitState` slots are resident across TBs (sync only at
+  run entry/exit and around fallbacks); cache keyed by entry vaddr
+  (J-targets embed high bits, so KSEG aliases compile separately).
+  `--jit-tests`: 36037 passed, 0 failed (incl. 170 branch TBs over all 14
+  kinds taken/not-taken + links + KSEG1 + segment edge, and formation
+  vectors against a real `Memory`).
+- Gate numbers: TB share 98.5% + ~100% hit rate on `7days` (>90% ✓);
+  end-to-end loop rate 104 vs 24 CPU-frames/s = 4.3× ✓; core throughput
+  208M vs 48M guest insn/s = 4.3× ✓. Rendered title fps 20 vs 13.2
+  (1.5×): the title is game-pacing-capped, not core-bound — content is
+  pixel-identical (7days/tetris screenshot hashes match off-vs-on).
+  Audio-mode fleet sweep (`--seconds 12`, disk driver): `compare.py`
+  15 improved / 0 regressed, notes identical, zero faults either side,
+  slot-166 fires both sides. (A `--nosound` sweep was also run: same
+  correctness, lower rendered counts — the non-blocking nosound sink lets
+  the audio task spin while AppMain waits on wall ticks, amplified by a
+  faster core. Realistic config is audio mode; the mechanism is inherent
+  to wall-clock pacing, not JIT logic.)
+- Fixes on the way: Makefile header deps were incomplete (`main.o` went
+  stale after `sizeof(Jit)` grew and smashed `Display` — full-deps rule
+  added); Phase-0 proof TB wrote through garbage RDI on Win64 (ABI-split).
+  Deferred (diminishing returns): GPR pinning, direct TB chaining,
+  threaded compile, constprop — avg ~6 insns/TB is enough for the gate.
 
 ## 5. Risks & non-goals
 
