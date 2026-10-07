@@ -249,6 +249,40 @@ struct alignas(16) CpuState {
   Deferred (diminishing returns): GPR pinning, direct TB chaining,
   threaded compile, constprop — avg ~6 insns/TB is enough for the gate.
 
+### Phase 6b — dispatch overhead (measured, 2026-10-07)
+- Method: rdtsc counters in the dispatcher (`--jit-stats` time section),
+  calibrated at startup (~50 ms vs wall clock, 3.29 GHz here). Each region
+  number folds in ~2 rdtsc reads (~7–10 ns systematic upward bias —
+  visible in per-TB-run reading *below* one round-trip on tiny TBs);
+  ratios and totals are solid, single-digit-ns absolutes are approximate.
+- Findings (loop-time split — compile is ms per whole run, negligible):
+
+  | region | tetris `--frames 60` | 7days `--seconds 15` |
+  |---|---|---|
+  | TB exec (sync + call + tick flush) | 476 ms, 35% — 13.6 ns/run, 3.1 insns | 5781 ms, 55% — 23.0 ns/run, 11.3 insns |
+  | Dispatch (gen check + cache lookup) | 410 ms, 30% — ~9 ns/iter | 2974 ms, 28% |
+  | Fallback (syncs + `execute_one`) | 474→363 ms, 35→30% — 41→31 ns/iter | 1805 ms, 17% — 44 ns/iter |
+
+  ~45% of loop time executes no guest code — that, not TB bodies (~2 ns
+  per guest insn), is the remaining headroom.
+- Two metric artifacts caught on the way: "299 µs per compile" divided
+  total compile-region time (incl. millions of instant-reject calls at
+  JR/syscall heads) by successful compiles only — real compile is
+  ~2 µs, split form ~13% / emit ~63% / install ~20% (a standalone
+  microbenchmark cleared `FlushInstructionCache`: ~11 ns, innocent).
+  Fixed by counting attempts honestly plus a **negative cache** (stable
+  rejects cached as null entries; JR-head revisits now cost one lookup —
+  11.5M `neg_hits` on tetris; fallback cost fell 41→31 ns/iter as proof).
+- Ranked follow-ups (gain × feasibility): **(1) direct-mapped TB cache**
+  (~15–20% loop, easy — replaces `unordered_map` find); **(2) TB chaining**
+  (~20%, moderate — `NEXT_PC` exits jump straight to the next TB, flush-all
+  keeps invalidation tractable); **(3) tick-flush fast path** (closed form
+  when `wired==0` and no MTC0 in TB — A/B test first, loop may dominate TB
+  time); **(4) fallback diet** (~5–8% — skip redundant sync pairs, lazy
+  `g_cpu` sync, no trace on JIT path). Explicitly rejected: GPR pinning
+  (poor ROI while dispatch+fallback dominate), constprop, threaded
+  compile (compile measures zero).
+
 ## 5. Risks & non-goals
 
 - **Self-modifying code**: games don't SMC the RAWD image (write-protect

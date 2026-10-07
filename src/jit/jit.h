@@ -2,8 +2,9 @@
 #define JIT_H
 
 #include <cstddef>
-#include <unordered_map>
 #include <vector>
+
+#include "tbcache.h"
 
 // Phase 0 JIT harness: lifecycle + dispatcher skeleton + stats.
 //
@@ -64,14 +65,27 @@ struct CPU;  // cpu.h (jit.cpp includes it; header stays light)
 struct JitStats {
     u64 tb_compiled = 0;  // TBs compiled into the exec pool
     u64 tb_hits = 0;      // cache hits (TB executed)
+    u64 tb_neg_hits = 0;  // negative-cache hits (known-uncompilable pc)
     u64 tb_misses = 0;    // cache misses that compiled OK
-    u64 tb_uncompilable = 0;  // eligible PCs whose TB failed to compile
+    u64 tb_uncompilable = 0;  // distinct PCs cached as uncompilable (negative)
+    u64 compile_calls = 0;  // compile_tb attempts (success + stable rejects)
     u64 tb_branches = 0;  // compiled TBs ending in a static branch
     u64 tb_nextpc = 0;    // NEXT_PC exits taken (branches via TBs)
     u64 tb_insns = 0;     // guest insns executed via TBs
     u64 interp_insns = 0;  // guest insns executed via interpreter fallback
     u64 slow_exits = 0;   // TB slow-mem exits (faulting op ran on interpreter)
     u64 flushes = 0;      // cache flushes (code-gen change or LRU cap)
+    // Perf counters below are raw TSC cycles (converted to ns for display
+    // using the calibrated m_tsc_hz). Read cost ~3x rdtsc per loop iter.
+    u64 tb_cycles = 0;       // TB region: state sync + call + tick flush + pc
+    u64 dispatch_cycles = 0;  // per-iter dispatch: gen check + cache lookup
+    u64 fallback_cycles = 0;  // fallback region: syncs + CPU::execute_one
+    u64 compile_cycles = 0;   // inside compile_tb (formation+decode+emit)
+    u64 form_cycles = 0;      // ...of which: formation (reads + decode)
+    u64 emit_cycles = 0;      // ...of which: emit into temp buffer
+    u64 install_cycles = 0;   // ...of which: pool copy + icache flush + insert
+    u64 fb_iters = 0;         // fallback iterations (for per-iter averages)
+    u64 tb_evictions = 0;   // cache inserts evicting a different live entry
 };
 
 class Jit {
@@ -135,33 +149,33 @@ private:
     u64 m_proof_runs;
     u32 m_last_exit;
 
-    // Phase 5 TB cache: guest phys entry pc -> compiled TB. Flat mapping
-    // means phys == strip(vaddr); KSEG0/KSEG1 aliases share entries.
-    struct TbEntry {
-        TbFunc func;
-        u32 count;  // guest insns (pc advances count*4 on DONE)
-    };
+    // Phase 6b direct-mapped cache (tbcache.h): entry vaddr -> TB slot.
+    // J-targets embed high bits, so KSEG aliases hash separately (correct).
+    JitTbCache m_cache;
     struct Pool {
         void* p;
         u32 size;
         u32 used;
     };
-    std::unordered_map<u32, TbEntry> m_cache;
     std::vector<Pool> m_pools;
     u32 m_cached_gen = 0;  // g_code_gen at last flush
     bool m_gen_valid = false;
     JitStats m_stats;
     JitState m_st;  // Phase 6 persistent slots (resident across TBs)
+    u64 m_tsc_hz = 0;  // TSC frequency from init calibration (0 = unknown)
+    u64 m_tsc_cost = 0;  // min rdtsc round-trip (timer overhead per region)
 
     static constexpr u32 kPoolSize = 1 << 20;  // 1 MB exec pools
-    static constexpr u32 kMaxTbs = 4096;       // flush-all LRU cap
 
     void flush_locked();  // drop cache + pools, resync generation
     u8* pool_alloc(u32 len);
     // Try to compile a TB at pc (stops at stop PCs / ineligible pcs).
-    // Returns true with func/count on success.
+    // Returns true with func/count on success. stable=false means the
+    // failure is transient (exec OOM: retry later, don't negative-cache).
     bool compile_tb(CPU* cpu, u32 pc, u32 stop_pc, u32 alt_stop_pc,
-                    TbFunc& func, u32& count);
+                    TbFunc& func, u32& count, bool& stable);
+    // Overflow-safe cycles->ns using m_tsc_hz (0 hz => 0).
+    u64 to_ns(u64 cycles) const;
 };
 
 #endif // JIT_H

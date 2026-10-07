@@ -13,8 +13,53 @@
 #include <windows.h>
 #else
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 #endif
+
+namespace {
+
+// TSC read (~20-30 cycles, no syscall). x86-64 only — like the whole backend.
+// On exotic targets without a TSC, wall_ns() doubles as the tick source
+// and calibration below derives hz = 1e9, keeping units consistent.
+#if defined(_MSC_VER)
+#include <intrin.h>
+static inline u64 tsc_now() { return __rdtsc(); }
+#elif defined(__i386__) || defined(__x86_64__)
+static inline u64 tsc_now() { return __builtin_ia32_rdtsc(); }
+#else
+static inline u64 tsc_now();
+#endif
+
+// Monotonic wall clock in ns (for TSC calibration only).
+static u64 wall_ns() {
+#ifdef _WIN32
+    static LARGE_INTEGER freq;  // static storage: zero-initialized
+    LARGE_INTEGER now;
+    if (!freq.QuadPart)
+        QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    return (u64)(now.QuadPart * 1000000000ULL / (u64)freq.QuadPart);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (u64)ts.tv_sec * 1000000000ULL + (u64)ts.tv_nsec;
+#endif
+}
+
+static void sleep_ms(u32 ms) {
+#ifdef _WIN32
+    Sleep((DWORD)ms);
+#else
+    usleep((useconds_t)ms * 1000u);
+#endif
+}
+
+#if !defined(_MSC_VER) && !defined(__i386__) && !defined(__x86_64__)
+static inline u64 tsc_now() { return wall_ns(); }
+#endif
+
+}  // namespace
 
 // Hand-encoded x86-64 proof TB. Disassembly (Win64 shown; SysV uses RDI):
 //
@@ -125,7 +170,42 @@ bool Jit::init() {
     m_ready = true;
     printf("[JIT] Phase-0 harness ready: exec page %u bytes, proof TB %u bytes\n",
            m_page_size, kProofSize);
+    // Calibrate the TSC against the wall clock for perf counters (~50 ms,
+    // once). A zero delta falls back to a nominal 3 GHz (wrong scale, but
+    // ratios between regions stay exact).
+    {
+        u64 t0 = tsc_now();
+        u64 w0 = wall_ns();
+        sleep_ms(50);
+        u64 t1 = tsc_now();
+        u64 w1 = wall_ns();
+        if (w1 > w0 && t1 > t0)
+            m_tsc_hz = (t1 - t0) * 1000000000ULL / (w1 - w0);
+        else
+            m_tsc_hz = 3000000000ULL;
+        // Measure one rdtsc round-trip (min of 10k) so per-region numbers
+        // below can be read net of timer overhead (each region spans 2 reads).
+        u64 best = (u64)-1;
+        for (int i = 0; i < 10000; i++) {
+            u64 a = tsc_now();
+            u64 b = tsc_now();
+            if (b - a < best)
+                best = b - a;
+        }
+        m_tsc_cost = best;
+        printf("[JIT] TSC %.2f GHz, rdtsc round-trip ~%lluns\n",
+               (double)m_tsc_hz / 1e9,
+               (unsigned long long)to_ns(m_tsc_cost));
+    }
     return true;
+}
+
+u64 Jit::to_ns(u64 cycles) const {
+    if (!m_tsc_hz)
+        return 0;
+    // Overflow-safe: split seconds and remainder (totals can exceed 2^64/1e9).
+    return (cycles / m_tsc_hz) * 1000000000ULL +
+           (cycles % m_tsc_hz) * 1000000000ULL / m_tsc_hz;
 }
 
 void Jit::shutdown() {
@@ -163,18 +243,59 @@ void Jit::print_stats() const {
     printf("[JIT] ready=%d proof_runs=%llu last_exit=%u\n",
            m_ready ? 1 : 0, (unsigned long long)m_proof_runs, m_last_exit);
     u64 total_insns = m_stats.tb_insns + m_stats.interp_insns;
-    printf("[JIT] tb_compiled=%llu hits=%llu misses-compiled=%llu uncompilable=%llu\n",
+    printf("[JIT] tb_compiled=%llu hits=%llu neg_hits=%llu uncompilable=%llu calls=%llu evict=%llu\n",
            (unsigned long long)m_stats.tb_compiled, (unsigned long long)m_stats.tb_hits,
-           (unsigned long long)m_stats.tb_misses, (unsigned long long)m_stats.tb_uncompilable);
+           (unsigned long long)m_stats.tb_neg_hits, (unsigned long long)m_stats.tb_uncompilable,
+           (unsigned long long)m_stats.compile_calls, (unsigned long long)m_stats.tb_evictions);
     printf("[JIT] branch_tbs=%llu nextpc_exits=%llu\n",
            (unsigned long long)m_stats.tb_branches, (unsigned long long)m_stats.tb_nextpc);
-    printf("[JIT] tb_insns=%llu interp_insns=%llu slow_exits=%llu flushes=%llu cache=%u pools=%u\n",
+    printf("[JIT] tb_insns=%llu interp_insns=%llu slow_exits=%llu flushes=%llu cache=%u/%u pools=%u\n",
            (unsigned long long)m_stats.tb_insns, (unsigned long long)m_stats.interp_insns,
            (unsigned long long)m_stats.slow_exits, (unsigned long long)m_stats.flushes,
-           (u32)m_cache.size(), (u32)m_pools.size());
+           m_cache.used(), m_cache.capacity(), (u32)m_pools.size());
     if (total_insns)
         printf("[JIT] TB share: %.1f%% of guest insns\n",
                100.0 * (double)m_stats.tb_insns / (double)total_insns);
+    // Perf counters (TSC cycles -> ns). loop_total excludes compile (shown
+    // separately); per-iter averages divide by the matching iteration
+    // counts (TB runs = hits + miss-compiles, each followed by one run).
+    u64 tb_runs = m_stats.tb_hits + m_stats.tb_misses;
+    u64 loop_total = m_stats.tb_cycles + m_stats.dispatch_cycles +
+                     m_stats.fallback_cycles;
+    printf("[JIT] time: tb=%llu.%03llums dispatch=%llu.%03llums fallback=%llu.%03llums compile=%llu.%03llums\n",
+           (unsigned long long)(to_ns(m_stats.tb_cycles) / 1000000ULL),
+           (unsigned long long)(to_ns(m_stats.tb_cycles) % 1000000ULL / 1000ULL),
+           (unsigned long long)(to_ns(m_stats.dispatch_cycles) / 1000000ULL),
+           (unsigned long long)(to_ns(m_stats.dispatch_cycles) % 1000000ULL / 1000ULL),
+           (unsigned long long)(to_ns(m_stats.fallback_cycles) / 1000000ULL),
+           (unsigned long long)(to_ns(m_stats.fallback_cycles) % 1000000ULL / 1000ULL),
+           (unsigned long long)(to_ns(m_stats.compile_cycles) / 1000000ULL),
+           (unsigned long long)(to_ns(m_stats.compile_cycles) % 1000000ULL / 1000ULL));
+    if (tb_runs)
+        printf("[JIT] per TB run: %.1fns exec, %.1f guest insns\n",
+               (double)to_ns(m_stats.tb_cycles) / (double)tb_runs,
+               (double)m_stats.tb_insns / (double)tb_runs);
+    if (m_stats.fb_iters)
+        printf("[JIT] per fallback: %.1fns (%llu iters)\n",
+               (double)to_ns(m_stats.fallback_cycles) / (double)m_stats.fb_iters,
+               (unsigned long long)m_stats.fb_iters);
+    if (m_stats.compile_calls)
+        printf("[JIT] per compile attempt: %.1fns (%llu calls, %llu ok)\n",
+               (double)to_ns(m_stats.compile_cycles) / (double)m_stats.compile_calls,
+               (unsigned long long)m_stats.compile_calls,
+               (unsigned long long)m_stats.tb_compiled);
+    if (m_stats.tb_compiled && m_stats.compile_cycles)
+        printf("[JIT] compile split: form %.1f%% / emit %.1f%% / install %.1f%%\n",
+               100.0 * (double)m_stats.form_cycles / (double)m_stats.compile_cycles,
+               100.0 * (double)m_stats.emit_cycles / (double)m_stats.compile_cycles,
+               100.0 * (double)m_stats.install_cycles / (double)m_stats.compile_cycles);
+    printf("[JIT] timer overhead: rdtsc round-trip ~%lluns (2 reads per region)\n",
+           (unsigned long long)to_ns(m_tsc_cost));
+    if (loop_total)
+        printf("[JIT] loop time: TB %.1f%% / dispatch %.1f%% / fallback %.1f%%\n",
+               100.0 * (double)m_stats.tb_cycles / (double)loop_total,
+               100.0 * (double)m_stats.dispatch_cycles / (double)loop_total,
+               100.0 * (double)m_stats.fallback_cycles / (double)loop_total);
 }
 
 void Jit::flush_locked() {
@@ -204,9 +325,15 @@ u8* Jit::pool_alloc(u32 len) {
 }
 
 bool Jit::compile_tb(CPU* cpu, u32 pc, u32 stop_pc, u32 alt_stop_pc,
-                     TbFunc& func, u32& count) {
+                     TbFunc& func, u32& count, bool& stable) {
+    // All failure modes below are deterministic in (pc, RAM bytes, stop
+    // set): RAM is covered by the generation counter and stops are constant
+    // per phase, so the dispatcher may negative-cache them. Only exec-OOM
+    // is transient (stable=false: retry later).
+    stable = true;
     // Phase 6 formation: linear run + optional terminal branch (with
     // validated delay slot). Shared with discharge tests (frontend.cpp).
+    u64 t_f0 = tsc_now();
     JitFormed formed = jit_form_tb(cpu->mem, pc, stop_pc, alt_stop_pc);
     if (formed.n == 0)
         return false;
@@ -215,6 +342,7 @@ bool Jit::compile_tb(CPU* cpu, u32 pc, u32 stop_pc, u32 alt_stop_pc,
     // 1:1 (branches validate by construction). Bail if it ever doesn't.
     if (plan.count != formed.n)
         return false;
+    u64 t_f1 = tsc_now();
     // Emit into a stack buffer first so a failed compile wastes no pool.
     u8 tmp[16 << 10];
     u32 len = 0;
@@ -231,28 +359,36 @@ bool Jit::compile_tb(CPU* cpu, u32 pc, u32 stop_pc, u32 alt_stop_pc,
     } else {
         len = jit_compile_tb(plan, tmp, (u32)sizeof(tmp), (u32)JIT_EXIT_DONE);
     }
+    u64 t_f2 = tsc_now();
     if (!len) {
-        m_stats.tb_uncompilable++;
+        m_stats.form_cycles += t_f1 - t_f0;
+        m_stats.emit_cycles += t_f2 - t_f1;
         return false;
     }
-    if (m_cache.size() >= kMaxTbs)
-        flush_locked();  // LRU cap: simple flush-all (rare, always correct)
+    // Table is self-bounding (collisions evict); no LRU flush needed here.
+    // gen/phase flushes still clear everything via flush_locked().
     u8* dst = pool_alloc(len);
-    if (!dst)
-        return false;  // exec OOM: interpreter covers (never fatal)
+    if (!dst) {
+        stable = false;  // transient: memory pressure, retry later
+        return false;
+    }
     memcpy(dst, tmp, len);
 #ifdef _WIN32
     FlushInstructionCache(GetCurrentProcess(), dst, len);
 #else
     __builtin___clear_cache((char*)dst, (char*)dst + len);
 #endif
-    // Phase 6: key by entry vaddr (not phys). J-targets embed
-    // (pc & 0xF0000000), so KSEG0/KSEG1 aliases need separate TBs.
-    m_cache[pc] = TbEntry{(TbFunc)dst, equiv};
+    // Key by entry vaddr (not phys). J-targets embed (pc & 0xF0000000),
+    // so KSEG0/KSEG1 aliases compile separately (always correct).
+    if (m_cache.insert(pc, (TbFunc)dst, equiv))
+        m_stats.tb_evictions++;
     m_stats.tb_compiled++;
     m_stats.tb_misses++;
     if (formed.has_branch)
         m_stats.tb_branches++;
+    m_stats.form_cycles += t_f1 - t_f0;
+    m_stats.emit_cycles += t_f2 - t_f1;
+    m_stats.install_cycles += tsc_now() - t_f2;
     func = (TbFunc)dst;
     count = equiv;
     return true;
@@ -284,6 +420,7 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
     while (cpu->running && cpu->pc != stop_pc && executed < max_insns) {
         if (alt_stop_pc && cpu->pc == alt_stop_pc)
             break;
+        u64 t_top = tsc_now();
         // Code remap (dl_load/dl_free/dl_res map+close) drops the cache.
         // Checked per iteration: remaps happen inside fallback syscalls.
         if (!m_gen_valid || g_code_gen != m_cached_gen)
@@ -291,14 +428,33 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
         u32 pc = cpu->pc;
         TbFunc func = nullptr;
         u32 count = 0;
+        u64 cc = 0;  // compile cycles this iteration (excluded from dispatch)
         if (jit_pc_eligible(mem, pc)) {
-            auto it = m_cache.find(pc);  // vaddr-keyed (J-target aliasing)
-            if (it != m_cache.end()) {
-                func = it->second.func;
-                count = it->second.count;
-                m_stats.tb_hits++;
-            } else if (!compile_tb(cpu, pc, stop_pc, alt_stop_pc, func, count)) {
-                func = nullptr;
+            if (m_cache.find(pc, func, count)) {  // direct-mapped, ~9ns
+                if (func)
+                    m_stats.tb_hits++;
+                else
+                    m_stats.tb_neg_hits++;
+            } else {
+                // Cache miss: attempt a compile. Stable failures (JR head,
+                // stops, awkward delay slots) are negative-cached as a null
+                // entry so repeat visits cost one lookup, like a hit. Valid
+                // until the next gen/phase flush, same as positive entries
+                // (formation is deterministic per pc+RAM+stops).
+                u64 t_c0 = tsc_now();
+                bool stable = true;
+                bool ok = compile_tb(cpu, pc, stop_pc, alt_stop_pc, func, count, stable);
+                cc = tsc_now() - t_c0;
+                m_stats.compile_cycles += cc;
+                m_stats.compile_calls++;
+                if (!ok) {
+                    func = nullptr;
+                    if (stable) {
+                        if (m_cache.insert(pc, nullptr, 0))
+                            m_stats.tb_evictions++;
+                        m_stats.tb_uncompilable++;
+                    }
+                }
             }
         }
         if (!func) {
@@ -313,8 +469,18 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
             st.lo = cpu->lo;
             executed++;
             m_stats.interp_insns++;
+            m_stats.fb_iters++;
+            // cc is nonzero only when a compile was attempted and failed;
+            // that time is reported under compile, not fallback. Guarded
+            // against (theoretical) TSC non-monotonicity across cores.
+            u64 total = tsc_now() - t_top;
+            if (total >= cc)
+                m_stats.fallback_cycles += total - cc;
             continue;
         }
+        u64 t_pre = tsc_now();
+        if (t_pre >= t_top + cc)
+            m_stats.dispatch_cycles += (t_pre - t_top) - cc;
         // Only the tick counter is per-TB (everything else is resident).
         st.tick_delta = 0;
         u32 exit = func(&st);
@@ -333,12 +499,16 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
             cpu->insn_count += applied;
             executed += applied;
             m_stats.tb_insns += applied;
+            m_stats.tb_cycles += tsc_now() - t_pre;  // prefix + exit bookkeeping
+            u64 t_fb = tsc_now();
             cpu->execute_one();
             memcpy(st.gpr, cpu->regs, sizeof(st.gpr));
             st.hi = cpu->hi;
             st.lo = cpu->lo;
             executed++;
             m_stats.interp_insns++;
+            m_stats.fb_iters++;
+            m_stats.fallback_cycles += tsc_now() - t_fb;
         } else if (exit == (u32)JIT_EXIT_DONE) {
             cpu->pc = pc + count * 4;
             for (u32 i = 0; i < st.tick_delta; i++)
@@ -346,6 +516,7 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
             cpu->insn_count += count;
             executed += count;
             m_stats.tb_insns += count;
+            m_stats.tb_cycles += tsc_now() - t_pre;
         } else if (exit == (u32)JIT_EXIT_NEXT_PC) {
             // Branch TB: st.next_pc holds taken/fallthrough target.
             cpu->pc = st.next_pc;
@@ -355,6 +526,7 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
             cpu->insn_count += count;
             executed += count;
             m_stats.tb_insns += count;
+            m_stats.tb_cycles += tsc_now() - t_pre;
         } else {
             printf("[JIT] unexpected exit=%u at PC=0x%08X — halting\n", exit, pc);
             memcpy(cpu->regs, st.gpr, sizeof(st.gpr));
