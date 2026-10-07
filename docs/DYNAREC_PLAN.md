@@ -176,9 +176,16 @@ struct alignas(16) CpuState {
   `MXU_EN` dispatch is runtime state the frontend cannot see statically.
 
 ### Phase 5 — GOT/syscall/task exits + TB cache mgmt (productionise)
-- TB end on GOT address: flush state, exit `EXIT_GOT idx`; dispatcher runs
-  existing `Syscalls::dispatch()` then resumes at `ra` or `g_cpu_pc`
-  (task switch) — reuses `cpu.cpp:687-706` logic verbatim in dispatcher.
+- **Planned end state (Phase 6c):** TB ends on GOT with emitted **`CALL`**
+  into HLE shim (see §Phase 6c), not interpreter round-trip.
+- **Current (2026-10-07):** GOT PCs are TB stop boundaries; dispatcher falls
+  back to `CPU::execute_one_jit()` which runs interpreter semantics including
+  post-delay-slot `is_got_address` → `Syscalls::dispatch()` → `ra` or
+  `g_cpu_pc` (task switch) — same outcome as `cpu.cpp:687-706`, extra hops.
+- Original sketch: flush state, exit `EXIT_GOT idx`; dispatcher runs
+  `Syscalls::dispatch()` then resumes at `ra` or `g_cpu_pc` — still valid
+  as the **dispatcher-side** contract if emit uses `CALL` + `JIT_EXIT_DONE`
+  instead of a separate exit kind.
 - `SYSCALL/BREAK` → `raise_exception` exit (halts, as now).
   `call_guest_function` (`WM_CREATE/WM_TIMER/WM_KEY`, timers): invalidate or
   bypass TB for the callback range — simplest: flush TBs overlapping the
@@ -216,7 +223,8 @@ struct alignas(16) CpuState {
 
 ### Phase 6 — optimise (only after sweep is green)
 - GPR/host-reg pinning, constprop across TB (copy Lightrec `constprop.c` idea),
-  `Count`-tick batching already done, branch-chain patching, RAM-vs-MMIO
+  `Count`-tick batching already done, branch-chain patching, **HLE/GOT direct
+  emit** (§Phase 6c), RAM-vs-MMIO
   profiling (Lightrec-style: first slow, then patch direct if always RAM).
 - Optional: threaded compile on loading zones (Lightrec `reaper.c` model).
 - Gate: ≥3× end-to-end fps on `7days` title CG; `--jit-stats` shows >90% TB hits.
@@ -256,6 +264,8 @@ struct alignas(16) CpuState {
   inline chain on `NEXT_PC` when the target is cached (skips a dispatch loop).
   In-pool x86 miss-stub (`jmp rel32`) deferred: separate VirtualAllocs can
   exceed x86 rel32 span on Win64; use epilog + C-side resolve for now.
+  **Next ranked win:** Phase 6c HLE/GOT direct emit (§Phase 6c) — avoid
+  interpreter → trampoline for libgot; emit `call` from TB instead.
   Deferred: GPR pinning / constprop. The bottleneck: dispatch lookup
   (~9ns/iter, 28% loop), TB sync (35%), fallbacks (30%). All measurements
   are approximate (rdtsc overhead folded); ratios are the reliable data.
@@ -293,6 +303,128 @@ struct alignas(16) CpuState {
   `g_cpu` sync, no trace on JIT path). Explicitly rejected: GPR pinning
   (poor ROI while dispatch+fallback dominate), constprop, threaded
   compile (compile measures zero).
+
+### Phase 6c — HLE / GOT fast path (planned, 2026-10-07)
+
+**Problem.** Many OS calls still follow:
+
+`JIT TB → exit/fallback → interpreter execute_one(_jit) → GOT check →
+Syscalls::dispatch() → resume`.
+
+Each hop pays dispatcher sync, lookup, and (on the interpreter path) extra
+`g_cpu_*` work. The HLE handler bodies (`fsys_*`, semaphores, waveout, …)
+are usually cheap; **entry** dominates. This is not a “TLB → host” problem —
+we have flat KSEG mapping and no walkable guest TLB. Acceleration is
+**recognized guest PC / GOT slot → host code** with a minimal ABI.
+
+**Target shape** (same semantics as `cpu.cpp:612-706`):
+
+```text
+Guest TB ──► [delay slot compiled in JIT, if any]
+         ──► call hle_gateway(st, idx)   // or call top-N handler directly
+         ──► v0 / pc updated in JitState
+         ──► return JIT_EXIT_DONE @ ra (or JIT_EXIT_TASK → g_cpu_pc)
+Dispatcher ──► find TB(ra) ──► optional TB chain ──► …
+```
+
+Interpreter remains for **dynamic JR/JALR**, unmapped PCs, RI traps, and
+handlers that must escalate (MMIO, code remap, full COP0 side effects).
+
+#### Strategy 1 — Compile GOT sites as TB endings (highest ROI)
+
+- **When:** `is_got_address(pc)` at TB formation time (stable libgot stub).
+- **Emit:** After prolog + delay slot (branch-TB rules: link, likely-nullify,
+  condition order = interpreter), **`CALL` thin `extern "C"` shim** with
+  `JitState*` (Win64 `RCX` / SysV `RDI`) and **slot index** (imm or
+  `st.exit_arg`), not `JIT_EXIT_NEXT_PC` + fallback.
+- **Shim:** Reuse `Syscalls::dispatch()` logic: read args from `st.gpr[]`,
+  write `v0`, set `pc = ra` or task-switch `pc = g_cpu_pc`, return exit code.
+- **Formation:** Stop TB at GOT like today; plan op **`JIT_EXIT_GOT`** with
+  **imm = dispatch index** instead of “uncompilable → interpreter”.
+
+#### Strategy 2 — Gateway vs direct `call`
+
+| Style | Emit | Use for |
+|---|---|---|
+| **Gateway** | `call jit_got_dispatch(st, idx)` | Long tail of GOT slots; one ABI; stats |
+| **Direct** | `call fsys_*_host` (fixed at compile/link) | Top N from histogram (`GetTickCount`, `OSSem*`, `waveout_*`, `OSTime*`, …) |
+
+Index → function table at init (same data as today’s dispatch table). On x64,
+**`call rel32`** or **`mov rax, imm64; call rax`** from the TB *is* the
+trampoline; a separate stub page is optional (W^X sharing), not required.
+
+#### Strategy 3 — JR/JALR to HLE (tiered, lower ROI)
+
+- **Static target** at compile time → chain or GOT TB as above.
+- **Known resolver sequences** (load got → jr) → extend formation when target
+  reg is provably a stub PC (hard; game-specific).
+- **Dynamic JR** → keep fallback; optional lighter `execute_one_got_only`
+  is a fallback-only optimization — prefer Strategy 1 so lib calls never
+  enter the interpreter.
+
+#### Strategy 4 — SYSCALL / BREAK
+
+Same machinery as GOT: dedicated JIT exit → **`call syscall_dispatch(st, code)`**
+→ set `pc` per `cpu.cpp` → `JIT_EXIT_*`. No interpreter unless opcode unknown
+or handler escalates.
+
+#### Strategy 5 — HLE TB templates
+
+GOT slots share shape (only index differs): emit **template bytes** with
+patchable imm32 (slot id) or patchable call target — same idea as 16-byte
+chain sites. Per-PC copy in the exec pool, or one TB with index in
+`st.exit_arg` via preceding store.
+
+#### Strategy 6 — Stay on JIT after HLE return
+
+After host returns: **`pc = ra`**, GPR in `st`, **`cpu_gpr_live = true`**.
+Dispatcher should cache-lookup `ra` and run the next TB. Optional: if fallthrough
+TB at `ra` is known when compiling the GOT TB, **patch outgoing chain** from
+HLE epilog (reuse Phase 6c chaining) for **GOT → caller TB** without a full
+dispatch trip.
+
+#### Strategy 7 — Fast HLE state contract
+
+Document **`HleContext`** subset for fast handlers:
+
+- **In:** `gpr[]`, `pc`, `ra`, argument regs as needed.
+- **Out:** `v0`, `pc`, optional **task_switched** → reload from `g_cpu_pc`.
+- **Not on fast path:** full `CPU` mirror, trace, MXU, unless handler declares
+  slow path; COP0 **`tick_delta` flushed** before call (same as TB exit).
+- Handlers that touch MMIO / palette / `g_code_gen` → **escalate** (slow exit +
+  one interpreter insn or full sync).
+
+#### Strategy 8 — Rollout order
+
+1. Histogram **GOT index** per title (`--jit-stats` / existing dispatch logs).
+2. **All fixed-PC GOT heads** compiled with Strategy 1 (largest cut to fallback).
+3. **Direct `call`** for top 5–10 indices (Strategy 2).
+4. **Post-HLE TB chain** at `ra` (Strategy 6 + existing `patch_outgoing_*`).
+5. SYSCALL if title uses it (Strategy 4).
+6. JR specialization only where formation proves target (Strategy 3).
+
+#### Explicit non-goals
+
+- **TLB-filled host pointers** — wrong model for this emulator.
+- **Inlining large HLE** (filesystem, audio mix) into TB bodies — stay **`call C`**.
+- **Skipping delay-slot / task-switch order** — must match interpreter bit-exactly.
+- **Direct calls without slow escalator** — `g_code_gen` / dl_load still flush-all.
+
+#### Expected impact (order of magnitude)
+
+Title-dependent. For GOT-heavy apps (e.g. 7days), removing interpreter hop
+per lib call saves **tens of ns × call count** and shrinks the **fallback**
+region in `--jit-stats` even when core TB throughput is already ~470M+ insn/s.
+Combine with post-HLE chaining to cut **dispatch** as well.
+
+#### Files / hooks (when implemented)
+
+- `frontend.cpp` — GOT-eligible TB stop, `JIT_EXIT_GOT` in plan.
+- `emit_*.cpp` — epilog variant: tick flush + `CALL` + `JIT_EXIT_DONE`.
+- `jit/helpers.cpp` (planned in §6) — `jit_got_dispatch`, optional per-handler
+  shims, shared with `syscalls.cpp` dispatch table.
+- `jit.cpp` — handle `JIT_EXIT_GOT` / `JIT_EXIT_TASK` like `NEXT_PC` inline
+  chain where safe.
 
 ## 5. Risks & non-goals
 
@@ -333,4 +465,6 @@ obj/jit_*.o`; link `asmjit::asmjit`. No new runtime deps.
 4. Phase 3 mem fast path (second speedup, needs care with write-protect).
 5. Phase 4 COP/MXU as calls (unlock audio + 7days).
 6. Phase 5 GOT/task/cache (full-game sweep).
+7. Phase 6c HLE/GOT fast path — compile GOT endings, gateway + hot direct
+   `call`, post-HLE TB chain (§Phase 6c).
 
