@@ -612,37 +612,44 @@ void CPU::print_trace() {
     }
 }
 
-void CPU::execute_one() {
+namespace {
+
+void sync_gcpu_full(const u32 r[32], u32 pc_, u32 hi_, u32 lo_) {
+    memcpy(g_cpu_regs, r, 32 * sizeof(u32));
+    g_cpu_pc = pc_;
+    g_cpu_hi = hi_;
+    g_cpu_lo = lo_;
+}
+
+}  // namespace
+
+void CPU::execute_one_impl(bool jit_path) {
     u32 insn = fetch();
-    trace_add(pc, insn);
+    if (!jit_path)
+        trace_add(pc, insn);
 
     u32 next_pc = pc + 4;
     pc = next_pc;
 
-    // Sync to global for syscall access
-    memcpy(g_cpu_regs, regs, sizeof(regs));
-    g_cpu_pc = pc;
-    g_cpu_hi = hi;
-    g_cpu_lo = lo;
+    if (jit_path)
+        g_cpu_pc = pc;
+    else
+        sync_gcpu_full(regs, pc, hi, lo);
 
     execute(insn);
 
-    // Likely-branch not taken: skip the delay-slot instruction entirely.
-    // pc is still at next_pc (branch not taken), so advance past the delay slot.
     if (nullify_delay) {
         nullify_delay = false;
         pc = next_pc + 4;
-        memcpy(g_cpu_regs, regs, sizeof(regs));
-        g_cpu_pc = pc;
-        g_cpu_hi = hi;
-        g_cpu_lo = lo;
+        if (!jit_path)
+            sync_gcpu_full(regs, pc, hi, lo);
+        else
+            g_cpu_pc = pc;
         cop0.tick();
         insn_count++;
         return;
     }
 
-    // Detect JR/JALR to invalid address immediately.
-    // pc==0 used to be allowed so the CPU walked NOPs until 0x4000; halt now.
     if ((pc & 0x80000000) == 0 && (pc == 0 || pc >= 0x4000)) {
         printf("[KUSEG] Immediate: pc=0x%08X from insn=0x%08X at 0x%08X\n",
                pc, insn, next_pc - 4);
@@ -651,12 +658,9 @@ void CPU::execute_one() {
         return;
     }
 
-    // execute() modifies regs and pc directly; sync regs to global
-    memcpy(g_cpu_regs, regs, sizeof(regs));
-    g_cpu_hi = hi;
-    g_cpu_lo = lo;
+    if (!jit_path)
+        sync_gcpu_full(regs, pc, hi, lo);
 
-    // Handle delay slot
     if (pc != next_pc && pc != 0) {
         u32 branch_target = pc;
         u32 delay_pc = next_pc;
@@ -664,16 +668,14 @@ void CPU::execute_one() {
         u32 delay_insn = mem->read_u32(delay_pc);
         pc = delay_pc + 4;
 
-        memcpy(g_cpu_regs, regs, sizeof(regs));
-        g_cpu_pc = pc;
-        g_cpu_hi = hi;
-        g_cpu_lo = lo;
+        if (jit_path)
+            g_cpu_pc = pc;
+        else
+            sync_gcpu_full(regs, pc, hi, lo);
         execute(delay_insn);
-        memcpy(g_cpu_regs, regs, sizeof(regs));
-        g_cpu_hi = hi;
-        g_cpu_lo = lo;
+        if (!jit_path)
+            sync_gcpu_full(regs, pc, hi, lo);
 
-        // Check if delay slot set KUSEG
         if ((pc & 0x80000000) == 0 && (pc == 0 || pc >= 0x4000)) {
             printf("[KUSEG] After delay slot: pc=0x%08X\n", pc);
             printf("[KUSEG] delay_insn=0x%08X branch_target=0x%08X\n",
@@ -685,20 +687,16 @@ void CPU::execute_one() {
         pc = branch_target;
     }
 
-
-
-    // GOT trampoline check
     if (mem->is_got_address(pc)) {
         int idx = mem->got_index(pc);
         if (idx >= 0 && (u32)idx < MAX_GOT_ENTRIES) {
+            sync_gcpu_full(regs, pc, hi, lo);
             u32 return_addr = regs[31];
             syscalls->clear_task_switched();
             syscalls->dispatch(idx, return_addr);
             memcpy(regs, g_cpu_regs, sizeof(regs));
             hi = g_cpu_hi;
             lo = g_cpu_lo;
-            // If the syscall did a task switch, g_cpu_pc holds the new task's resume PC.
-            // Otherwise return to the caller via $ra (which dispatch may have set).
             pc = syscalls->task_switched() ? g_cpu_pc : return_addr;
             if ((pc & 0x80000000) == 0 && (pc == 0 || pc >= 0x4000)) {
                 printf("[KUSEG] GOT dispatch idx=%d pc=0x%08X (invalid)\n", idx, pc);
@@ -707,8 +705,16 @@ void CPU::execute_one() {
             }
         }
     }
-    cop0.tick();  // increment Count register once per instruction
+    cop0.tick();
     insn_count++;
+}
+
+void CPU::execute_one() {
+    execute_one_impl(false);
+}
+
+void CPU::execute_one_jit() {
+    execute_one_impl(true);
 }
 
 void CPU::run_until_pc(u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {

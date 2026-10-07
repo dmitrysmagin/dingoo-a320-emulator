@@ -81,6 +81,7 @@ struct JitStats {
     u64 chain_unpatched = 0;  // stub slow-path hits (target uncached)
     u64 tick_flush_fast = 0;  // guest insns: COP0 flush used wired==0 batch
     u64 tick_flush_slow = 0;  // guest insns: COP0 flush used tick() loop
+    u64 fb_sync_skips = 0;  // skipped st->cpu memcpy before back-to-back fallback
     u64 slow_exits = 0;   // TB slow-mem exits (faulting op ran on interpreter)
     u64 flushes = 0;      // cache flushes (code-gen change or LRU cap)
     // Perf counters below are raw TSC cycles (converted to ns for display

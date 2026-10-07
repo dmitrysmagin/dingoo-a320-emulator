@@ -31,6 +31,8 @@ struct CPU {
 
     void reset();
     void execute_one();
+    // JIT dispatcher fallback: no trace ring, lazy g_cpu sync until GOT dispatch.
+    void execute_one_jit();
     void run_until_pc(u32 stop_pc, u32 max_insns, u32 alt_stop_pc = 0);
     void run_frame(u32 max_insns);
     void do_vsync();       // vsync epilogue only (no instruction execution)
@@ -42,6 +44,7 @@ private:
     u32 m_trace_insn[TRACE_SIZE];
     int m_trace_idx;
     void trace_add(u32 pc, u32 insn);
+    void execute_one_impl(bool jit_path);
     u32 fetch();
     void execute(u32 insn);
 

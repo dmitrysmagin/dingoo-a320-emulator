@@ -61,6 +61,23 @@ static void sleep_ms(u32 ms) {
 static inline u64 tsc_now() { return wall_ns(); }
 #endif
 
+static bool jit_st_matches_cpu(const CPU* cpu, const JitState& st) {
+    return memcmp(cpu->regs, st.gpr, sizeof(st.gpr)) == 0 && cpu->hi == st.hi &&
+           cpu->lo == st.lo;
+}
+
+static void jit_pull_st_to_cpu(CPU* cpu, const JitState& st) {
+    memcpy(cpu->regs, st.gpr, sizeof(st.gpr));
+    cpu->hi = st.hi;
+    cpu->lo = st.lo;
+}
+
+static void jit_push_cpu_to_st(JitState& st, const CPU* cpu) {
+    memcpy(st.gpr, cpu->regs, sizeof(st.gpr));
+    st.hi = cpu->hi;
+    st.lo = cpu->lo;
+}
+
 static bool jit_plan_has_mtc0(const JitTbPlan& plan) {
     for (u32 i = 0; i < plan.count; i++) {
         if (plan.ops[i].op == JIT_COP_MTC0)
@@ -260,9 +277,10 @@ void Jit::print_stats() const {
     printf("[JIT] branch_tbs=%llu nextpc_exits=%llu chain_patch=%llu chain_unpatched=%llu\n",
            (unsigned long long)m_stats.tb_branches, (unsigned long long)m_stats.tb_nextpc,
            (unsigned long long)m_stats.chain_patches, (unsigned long long)m_stats.chain_unpatched);
-    printf("[JIT] tick_flush: fast=%llu slow=%llu insns\n",
+    printf("[JIT] tick_flush: fast=%llu slow=%llu insns fb_sync_skip=%llu\n",
            (unsigned long long)m_stats.tick_flush_fast,
-           (unsigned long long)m_stats.tick_flush_slow);
+           (unsigned long long)m_stats.tick_flush_slow,
+           (unsigned long long)m_stats.fb_sync_skips);
     printf("[JIT] tb_insns=%llu interp_insns=%llu slow_exits=%llu flushes=%llu cache=%u/%u pools=%u\n",
            (unsigned long long)m_stats.tb_insns, (unsigned long long)m_stats.interp_insns,
            (unsigned long long)m_stats.slow_exits, (unsigned long long)m_stats.flushes,
@@ -454,6 +472,8 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
     st.cop0 = &cpu->cop0;
     st.mxu = &cpu->mxu;
     u32 executed = 0;
+    // true when cpu->regs/hi/lo already match m_st (skip redundant pre-fallback sync).
+    bool cpu_gpr_live = true;
     while (cpu->running && cpu->pc != stop_pc && executed < max_insns) {
         if (alt_stop_pc && cpu->pc == alt_stop_pc)
             break;
@@ -500,13 +520,13 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
         if (!func) {
             // JR/JALR, stops, GOT, unmapped, awkward delay slots: the
             // interpreter owns it. Sync state around the call.
-            memcpy(cpu->regs, st.gpr, sizeof(st.gpr));
-            cpu->hi = st.hi;
-            cpu->lo = st.lo;
-            cpu->execute_one();
-            memcpy(st.gpr, cpu->regs, sizeof(st.gpr));
-            st.hi = cpu->hi;
-            st.lo = cpu->lo;
+            if (!cpu_gpr_live || !jit_st_matches_cpu(cpu, st))
+                jit_pull_st_to_cpu(cpu, st);
+            else
+                m_stats.fb_sync_skips++;
+            cpu->execute_one_jit();
+            jit_push_cpu_to_st(st, cpu);
+            cpu_gpr_live = true;
             executed++;
             m_stats.interp_insns++;
             m_stats.fb_iters++;
@@ -533,19 +553,20 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
             m_stats.slow_exits++;
             // Faulting op (MMIO/unmapped/code) via the interpreter, which
             // owns palette/GPIO/log semantics plus its own tick + count.
-            memcpy(cpu->regs, st.gpr, sizeof(st.gpr));
-            cpu->hi = st.hi;
-            cpu->lo = st.lo;
+            if (!cpu_gpr_live || !jit_st_matches_cpu(cpu, st))
+                jit_pull_st_to_cpu(cpu, st);
+            else
+                m_stats.fb_sync_skips++;
             flush_tb_ticks(cpu, st.tick_delta, tick_fast);
             cpu->insn_count += applied;
             executed += applied;
             m_stats.tb_insns += applied;
             m_stats.tb_cycles += tsc_now() - t_pre;  // prefix + exit bookkeeping
+            cpu_gpr_live = false;
             u64 t_fb = tsc_now();
-            cpu->execute_one();
-            memcpy(st.gpr, cpu->regs, sizeof(st.gpr));
-            st.hi = cpu->hi;
-            st.lo = cpu->lo;
+            cpu->execute_one_jit();
+            jit_push_cpu_to_st(st, cpu);
+            cpu_gpr_live = true;
             executed++;
             m_stats.interp_insns++;
             m_stats.fb_iters++;
@@ -557,6 +578,7 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
             executed += ran;
             m_stats.tb_insns += ran;
             m_stats.tb_cycles += tsc_now() - t_pre;
+            cpu_gpr_live = false;
         } else if (exit == (u32)JIT_EXIT_NEXT_PC) {
             // Branch TB: st.next_pc holds taken/fallthrough target.
             u32 target = st.next_pc;
@@ -573,6 +595,7 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
             executed += ran;
             m_stats.tb_insns += ran;
             m_stats.tb_cycles += tsc_now() - t_pre;
+            cpu_gpr_live = false;
         } else {
             printf("[JIT] unexpected exit=%u at PC=0x%08X — halting\n", exit, pc);
             memcpy(cpu->regs, st.gpr, sizeof(st.gpr));
