@@ -319,12 +319,14 @@ int main(int argc, char* argv[]) {
 
     printf("[INIT] RAM size: %u MB\n", mem.size() / (1024 * 1024));
     printf("[INIT] Display: %dx%d (scale %d)\n", Display::WIDTH, Display::HEIGHT, Display::SCALE);
-    printf("[INIT] JIT: %s\n", arg_jit == JIT_ON ? "on (Phase-0 proof TB)" : "off (interpreter)");
+    printf("[INIT] JIT: %s\n", arg_jit == JIT_ON ? "on (TB dispatcher)" : "off (interpreter)");
 
-    // === Phase-0 JIT harness: prove exec-alloc + ABI before interpreting ===
-    // --jit=on runs one hand-encoded TB (v0=1) against a scratch copy of the
-    // CPU regs. Game emulation below is untouched (still the interpreter).
+    // === Phase 5 JIT: prove exec-alloc + ABI, then dispatch TBs in the loops below ===
+    // --jit=on runs one hand-encoded proof TB at startup, then executes games
+    // through cached straight-line TBs (interpreter fallback for control flow).
+    // --jit=off (default) is the pure interpreter reference.
     Jit jit;
+    bool use_jit = false;
     if (arg_jit == JIT_ON) {
         if (jit.init()) {
             u32 scratch[32];
@@ -333,6 +335,8 @@ int main(int argc, char* argv[]) {
             printf("[JIT] proof TB: exit=%u v0=%u (expect 0/1)\n", exit, scratch[2]);
             if (exit != (u32)JIT_EXIT_DONE || scratch[2] != 1) {
                 printf("[JIT] proof FAILED — continuing on interpreter\n");
+            } else {
+                use_jit = true;
             }
             if (arg_jit_stats)
                 jit.print_stats();
@@ -380,7 +384,10 @@ int main(int argc, char* argv[]) {
         while (cpu.running && cpu.pc != DL_MAIN_SENTINEL) {
             if (display.pump_events()) { cpu.running = false; break; }
             write_keys();
-            cpu.run_until_pc(DL_MAIN_SENTINEL, max_insns_per_frame);
+            if (use_jit)
+                jit.run_until_pc(&cpu, DL_MAIN_SENTINEL, max_insns_per_frame);
+            else
+                cpu.run_until_pc(DL_MAIN_SENTINEL, max_insns_per_frame);
             syscalls.process_timers();
             dl_frame++;
             if (dl_frame % 500 == 0)
@@ -409,6 +416,11 @@ int main(int argc, char* argv[]) {
     idle_regs[30] = STACK_TOP;
     syscalls.set_idle_regs(idle_regs);
     syscalls.set_idle_pc(IDLE_LOOP_PC);
+
+    // TBs are compiled against one stop-PC set; Phase 2 adds IDLE_LOOP_PC,
+    // so a Phase-1 TB must never execute past it. Flush between phases.
+    if (use_jit)
+        jit.invalidate_cache();
 
     // =========================================================
     // Phase 2: call AppMain
@@ -481,7 +493,10 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        cpu.run_until_pc(DL_MAIN_SENTINEL, max_insns_per_frame, IDLE_LOOP_PC);
+        if (use_jit)
+            jit.run_until_pc(&cpu, DL_MAIN_SENTINEL, max_insns_per_frame, IDLE_LOOP_PC);
+        else
+            cpu.run_until_pc(DL_MAIN_SENTINEL, max_insns_per_frame, IDLE_LOOP_PC);
         syscalls.process_timers();
         cpu.do_vsync();
         frame++;

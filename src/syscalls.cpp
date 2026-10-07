@@ -21,6 +21,7 @@ extern u32 g_cpu_regs[32];
 extern u32 g_cpu_pc;
 extern u32 g_cpu_hi;
 extern u32 g_cpu_lo;
+extern u32 g_code_gen;  // JIT TB cache generation (bumped on code remap)
 
 // ── Static handler registry (class members) ──────────────────────────────
 
@@ -3124,6 +3125,7 @@ void Syscalls::impl_dl_res_get_data() {
         if (guest) {
             m_mem.write_block(guest, host, m_dl_res[idx].size);
             m_dl_res[idx].guest_addr = guest;
+            g_code_gen++;  // mapped blob may be DLX2 code: JIT drops TBs
         }
     }
     g_cpu_regs[2] = m_dl_res[idx].guest_addr;
@@ -3134,6 +3136,7 @@ void Syscalls::impl_dl_res_close() {
     if (idx >= 0 && idx < MAX_DL_RES && m_dl_res[idx].in_use) {
         heap_free(m_dl_res[idx].guest_addr);
         free_dl_res_handle(idx);
+        g_code_gen++;  // heap reuse may alias cached TBs: JIT drops them
     }
     g_cpu_regs[2] = 0;
 }
@@ -3558,6 +3561,7 @@ void Syscalls::impl_dl_load() {
     printf("[DL] dl_load('%s') -> handle %d @ 0x%08X (%zu bytes, magic='%s')\n",
            name.c_str(), slot + 1, guest, blob.size(), magic);
     g_cpu_regs[2] = (u32)(slot + 1);
+    g_code_gen++;  // new executable bytes: JIT must drop cached TBs
 }
 
 void Syscalls::impl_dl_free() {
@@ -3573,6 +3577,7 @@ void Syscalls::impl_dl_free() {
     m_dl_modules[idx].size = 0;
     m_dl_modules[idx].name.clear();
     g_cpu_regs[2] = 0;
+    g_code_gen++;  // heap reuse may alias cached TBs: JIT drops them
 }
 
 void Syscalls::impl_dl_get_proc() {

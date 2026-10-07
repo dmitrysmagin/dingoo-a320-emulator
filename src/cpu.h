@@ -7,6 +7,11 @@
 #include "mxu.h"
 #include "syscalls.h"
 
+// Executable-code generation: bumped whenever guest code mappings change
+// (dl_load/dl_free/dl_res map+close). The JIT drops its whole TB cache on
+// mismatch. Defined in cpu.cpp, mutated in syscalls.cpp, read in jit.cpp.
+extern u32 g_code_gen;
+
 struct CPU {
     u32 regs[32];   // GPRs
     u32 pc;         // Program counter

@@ -1,6 +1,10 @@
 #ifndef JIT_H
 #define JIT_H
 
+#include <cstddef>
+#include <unordered_map>
+#include <vector>
+
 // Phase 0 JIT harness: lifecycle + dispatcher skeleton + stats.
 //
 // Phase 0 proves executable-memory allocation and the JIT<->interpreter
@@ -52,7 +56,20 @@ enum JitExit : u32 {
 
 enum JitMode {
     JIT_OFF = 0,  // pure interpreter (default, bit-identical to before)
-    JIT_ON = 1,   // run Phase-0 proof TB once at startup, then interpret
+    JIT_ON = 1,   // Phase 5: TB dispatcher (cached straight-line TBs + interp fallback)
+};
+
+struct CPU;  // cpu.h (jit.cpp includes it; header stays light)
+
+struct JitStats {
+    u64 tb_compiled = 0;  // TBs compiled into the exec pool
+    u64 tb_hits = 0;      // cache hits (TB executed)
+    u64 tb_misses = 0;    // cache misses that compiled OK
+    u64 tb_uncompilable = 0;  // eligible PCs whose TB failed to compile
+    u64 tb_insns = 0;     // guest insns executed via TBs
+    u64 interp_insns = 0;  // guest insns executed via interpreter fallback
+    u64 slow_exits = 0;   // TB slow-mem exits (faulting op ran on interpreter)
+    u64 flushes = 0;      // cache flushes (code-gen change or LRU cap)
 };
 
 class Jit {
@@ -81,7 +98,20 @@ public:
     u64 proof_runs() const { return m_proof_runs; }
     u32 last_exit() const { return m_last_exit; }
 
+    // Phase 5 dispatcher: run guest code through cached straight-line TBs,
+    // falling back to CPU::execute_one() for control flow, syscalls, GOT,
+    // stops and unmapped PCs. Mirrors CPU::run_until_pc budget/stop
+    // semantics (max_insns counts every guest insn, TB or fallback).
+    // Safe to call with !is_ready() (pure-interpreter fallback).
+    void run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc = 0);
+
+    const JitStats& stats() const { return m_stats; }
     void print_stats() const;
+
+    // Drop the whole TB cache + exec pools (phase transitions, which change
+    // the active stop-PC set: a cached TB must never span a stop PC, and
+    // formation only guards the stops passed at compile time).
+    void invalidate_cache() { flush_locked(); }
 
 private:
     // JIT function type: System V and Win64 both pass the single pointer
@@ -102,6 +132,33 @@ private:
     bool m_ready;
     u64 m_proof_runs;
     u32 m_last_exit;
+
+    // Phase 5 TB cache: guest phys entry pc -> compiled TB. Flat mapping
+    // means phys == strip(vaddr); KSEG0/KSEG1 aliases share entries.
+    struct TbEntry {
+        TbFunc func;
+        u32 count;  // guest insns (pc advances count*4 on DONE)
+    };
+    struct Pool {
+        void* p;
+        u32 size;
+        u32 used;
+    };
+    std::unordered_map<u32, TbEntry> m_cache;
+    std::vector<Pool> m_pools;
+    u32 m_cached_gen = 0;  // g_code_gen at last flush
+    bool m_gen_valid = false;
+    JitStats m_stats;
+
+    static constexpr u32 kPoolSize = 1 << 20;  // 1 MB exec pools
+    static constexpr u32 kMaxTbs = 4096;       // flush-all LRU cap
+
+    void flush_locked();  // drop cache + pools, resync generation
+    u8* pool_alloc(u32 len);
+    // Try to compile a TB at pc (stops at stop PCs / ineligible pcs).
+    // Returns true with func/count on success.
+    bool compile_tb(CPU* cpu, u32 pc, u32 stop_pc, u32 alt_stop_pc,
+                    TbFunc& func, u32& count);
 };
 
 #endif // JIT_H

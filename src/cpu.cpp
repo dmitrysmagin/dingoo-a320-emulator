@@ -9,6 +9,9 @@ u32 g_cpu_pc;
 u32 g_cpu_hi;
 u32 g_cpu_lo;
 
+// Executable-code generation for JIT cache invalidation (see cpu.h).
+u32 g_code_gen = 0;
+
 
 
 // Sign extend helpers

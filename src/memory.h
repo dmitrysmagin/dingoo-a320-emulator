@@ -46,6 +46,13 @@ public:
     u8* get_raw_ptr() { return m_mem.data(); }
     u32 size() const { return (u32)m_mem.size(); }
 
+    // Phase 5 JIT accessors (read-only views, no behavior change):
+    // code-section range for the JIT store fast path (unset in production),
+    // and the write-hotspot base for inline write_counts bumps.
+    u32 code_start() const { return m_code_start; }
+    u32 code_end() const { return m_code_end; }
+    u32* write_counts_base() { return m_write_counts.data(); }
+
     // Write hotspot tracking: counts writes per 4KB page
     void reset_write_counts() { std::fill(m_write_counts.begin(), m_write_counts.end(), 0); }
     u32  write_count(u32 page_4k) const {

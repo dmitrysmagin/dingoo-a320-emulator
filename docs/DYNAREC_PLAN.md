@@ -191,6 +191,29 @@ struct alignas(16) CpuState {
   dispatcher checks stop-PCs between TBs (same as `run_until_pc` loop).
 - Gate: full `games/` sweep vs `compat/compare.py` baselines; no new
   `[KUSEG]`/`[EXCEPTION]`; `Life/StopWatch/dicer` slot-166 override still hits.
+- Status ✅ DONE-CORRECTNESS (2026-10-07): `Jit::run_until_pc` in
+  `src/jit/jit.cpp` (phys-tagged TB cache, 1 MB exec pools, flush-all LRU
+  cap 4096, `g_code_gen` invalidation on dl_load/dl_free/dl_res map+close,
+  phase-transition flush since TBs are compiled against one stop-PC set).
+  Straight-line TBs (ALU+mem+COP, truncated before unemitted branches)
+  run cached; control flow/GOT/stops/unmapped PCs fall back to
+  `CPU::execute_one` (delay slots, dispatch, halt rules unchanged).
+  State sync per TB (GPR/hi/lo copy; COP0/MXU/RAM pointer-shared;
+  ticks flushed 1:1). `--jit=on` runs games; `--jit=off` is the reference.
+- Sweep result (28 games, `--seconds 12 --nosound`, off vs on):
+  identical note distribution (all "time limit"), zero `[EXCEPTION]`/
+  `[KUSEG]` on either side, no game goes dark under JIT, no unexpected
+  TB exits, `uncompilable=0` fleet-wide, TB share 68–93%, Final PCs in
+  game code, slot-166 override fires on both sides (Life/dicer/StopWatch).
+  `compare.py` frame deltas are negative (JIT renders fewer frames in
+  fixed wall time) — a pure throughput artifact: ticks are wall-clock
+  paced, so a slower runner takes different delay/timeout paths through
+  timing-sensitive game code. Tetris `--frames 60`: identical Final PC,
+  insn counts match to 18/120M (budget overshoot <1 TB, documented).
+- Known gap: JIT is ~3–6× slower per guest insn than the interpreter
+  (per-TB sync + fallback-per-branch; avg ~5 insns/TB). Speed is
+  explicitly Phase 6 (GPR pinning, chaining, bigger TBs); Phase 5 keeps
+  `--jit=off` as the reference forever.
 
 ### Phase 6 — optimise (only after sweep is green)
 - GPR/host-reg pinning, constprop across TB (copy Lightrec `constprop.c` idea),
