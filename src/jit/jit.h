@@ -173,11 +173,11 @@ private:
     JitState m_st;  // Phase 6 persistent slots (resident across TBs)
     u64 m_tsc_hz = 0;  // TSC frequency from init calibration (0 = unknown)
     u64 m_tsc_cost = 0;  // min rdtsc round-trip (timer overhead per region)
-
     static constexpr u32 kPoolSize = 1 << 20;  // 1 MB exec pools
 
     void flush_locked();  // drop cache + pools, resync generation
     void patch_chain_edges_to(u32 target_pc, TbFunc target_func);
+    void patch_outgoing_chain_edges(TbFunc src, const JitChainInfo* chain);
     void flush_tb_ticks(CPU* cpu, u32 n, bool tick_fast_tb);
     u8* pool_alloc(u32 len);
     // Try to compile a TB at pc (stops at stop PCs / ineligible pcs).

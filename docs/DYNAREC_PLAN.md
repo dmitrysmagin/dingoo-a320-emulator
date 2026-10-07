@@ -251,6 +251,11 @@ struct alignas(16) CpuState {
   chain entry at `TB+JIT_PROLOG_CHAIN_OFF`, `insn_delta` across chains).
   Done: (3) tick-flush fast path; (4) fallback diet (`execute_one_jit`,
   lazy g_cpu until GOT, skip redundant st->cpu on back-to-back fallbacks).
+  Done: (5) chain patch rate — `patch_outgoing_chain_edges` on compile
+  (patch branch exits when the target TB is already cached) plus dispatcher
+  inline chain on `NEXT_PC` when the target is cached (skips a dispatch loop).
+  In-pool x86 miss-stub (`jmp rel32`) deferred: separate VirtualAllocs can
+  exceed x86 rel32 span on Win64; use epilog + C-side resolve for now.
   Deferred: GPR pinning / constprop. The bottleneck: dispatch lookup
   (~9ns/iter, 28% loop), TB sync (35%), fallbacks (30%). All measurements
   are approximate (rdtsc overhead folded); ratios are the reliable data.

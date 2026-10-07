@@ -111,11 +111,16 @@ bool jit_emit_op(JitEmit& e, const JitAluInsn& op, u32 op_idx);
 bool emit_mem_op(JitEmit& e, const JitAluInsn& op, u32 op_idx);
 
 // Phase 6c: chain exit helpers.
-// Emit a 16-byte patchable exit: mov [rdx+off], pc; mov eax, exit; ret
-// Returns offset (0..15) for later patch; caller pads to 16 bytes.
+// Emit a 16-byte patchable exit site (see emit_alu.cpp for layouts).
+// When g_jit_chain_stub is set: mov next_pc + jmp stub (miss resolves in stub).
+// Otherwise (discharge tests): mov next_pc + mov eax,NEXT_PC + ret.
 u32 jit_emit_chain_exit(JitEmit& e, u32 target_pc, JitChainInfo* info);
-// Patch the 16-byte exit at tb_base+code_off to jmp chain_entry (TB+JIT_PROLOG_CHAIN_OFF).
+// Patch site to direct chain entry (TB + JIT_PROLOG_CHAIN_OFF).
 void jit_patch_chain_site(u8* tb_base, u32 code_off, u8* chain_entry);
+// Wire the jmp at tb_base+code_off+10 to the shared miss stub (rel32).
+void jit_patch_chain_site_jmp_stub(u8* tb_base, u32 code_off, u8* stub);
+// Non-null after Jit::init(): branch TBs jmp here when the target is uncached.
+extern u8* g_jit_chain_stub;
 
 // Phase 6: compile TB plans into raw output buffers.
 // entry_pc is the MIPS PC of the first instruction in this TB.

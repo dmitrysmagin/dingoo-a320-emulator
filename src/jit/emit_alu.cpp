@@ -598,11 +598,16 @@ u32 emit_jmp32(JitEmit& e) {
 
 void emit_patch32(JitEmit& e, u32 pos) { patch_rel32(e, pos); }
 
-// Phase 6c TB chaining: one 16-byte patchable exit site. Layout:
-//   +0:  C7 82 <off32> <target32>   mov [rdx+JIT_OFF_NEXT_PC], target (10 B)
-//   +10: B8 02 00 00 00              mov eax, JIT_EXIT_NEXT_PC (5 B)
-//   +15: C3                          ret (1 B) -> 16 total, no padding.
-// Patched form: 48 B8 <func64> (10 B) + FF E0 jmp rax (2 B) + 4x CC = 16.
+// Phase 6c TB chaining: one 16-byte patchable exit site.
+// Unpatched (tests, g_jit_chain_stub==null):
+//   +0:  mov [rdx+JIT_OFF_NEXT_PC], target (10 B)
+//   +10: mov eax, JIT_EXIT_NEXT_PC; ret (6 B)
+// Unpatched (runtime, jmp miss stub):
+//   +0:  mov [rdx+JIT_OFF_NEXT_PC], target (10 B)
+//   +10: jmp rel32 stub (5 B) + nop (1 B)
+// Patched (direct chain): mov rax, entry; jmp rax; int3 padding (16 B).
+
+u8* g_jit_chain_stub = nullptr;
 
 u32 jit_emit_chain_exit(JitEmit& e, u32 target_pc, JitChainInfo* info) {
     u32 off = e.len;
@@ -617,6 +622,26 @@ u32 jit_emit_chain_exit(JitEmit& e, u32 target_pc, JitChainInfo* info) {
     if (info && info->n < JitChainInfo::kMaxSites)
         info->sites[info->n++] = {off, target_pc};
     return off;
+}
+
+void jit_patch_chain_site_jmp_stub(u8* tb_base, u32 code_off, u8* stub) {
+    if (!stub)
+        return;
+    u8* p = tb_base + code_off + 10;
+    if (p[0] != 0xE9)
+        return;
+    intptr_t from = (intptr_t)(p + 4);
+    intptr_t to = (intptr_t)stub;
+    intptr_t delta = to - from;
+    if (delta != (intptr_t)(s32)delta)
+        return;
+    s32 rel = (s32)delta;
+    memcpy(p + 1, &rel, 4);
+#ifdef _WIN32
+    FlushInstructionCache(GetCurrentProcess(), p, 5);
+#else
+    __builtin___clear_cache((char*)p, (char*)p + 5);
+#endif
 }
 
 void jit_patch_chain_site(u8* tb_base, u32 code_off, u8* chain_entry) {

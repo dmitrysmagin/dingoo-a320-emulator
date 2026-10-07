@@ -274,9 +274,10 @@ void Jit::print_stats() const {
            (unsigned long long)m_stats.tb_compiled, (unsigned long long)m_stats.tb_hits,
            (unsigned long long)m_stats.tb_neg_hits, (unsigned long long)m_stats.tb_uncompilable,
            (unsigned long long)m_stats.compile_calls, (unsigned long long)m_stats.tb_evictions);
-    printf("[JIT] branch_tbs=%llu nextpc_exits=%llu chain_patch=%llu chain_unpatched=%llu\n",
+    printf("[JIT] branch_tbs=%llu nextpc_exits=%llu chain_patch=%llu stub_hit=%llu unpatched=%llu chain_hit=%llu\n",
            (unsigned long long)m_stats.tb_branches, (unsigned long long)m_stats.tb_nextpc,
-           (unsigned long long)m_stats.chain_patches, (unsigned long long)m_stats.chain_unpatched);
+           (unsigned long long)m_stats.chain_patches, (unsigned long long)m_stats.chain_stub_hits,
+           (unsigned long long)m_stats.chain_unpatched, (unsigned long long)m_stats.chain_hits);
     printf("[JIT] tick_flush: fast=%llu slow=%llu insns fb_sync_skip=%llu\n",
            (unsigned long long)m_stats.tick_flush_fast,
            (unsigned long long)m_stats.tick_flush_slow,
@@ -362,6 +363,21 @@ void Jit::patch_chain_edges_to(u32 target_pc, TbFunc target_func) {
     m_stats.chain_patches += n;
 }
 
+void Jit::patch_outgoing_chain_edges(TbFunc src, const JitChainInfo* chain) {
+    if (!chain || !chain->n || !src)
+        return;
+    u8* base = (u8*)src;
+    for (u32 i = 0; i < chain->n; i++) {
+        u32 off = chain->sites[i].code_off;
+        TbFunc tgt = nullptr;
+        u32 tc = 0;
+        if (m_cache.find(chain->sites[i].target_pc, tgt, tc) && tgt) {
+            jit_patch_chain_site(base, off, (u8*)tgt + JIT_PROLOG_CHAIN_OFF);
+            m_stats.chain_patches++;
+        }
+    }
+}
+
 u8* Jit::pool_alloc(u32 len) {
     u32 need = (len + 15) & ~15u;
     for (auto& pl : m_pools) {
@@ -438,6 +454,8 @@ bool Jit::compile_tb(CPU* cpu, u32 pc, u32 stop_pc, u32 alt_stop_pc,
     m_cache.insert(pc, (TbFunc)dst, equiv, tick_fast,
                    formed.has_branch ? &chain : nullptr);
     patch_chain_edges_to(pc, (TbFunc)dst);
+    if (formed.has_branch && chain.n)
+        patch_outgoing_chain_edges((TbFunc)dst, &chain);  // patch to cached targets
 
     if (formed.has_branch)
         m_stats.tb_branches++;
@@ -517,6 +535,7 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
                 }
             }
         }
+    run_tb:
         if (!func) {
             // JR/JALR, stops, GOT, unmapped, awkward delay slots: the
             // interpreter owns it. Sync state around the call.
@@ -586,7 +605,9 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
             m_stats.tb_nextpc++;
             TbFunc target_tb = nullptr;
             u32 target_count = 0;
-            if (m_cache.find(target, target_tb, target_count) && target_tb)
+            bool target_tick_fast = false;
+            if (m_cache.find(target, target_tb, target_count, &target_tick_fast) &&
+                target_tb)
                 patch_chain_edges_to(target, target_tb);
             else
                 m_stats.chain_unpatched++;
@@ -596,6 +617,14 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
             m_stats.tb_insns += ran;
             m_stats.tb_cycles += tsc_now() - t_pre;
             cpu_gpr_live = false;
+            if (target_tb) {
+                m_stats.chain_hits++;
+                func = target_tb;
+                count = target_count;
+                tick_fast = target_tick_fast;
+                pc = target;
+                goto run_tb;
+            }
         } else {
             printf("[JIT] unexpected exit=%u at PC=0x%08X — halting\n", exit, pc);
             memcpy(cpu->regs, st.gpr, sizeof(st.gpr));
