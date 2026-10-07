@@ -1,8 +1,10 @@
+#include <cstdio>
 #include "jit.h"
 #include "../cpu.h"
 #include "frontend.h"
 #include "emit.h"
 
+#include "tbcache.h"
 #include <cstdio>
 #include <cstring>
 
@@ -247,8 +249,9 @@ void Jit::print_stats() const {
            (unsigned long long)m_stats.tb_compiled, (unsigned long long)m_stats.tb_hits,
            (unsigned long long)m_stats.tb_neg_hits, (unsigned long long)m_stats.tb_uncompilable,
            (unsigned long long)m_stats.compile_calls, (unsigned long long)m_stats.tb_evictions);
-    printf("[JIT] branch_tbs=%llu nextpc_exits=%llu\n",
-           (unsigned long long)m_stats.tb_branches, (unsigned long long)m_stats.tb_nextpc);
+    printf("[JIT] branch_tbs=%llu nextpc_exits=%llu chain_patch=%llu chain_unpatched=%llu\n",
+           (unsigned long long)m_stats.tb_branches, (unsigned long long)m_stats.tb_nextpc,
+           (unsigned long long)m_stats.chain_patches, (unsigned long long)m_stats.chain_unpatched);
     printf("[JIT] tb_insns=%llu interp_insns=%llu slow_exits=%llu flushes=%llu cache=%u/%u pools=%u\n",
            (unsigned long long)m_stats.tb_insns, (unsigned long long)m_stats.interp_insns,
            (unsigned long long)m_stats.slow_exits, (unsigned long long)m_stats.flushes,
@@ -308,6 +311,17 @@ void Jit::flush_locked() {
     m_stats.flushes++;
 }
 
+void Jit::patch_chain_edges_to(u32 target_pc, TbFunc target_func) {
+    if (!target_func)
+        return;
+    u8* entry = (u8*)target_func + JIT_PROLOG_CHAIN_OFF;
+    u32 n = m_cache.patch_edges_to(target_pc, entry,
+                                  [](u8* tb, u32 off, u8* ent) {
+                                      jit_patch_chain_site(tb, off, ent);
+                                  });
+    m_stats.chain_patches += n;
+}
+
 u8* Jit::pool_alloc(u32 len) {
     u32 need = (len + 15) & ~15u;
     for (auto& pl : m_pools) {
@@ -347,17 +361,19 @@ bool Jit::compile_tb(CPU* cpu, u32 pc, u32 stop_pc, u32 alt_stop_pc,
     u8 tmp[16 << 10];
     u32 len = 0;
     u32 equiv = plan.count;  // execute_one-equivalents (ticks + insn_count)
+    JitChainInfo chain{};
     if (formed.has_branch) {
         // Defensive: the branch must be where formation put it.
         if (formed.branch_idx + 2 > plan.count ||
             !jit_op_is_branch(plan.ops[formed.branch_idx].op))
             return false;
-        len = jit_compile_branch_tb(plan, formed.branch_idx, pc, tmp, (u32)sizeof(tmp));
+        len = jit_compile_branch_tb(plan, formed.branch_idx, pc, tmp,
+                                    (u32)sizeof(tmp), &chain);
         // Branch+delay share one tick/insn_count with the interpreter
         // (execute_one ticks once for both): prefix + 1.
         equiv = formed.branch_idx + 1;
     } else {
-        len = jit_compile_tb(plan, tmp, (u32)sizeof(tmp), (u32)JIT_EXIT_DONE);
+        len = jit_compile_tb(plan, tmp, (u32)sizeof(tmp), (u32)JIT_EXIT_DONE, pc);
     }
     u64 t_f2 = tsc_now();
     if (!len) {
@@ -378,12 +394,10 @@ bool Jit::compile_tb(CPU* cpu, u32 pc, u32 stop_pc, u32 alt_stop_pc,
 #else
     __builtin___clear_cache((char*)dst, (char*)dst + len);
 #endif
-    // Key by entry vaddr (not phys). J-targets embed (pc & 0xF0000000),
-    // so KSEG0/KSEG1 aliases compile separately (always correct).
-    if (m_cache.insert(pc, (TbFunc)dst, equiv))
-        m_stats.tb_evictions++;
-    m_stats.tb_compiled++;
-    m_stats.tb_misses++;
+    m_cache.insert(pc, (TbFunc)dst, equiv,
+                   formed.has_branch ? &chain : nullptr);
+    patch_chain_edges_to(pc, (TbFunc)dst);
+
     if (formed.has_branch)
         m_stats.tb_branches++;
     m_stats.form_cycles += t_f1 - t_f0;
@@ -450,7 +464,7 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
                 if (!ok) {
                     func = nullptr;
                     if (stable) {
-                        if (m_cache.insert(pc, nullptr, 0))
+                        if (m_cache.insert(pc, nullptr, 0, nullptr))
                             m_stats.tb_evictions++;
                         m_stats.tb_uncompilable++;
                     }
@@ -483,7 +497,9 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
             m_stats.dispatch_cycles += (t_pre - t_top) - cc;
         // Only the tick counter is per-TB (everything else is resident).
         st.tick_delta = 0;
+        st.insn_delta = 0;
         u32 exit = func(&st);
+        u32 ran = st.insn_delta ? st.insn_delta : count;
         if (exit == (u32)JIT_EXIT_SLOW_MEM) {
             // Prefix applied exit_arg ops (branch, if any, never reached).
             u32 applied = st.exit_arg;
@@ -510,22 +526,29 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
             m_stats.fb_iters++;
             m_stats.fallback_cycles += tsc_now() - t_fb;
         } else if (exit == (u32)JIT_EXIT_DONE) {
-            cpu->pc = pc + count * 4;
+            cpu->pc = st.next_pc;
             for (u32 i = 0; i < st.tick_delta; i++)
                 cpu->cop0.tick();
-            cpu->insn_count += count;
-            executed += count;
-            m_stats.tb_insns += count;
+            cpu->insn_count += ran;
+            executed += ran;
+            m_stats.tb_insns += ran;
             m_stats.tb_cycles += tsc_now() - t_pre;
         } else if (exit == (u32)JIT_EXIT_NEXT_PC) {
             // Branch TB: st.next_pc holds taken/fallthrough target.
-            cpu->pc = st.next_pc;
+            u32 target = st.next_pc;
+            cpu->pc = target;
             m_stats.tb_nextpc++;
+            TbFunc target_tb = nullptr;
+            u32 target_count = 0;
+            if (m_cache.find(target, target_tb, target_count) && target_tb)
+                patch_chain_edges_to(target, target_tb);
+            else
+                m_stats.chain_unpatched++;
             for (u32 i = 0; i < st.tick_delta; i++)
                 cpu->cop0.tick();
-            cpu->insn_count += count;
-            executed += count;
-            m_stats.tb_insns += count;
+            cpu->insn_count += ran;
+            executed += ran;
+            m_stats.tb_insns += ran;
             m_stats.tb_cycles += tsc_now() - t_pre;
         } else {
             printf("[JIT] unexpected exit=%u at PC=0x%08X — halting\n", exit, pc);

@@ -47,10 +47,9 @@ void b_load(JitEmit& e, u32 r, u32 off) {
     b32(e, off);
 }
 
-// Store next_pc then fall into the NEXT_PC exit.
-void b_exit_next(JitEmit& e, u32 target) {
-    emit_mov_rdx_disp32(e, JIT_OFF_NEXT_PC, target);
-    jit_emit_epilog(e, (u32)JIT_EXIT_NEXT_PC);
+// Store next_pc then fall into the 16-byte chainable NEXT_PC exit.
+void b_exit_next(JitEmit& e, u32 target, JitChainInfo* chain) {
+    jit_emit_chain_exit(e, target, chain);
 }
 
 bool is_likely(JitAluOp op) {
@@ -121,7 +120,7 @@ u8 likely_skip_cc(JitAluOp op) {
 }  // namespace
 
 u32 jit_compile_branch_tb(const JitTbPlan& plan, u32 branch_idx, u32 entry_pc,
-                          u8* buf, u32 cap) {
+                          u8* buf, u32 cap, JitChainInfo* chain) {
     if (branch_idx + 2 > plan.count)
         return 0;
     const JitAluInsn& br = plan.ops[branch_idx];
@@ -131,8 +130,9 @@ u32 jit_compile_branch_tb(const JitTbPlan& plan, u32 branch_idx, u32 entry_pc,
     u32 branch_pc = entry_pc + branch_idx * 4;
     u32 fallthrough = branch_pc + 8;
 
+    u32 insn_count = branch_idx + 1;
     JitEmit e{buf, cap, 0, false};
-    jit_emit_prolog(e);
+    jit_emit_prolog(e, entry_pc, insn_count);
     for (u32 i = 0; i < branch_idx; i++) {
         if (!jit_emit_op(e, plan.ops[i], i)) return 0;
         if (e.oom) return 0;
@@ -147,7 +147,7 @@ u32 jit_compile_branch_tb(const JitTbPlan& plan, u32 branch_idx, u32 entry_pc,
             emit_mov_rdx_disp32(e, slot_off(31), branch_pc + 8);
         if (!jit_emit_op(e, delay, branch_idx + 1)) return 0;
         if (e.oom) return 0;
-        b_exit_next(e, j_target(br.uimm, branch_pc));
+        b_exit_next(e, j_target(br.uimm, branch_pc), chain);
         return e.oom ? 0 : e.len;
     }
 
@@ -161,13 +161,14 @@ u32 jit_compile_branch_tb(const JitTbPlan& plan, u32 branch_idx, u32 entry_pc,
             emit_mov_rdx_disp32(e, slot_off(31), branch_pc + 8);
         if (!jit_emit_op(e, delay, branch_idx + 1)) return 0;
         if (e.oom) return 0;
-        emit_mov_rdx_disp32(e, JIT_OFF_NEXT_PC, target);
-        u32 jdone = emit_jmp32(e);
-        b_patch(e, jfall);  // fallthrough:
-        emit_mov_rdx_disp32(e, JIT_OFF_NEXT_PC, fallthrough);
-        emit_patch32(e, jdone);  // done:
-        jit_emit_epilog(e, (u32)JIT_EXIT_NEXT_PC);
-        return e.oom ? 0 : e.len;
+        jit_emit_chain_exit(e, target, chain);
+        if (e.oom) return 0;
+        u32 jskip = emit_jmp32(e);  // skip fallthrough exit after taken path
+        b_patch(e, jfall);  // not taken — delay skipped:
+        jit_emit_chain_exit(e, fallthrough, chain);
+        if (e.oom) return 0;
+        emit_patch32(e, jskip);
+        return e.len;
     }
 
     // Non-likely: condition first (delay may clobber rs/rt), spilled on the
@@ -182,13 +183,14 @@ u32 jit_compile_branch_tb(const JitTbPlan& plan, u32 branch_idx, u32 entry_pc,
     b8(e, 0x58);  // pop rax
     b8(e, 0x85); b8(e, 0xC0);  // test eax, eax
     u32 jfall = b_jcc(e, 0x84);  // jz fallthrough
-    emit_mov_rdx_disp32(e, JIT_OFF_NEXT_PC, target);
-    u32 jdone = emit_jmp32(e);
-    b_patch(e, jfall);  // fallthrough:
-    emit_mov_rdx_disp32(e, JIT_OFF_NEXT_PC, fallthrough);
-    emit_patch32(e, jdone);  // done:
-    jit_emit_epilog(e, (u32)JIT_EXIT_NEXT_PC);
-    return e.oom ? 0 : e.len;
+    jit_emit_chain_exit(e, target, chain);
+    if (e.oom) return 0;
+    u32 jskip = emit_jmp32(e);
+    b_patch(e, jfall);  // fallthrough (not taken):
+    jit_emit_chain_exit(e, fallthrough, chain);
+    if (e.oom) return 0;
+    emit_patch32(e, jskip);
+    return e.len;
 }
 
 // ---- Phase 2 helpers (kept for compute_branch_target users/tests) ----

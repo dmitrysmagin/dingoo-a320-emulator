@@ -42,7 +42,8 @@ $(OBJDIR):
 # a stale object file with an old sizeof() smashes its stack neighbours).
 HEADERS = $(SRCDIR)/types.h $(SRCDIR)/syscalls.h $(SRCDIR)/cpu.h \
           $(SRCDIR)/memory.h $(SRCDIR)/cop0.h $(SRCDIR)/mxu.h \
-          $(SRCDIR)/jit/jit.h $(SRCDIR)/jit/frontend.h $(SRCDIR)/jit/emit.h
+          $(SRCDIR)/jit/jit.h $(SRCDIR)/jit/frontend.h $(SRCDIR)/jit/emit.h \
+          $(SRCDIR)/jit/tbcache.h
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.cpp $(HEADERS) | $(OBJDIR)
 	mkdir -p $(dir $@)
@@ -61,4 +62,4 @@ run: $(TARGET)
 	./$(TARGET) ../7days.app
 
 clean:
-	rm -f $(TARGET) $(OBJDIR)/*.o *.o
+	rm -f $(TARGET) $(OBJECTS) $(OBJDIR)/*.o *.o

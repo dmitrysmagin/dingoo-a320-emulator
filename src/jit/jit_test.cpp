@@ -78,40 +78,13 @@ struct ExecPage {
 };
 
 
-// Full JitState mirror for executing TBs (all phases share it; mem/cop TBs
-// read pointers past lo, and every TB now bumps tick_delta on exit).
-struct ExecState {
-    u32 gpr[32];
-    u32 exit_code;
-    u32 exit_arg;
-    u32 next_pc;
-    u32 pc;
-    u32 hi;
-    u32 lo;
-    u64 mem_base;
-    u32 mem_size;
-    u32 code_start;
-    u32 code_end;
-    u64 wc_base;
-    COP0* cop0;
-    MXU* mxu;
-    u32 tick_delta;
-    u32 tick_pad;
-};
-static_assert(offsetof(ExecState, gpr) == offsetof(JitState, gpr), "exec gpr");
-static_assert(offsetof(ExecState, exit_arg) == offsetof(JitState, exit_arg), "exec exit_arg");
-static_assert(offsetof(ExecState, hi) == offsetof(JitState, hi), "exec hi");
-static_assert(offsetof(ExecState, lo) == offsetof(JitState, lo), "exec lo");
-static_assert(offsetof(ExecState, mem_base) == offsetof(JitState, mem_base), "exec base");
-static_assert(offsetof(ExecState, wc_base) == offsetof(JitState, wc_base), "exec wc");
-static_assert(offsetof(ExecState, cop0) == offsetof(JitState, cop0), "exec cop0");
-static_assert(offsetof(ExecState, mxu) == offsetof(JitState, mxu), "exec mxu");
-static_assert(offsetof(ExecState, tick_delta) == offsetof(JitState, tick_delta), "exec tick");
-static_assert(sizeof(ExecState) == sizeof(JitState), "exec size");
+// Tests execute compiled TBs against real JitState layout (Phase 6c fields
+// such as insn_delta must not be a truncated mirror — prolog stores there).
+using ExecState = JitState;
 
 u32 run_tb(ExecPage& pg, const JitTbPlan& plan, ExecState& st, u32* out_len = nullptr) {
     u8* buf = (u8*)pg.p;
-    u32 len = jit_compile_tb(plan, buf, pg.size, (u32)JIT_EXIT_DONE);
+    u32 len = jit_compile_tb(plan, buf, pg.size, (u32)JIT_EXIT_DONE, 0);
     if (!len)
         return 0xDEADDEADu;
     if (out_len) *out_len = len;
@@ -187,14 +160,14 @@ void test_single_ops(ExecPage& pg) {
         u32 w = w_special(0, 0, 0, 0, 0x00);
         JitTbPlan plan = jit_decode_tb(&w, 1);
         u8* buf = (u8*)pg.p;
-        u32 len = jit_compile_tb(plan, buf, pg.size, (u32)JIT_EXIT_DONE);
+        u32 len = jit_compile_tb(plan, buf, pg.size, (u32)JIT_EXIT_DONE, 0);
         printf("[jit-test] nop-tb len=%u bytes:", len); fflush(stdout);
         for (u32 i = 0; i < len && i < 64; i++) { printf(" %02X", buf[i]); fflush(stdout); }
         printf("\n"); fflush(stdout);
         {   // SLL $8,$9,3 probe.
             u32 w2 = w_special(9, 9, 8, 3, 0x00);
             JitTbPlan p2 = jit_decode_tb(&w2, 1);
-            u32 l2 = jit_compile_tb(p2, buf, pg.size, (u32)JIT_EXIT_DONE);
+            u32 l2 = jit_compile_tb(p2, buf, pg.size, (u32)JIT_EXIT_DONE, 0);
             printf("[jit-test] sll-tb len=%u bytes:", l2); fflush(stdout);
             for (u32 i = 0; i < l2 && i < 64; i++) { printf(" %02X", buf[i]); fflush(stdout); }
             printf("\n"); fflush(stdout);
@@ -1048,7 +1021,7 @@ JitTestResult jit_run_phase1_tests(bool verbose) {
         u32 w = w_special(2, 3, 4, 0, 0x21);
         JitTbPlan plan = jit_decode_tb(&w, 1);
         u8 tiny[4];
-        CHECK(jit_compile_tb(plan, tiny, sizeof(tiny)) == 0, "overflow returns 0");
+        CHECK(jit_compile_tb(plan, tiny, sizeof(tiny), (u32)JIT_EXIT_DONE, 0) == 0, "overflow returns 0");
     }
     pg.done();
     if (verbose || failures)

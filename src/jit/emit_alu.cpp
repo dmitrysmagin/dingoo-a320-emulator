@@ -1,6 +1,15 @@
 #include "emit.h"
 
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 static_assert(offsetof(JitState, gpr) == 0, "gpr base moved");
 static_assert(sizeof(((JitState*)0)->gpr) == 128, "gpr size changed");
@@ -12,6 +21,8 @@ static_assert(offsetof(JitState, mem_size) == 160, "mem_size moved");
 static_assert(offsetof(JitState, code_start) == 164, "code_start moved");
 static_assert(offsetof(JitState, code_end) == 168, "code_end moved");
 static_assert(offsetof(JitState, wc_base) == 176, "wc_base moved");
+static_assert(offsetof(JitState, insn_delta) == JIT_OFF_INSN_DELTA, "insn_delta moved");
+static_assert(JIT_PROLOG_CHAIN_OFF == 3, "chain entry offset drift");
 
 static void emit_u8(JitEmit& e, u8 v) {
     if (e.len >= e.cap) { e.oom = true; return; }
@@ -97,17 +108,27 @@ static void emit_alu_eax_ecx(JitEmit& e, u8 op) {
     emit_u8(e, op);
     emit_u8(e, 0xC1);
 }
+// Forward declaration for emit_prolog
 
-
-static void emit_prolog(JitEmit& e) {
+static void emit_prolog(JitEmit& e, u32 entry_pc, u32 count) {
     // Move the JitState* arg into RDX once; the body is then ABI-independent.
     // The arg arrives in RCX on Win64, RDI on System V — select per platform.
     // (The old dual-store trick read garbage RDI on Windows and crashed.)
+    // Phase 6c: also store st.pc (SLOW_MEM-after-chain needs the faulting
+    // TB's entry) and add count to st.insn_delta (chained accounting).
+    // Chained entries land at kPrologChainOff (after the mov) with RDX live.
 #ifdef _WIN32
     emit_u8(e, 0x48); emit_u8(e, 0x8B); emit_u8(e, 0xD1);  // mov rdx, rcx
 #else
     emit_u8(e, 0x48); emit_u8(e, 0x8B); emit_u8(e, 0xD7);  // mov rdx, rdi
 #endif
+    emit_mov_rdx_disp32(e, JIT_OFF_PC, entry_pc);
+    if (count > 0 && count <= 127) {
+        emit_u8(e, 0x83);
+        emit_u8(e, 0x82);
+        emit_u32(e, JIT_OFF_INSN_DELTA);
+        emit_u8(e, (u8)count);
+    }
 }
 
 static void emit_epilog(JitEmit& e, u32 exit_code) {
@@ -139,7 +160,9 @@ void emit_mov_imm(JitEmit& e, u32 host_reg, u32 imm) {
     emit_mov_imm_local(e, host_reg, imm);
 }
 
+// Emit mov [RDX+disp32], imm32: 81 02 <off32> <imm32>.
 void emit_mov_rdx_disp32(JitEmit& e, u32 disp32, u32 imm) {
+    // mov dword ptr [rdx+disp32], imm32
     emit_u8(e, 0xC7);
     emit_u8(e, 0x82);
     emit_u32(e, disp32);
@@ -418,6 +441,12 @@ static bool emit_one(JitEmit& e, const JitAluInsn& o, u32 idx) {
     return false;
 }
 
+bool jit_emit_op(JitEmit& e, const JitAluInsn& op, u32 op_idx) {
+    if (!emit_one(e, op, op_idx))
+        return false;
+    return !e.oom;
+}
+
 static u32 ref_clz(u32 v) {
     if (v == 0) return 32;
     u32 c = 0;
@@ -517,9 +546,10 @@ void jit_run_reference(const JitTbPlan& plan, u32 regs[32], u32* hi, u32* lo) {
     if (lo) *lo = l;
 }
 
-u32 jit_compile_tb(const JitTbPlan& plan, u8* buf, u32 cap, u32 exit_code) {
+u32 jit_compile_tb(const JitTbPlan& plan, u8* buf, u32 cap, u32 exit_code,
+                   u32 entry_pc) {
     JitEmit e{buf, cap, 0, false};
-    emit_prolog(e);
+    emit_prolog(e, entry_pc, plan.count);
     for (u32 i = 0; i < plan.count; i++) {
         if (!emit_one(e, plan.ops[i], i)) return 0;
         if (e.oom) return 0;
@@ -532,13 +562,17 @@ u32 jit_compile_tb(const JitTbPlan& plan, u8* buf, u32 cap, u32 exit_code) {
         emit_u8(e, 0x83); emit_u8(e, 0x82); emit_u32(e, JIT_OFF_TICK_DELTA);
         emit_u8(e, (u8)plan.count);
     }
+    if (exit_code == (u32)JIT_EXIT_DONE)
+        emit_mov_rdx_disp32(e, JIT_OFF_NEXT_PC, entry_pc + plan.count * 4);
     emit_epilog(e, exit_code);
     if (e.oom) return 0;
     return e.len;
 }
 
 // Phase 6 shared primitives for branch-TB assembly (emit_branch.cpp).
-void jit_emit_prolog(JitEmit& e) { emit_prolog(e); }
+void jit_emit_prolog(JitEmit& e, u32 entry_pc, u32 count) {
+    emit_prolog(e, entry_pc, count);
+}
 void jit_emit_epilog(JitEmit& e, u32 exit_code) { emit_epilog(e, exit_code); }
 
 void jit_emit_tick_add(JitEmit& e, u32 count) {
@@ -564,6 +598,39 @@ u32 emit_jmp32(JitEmit& e) {
 
 void emit_patch32(JitEmit& e, u32 pos) { patch_rel32(e, pos); }
 
-bool jit_emit_op(JitEmit& e, const JitAluInsn& op, u32 op_idx) {
-    return emit_one(e, op, op_idx);
+// Phase 6c TB chaining: one 16-byte patchable exit site. Layout:
+//   +0:  C7 82 <off32> <target32>   mov [rdx+JIT_OFF_NEXT_PC], target (10 B)
+//   +10: B8 02 00 00 00              mov eax, JIT_EXIT_NEXT_PC (5 B)
+//   +15: C3                          ret (1 B) -> 16 total, no padding.
+// Patched form: 48 B8 <func64> (10 B) + FF E0 jmp rax (2 B) + 4x CC = 16.
+
+u32 jit_emit_chain_exit(JitEmit& e, u32 target_pc, JitChainInfo* info) {
+    u32 off = e.len;
+    emit_mov_rdx_disp32(e, JIT_OFF_NEXT_PC, target_pc);
+    jit_emit_epilog(e, (u32)JIT_EXIT_NEXT_PC);
+    if (e.oom)
+        return off;
+    if (e.len - off != JIT_CHAIN_SITE_SIZE) {
+        e.oom = true;
+        return off;
+    }
+    if (info && info->n < JitChainInfo::kMaxSites)
+        info->sites[info->n++] = {off, target_pc};
+    return off;
+}
+
+void jit_patch_chain_site(u8* tb_base, u32 code_off, u8* chain_entry) {
+    u8* p = tb_base + code_off;
+    u64 target = (u64)(uintptr_t)chain_entry;
+    p[0] = 0x48;
+    p[1] = 0xB8;
+    memcpy(p + 2, &target, 8);
+    p[10] = 0xFF;
+    p[11] = 0xE0;
+    p[12] = p[13] = p[14] = p[15] = 0xCC;
+#ifdef _WIN32
+    FlushInstructionCache(GetCurrentProcess(), p, JIT_CHAIN_SITE_SIZE);
+#else
+    __builtin___clear_cache((char*)p, (char*)p + JIT_CHAIN_SITE_SIZE);
+#endif
 }

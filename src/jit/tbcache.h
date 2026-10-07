@@ -5,6 +5,16 @@
 
 #include <vector>
 
+// Recorded during branch-TB emit; stored in the cache slot for later patching.
+struct JitChainInfo {
+    static constexpr u32 kMaxSites = 2;
+    u32 n = 0;
+    struct Site {
+        u32 code_off;
+        u32 target_pc;
+    } sites[kMaxSites];
+};
+
 struct JitState;  // jit.h (only a pointer target here, so this is enough)
 typedef u32 (*JitTbFunc)(JitState* state);  // identical to Jit's TbFunc
 
@@ -24,15 +34,27 @@ public:
     // Never a valid entry pc: KSEG3, always fails eligibility (unmapped).
     static constexpr u32 kEmpty = 0xFFFFFFFFu;
 
+    // Phase 6c chain metadata: exit-site table owned by the cached TB.
+    // Kept as plain offsets + PCs (no emit.h dependency — tbcache.h must
+    // stay includable from jit.h, which emit.h itself includes).
     struct Slot {
         u32 key;
         JitTbFunc func;
         u32 count;  // guest execute_one-equivalents (ticks + insn_count)
+        u8 chain_n;
+        u16 chain_off[2];
+        u32 chain_target[2];
     };
 
     JitTbCache()
-        : m_table(kSize, Slot{kEmpty, nullptr, 0})
+        : m_table(kSize, Slot{})
         , m_used(0) {
+        for (auto& s : m_table) {
+            s.key = kEmpty;
+            s.func = nullptr;
+            s.count = 0;
+            s.chain_n = 0;
+        }
     }
 
     // Tag match (func may be null = negative entry). No stats inside;
@@ -46,9 +68,17 @@ public:
         return true;
     }
 
+    // Full slot access for chaining (patch source sites after a NEXT_PC).
+    // Returns null when pc is not cached.
+    const Slot* find_slot(u32 pc) const {
+        const Slot& s = m_table[(pc >> 2) & kMask];
+        return (s.key == pc) ? &s : nullptr;
+    }
+
     // Insert or refresh. Returns true when a *different* live entry was
     // evicted (caller counts it; refreshes and empty fills don't count).
-    bool insert(u32 pc, JitTbFunc func, u32 count) {
+    // Chain metadata is stored alongside; clear() drops it with the TB.
+    bool insert(u32 pc, JitTbFunc func, u32 count, const JitChainInfo* chain) {
         Slot& s = m_table[(pc >> 2) & kMask];
         bool evicted = (s.key != kEmpty && s.key != pc);
         if (s.key == kEmpty)
@@ -56,7 +86,33 @@ public:
         s.key = pc;
         s.func = func;
         s.count = count;
+        s.chain_n = 0;
+        if (chain) {
+            for (u32 i = 0; i < chain->n && i < 2; i++) {
+                s.chain_off[i] = (u16)chain->sites[i].code_off;
+                s.chain_target[i] = chain->sites[i].target_pc;
+            }
+            s.chain_n = chain->n;
+        }
+
         return evicted;
+    }
+
+    // Patch branch exits that target `target_pc` once that TB is cached.
+    template <typename PatchFn>
+    u32 patch_edges_to(u32 target_pc, u8* chain_entry, PatchFn patch) const {
+        u32 n = 0;
+        for (const Slot& s : m_table) {
+            if (!s.func || s.key == kEmpty)
+                continue;
+            for (u32 i = 0; i < s.chain_n; i++) {
+                if (s.chain_target[i] != target_pc)
+                    continue;
+                patch((u8*)s.func, s.chain_off[i], chain_entry);
+                n++;
+            }
+        }
+        return n;
     }
 
     void clear() {
@@ -64,6 +120,7 @@ public:
             s.key = kEmpty;
             s.func = nullptr;
             s.count = 0;
+            s.chain_n = 0;
         }
         m_used = 0;
     }

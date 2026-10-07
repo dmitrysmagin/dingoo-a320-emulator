@@ -246,8 +246,14 @@ struct alignas(16) CpuState {
 - Fixes on the way: Makefile header deps were incomplete (`main.o` went
   stale after `sizeof(Jit)` grew and smashed `Display` — full-deps rule
   added); Phase-0 proof TB wrote through garbage RDI on Win64 (ABI-split).
-  Deferred (diminishing returns): GPR pinning, direct TB chaining,
-  threaded compile, constprop — avg ~6 insns/TB is enough for the gate.
+  Done since: (1) direct-mapped TB cache (`tbcache.h`); (2) TB chaining
+  (16-byte patchable branch exits, `patch_edges_to` on compile/NEXT_PC,
+  chain entry at `TB+JIT_PROLOG_CHAIN_OFF`, `insn_delta` across chains).
+  Deferred: (3) tick-flush
+  fast path (`tick_delta` batch + `JIT_EXIT_ERET` exit declared); (4) GPR
+  pinning / constprop / fallback diet. The bottleneck: dispatch lookup
+  (~9ns/iter, 28% loop), TB sync (35%), fallbacks (30%). All measurements
+  are approximate (rdtsc overhead folded); ratios are the reliable data.
 
 ### Phase 6b — dispatch overhead (measured, 2026-10-07)
 - Method: rdtsc counters in the dispatcher (`--jit-stats` time section),

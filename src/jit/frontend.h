@@ -125,11 +125,21 @@ bool jit_pc_eligible(Memory* mem, u32 pc);
 // Phase 6 TB formation: a linear word run plus one optional terminal
 // branch with a validated delay slot (valid, non-branch, non-mem).
 // Never reads past stop PCs or ineligible PCs. Pure function of guest RAM.
+// Chaining: when has_branch, exit_targets carries the one (J/JAL) or two
+// (conditional taken/fallthrough) guest-PC exits. The dispatcher chains a
+// NEXT_PC exit to the cached TB for the observed target; flush-all keeps
+// the protocol sound (no unpatch bookkeeping).
+struct JitChainExit {
+    u32 target_pc;  // guest PC this edge leads to
+    u32 code_off;   // TB byte offset of the exit site (patched on chain)
+};
 struct JitFormed {
     u32 words[JIT_TB_MAX_INSNS];
     u32 n;            // words collected
     bool has_branch;  // words[n-2] is a branch, words[n-1] its delay slot
     u32 branch_idx;   // index of the branch word (delay slot at +1)
+    JitChainExit exits[2];  // valid iff has_branch (n_exits 1 or 2)
+    u32 n_exits;
 };
 JitFormed jit_form_tb(Memory* mem, u32 pc, u32 stop_pc, u32 alt_stop_pc);
 

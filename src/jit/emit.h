@@ -55,6 +55,11 @@ static constexpr u32 JIT_OFF_WC_BASE = 32 * 4 + 48;    // 176 - u64 write_counts
 static constexpr u32 JIT_OFF_COP0_PTR = 32 * 4 + 56;   // 184 - u64 COP0*
 static constexpr u32 JIT_OFF_MXU_PTR = 32 * 4 + 64;    // 192 - u64 MXU*
 static constexpr u32 JIT_OFF_TICK_DELTA = 32 * 4 + 72; // 200 - u32 unflushed ticks
+static constexpr u32 JIT_OFF_INSN_DELTA = 32 * 4 + 80; // 208 - chained insn accounting
+static constexpr u32 JIT_PROLOG_CHAIN_OFF = 3; // skip mov rdx, rcx/rdi on chain entry
+
+// Byte offset of a chain exit site within a TB (for patching).
+static constexpr u32 JIT_CHAIN_SITE_SIZE = 16;
 
 // Emitter cursor over a raw byte buffer.
 struct JitEmit {
@@ -68,8 +73,6 @@ struct JitEmit {
 
 // Compile one TB plan into buf (cap bytes). Returns emitted length, or 0 on
 // overflow/unsupported op. Always appends the exit epilog on success.
-u32 jit_compile_tb(const JitTbPlan& plan, u8* buf, u32 cap,
-                   u32 exit_code = (u32)JIT_EXIT_DONE);
 
 // Branch helpers for Phase 2: compute target, emit conditional/unconditional exit.
 u32 compute_branch_target(const JitAluInsn& op, u32 pc);
@@ -82,8 +85,7 @@ void emit_branch_exit(JitEmit& e, const JitAluInsn& op, u32 target);
 // it, matching cpu.cpp execute/execute_one order: link before delay,
 // condition evaluated before delay, likely-not-taken skips delay).
 // Returns emitted length, or 0 on overflow/unsupported op.
-u32 jit_compile_branch_tb(const JitTbPlan& plan, u32 branch_idx, u32 entry_pc,
-                          u8* buf, u32 cap);
+
 
 // Emitter helpers (used by both emit_alu and emit_branch)
 void emit_mov_imm(JitEmit& e, u32 host_reg, u32 imm);
@@ -91,7 +93,7 @@ void emit_mov_rdx_disp32(JitEmit& e, u32 disp32, u32 imm);
 
 // Phase 6 shared raw-output primitives (thin wrappers over emit_alu
 // statics, so branch/mem emitters need no duplication).
-void jit_emit_prolog(JitEmit& e);              // state* -> RDX per host ABI
+void jit_emit_prolog(JitEmit& e, u32 entry_pc, u32 insn_count);  // state* -> RDX
 void jit_emit_epilog(JitEmit& e, u32 exit_code);  // mov eax, exit; ret
 void jit_emit_tick_add(JitEmit& e, u32 count);    // tick_delta += count
 u32 emit_jcc32(JitEmit& e, u8 cc);             // 0F cc + rel32 placeholder
@@ -107,6 +109,20 @@ bool jit_emit_op(JitEmit& e, const JitAluInsn& op, u32 op_idx);
 // JIT_EXIT_SLOW_MEM and exit_arg = op_idx so the dispatcher can resume
 // the interpreter at the right PC. Returns false on overflow.
 bool emit_mem_op(JitEmit& e, const JitAluInsn& op, u32 op_idx);
+
+// Phase 6c: chain exit helpers.
+// Emit a 16-byte patchable exit: mov [rdx+off], pc; mov eax, exit; ret
+// Returns offset (0..15) for later patch; caller pads to 16 bytes.
+u32 jit_emit_chain_exit(JitEmit& e, u32 target_pc, JitChainInfo* info);
+// Patch the 16-byte exit at tb_base+code_off to jmp chain_entry (TB+JIT_PROLOG_CHAIN_OFF).
+void jit_patch_chain_site(u8* tb_base, u32 code_off, u8* chain_entry);
+
+// Phase 6: compile TB plans into raw output buffers.
+// entry_pc is the MIPS PC of the first instruction in this TB.
+u32 jit_compile_tb(const JitTbPlan& plan, u8* buf, u32 cap, u32 exit_code, u32 entry_pc);
+// branch_idx indexes the branch insn in plan.ops; the delay slot
+// and any prefix ops are emitted as part of this TB.
+u32 jit_compile_branch_tb(const JitTbPlan& plan, u32 branch_idx, u32 entry_pc, u8* buf, u32 cap, JitChainInfo* chain = nullptr);
 
 // Per-op ALU semantics shared by jit_run_reference() and the mem reference
 // below (single source of truth for discharge diffs).

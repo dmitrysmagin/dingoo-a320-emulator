@@ -44,7 +44,9 @@ struct JitState {
     COP0* cop0;       // Phase 4: COP0 for MFC0/MTC0 helpers
     MXU* mxu;         // Phase 4: MXU for COP2 helpers
     u32 tick_delta;   // Phase 4: unflushed cop0.tick() count (Phase 5 flushes)
-    u32 tick_pad;     // padding to keep 8-byte size
+    u32 chain_left;   // Phase 6: chained-TB budget before forced exit
+    u32 insn_delta;   // Phase 6: chained insns executed (stub-tracked)
+    u32 chain_pad;    // padding to keep 8-byte size
 };
 
 enum JitExit : u32 {
@@ -73,6 +75,10 @@ struct JitStats {
     u64 tb_nextpc = 0;    // NEXT_PC exits taken (branches via TBs)
     u64 tb_insns = 0;     // guest insns executed via TBs
     u64 interp_insns = 0;  // guest insns executed via interpreter fallback
+    u64 chain_hits = 0;   // NEXT_PC exits chained to next TB (no dispatch RT)
+    u64 chain_patches = 0;  // dynamic chain edges installed
+    u64 chain_stub_hits = 0;  // stub fast-path hits (target already cached)
+    u64 chain_unpatched = 0;  // stub slow-path hits (target uncached)
     u64 slow_exits = 0;   // TB slow-mem exits (faulting op ran on interpreter)
     u64 flushes = 0;      // cache flushes (code-gen change or LRU cap)
     // Perf counters below are raw TSC cycles (converted to ns for display
@@ -168,6 +174,7 @@ private:
     static constexpr u32 kPoolSize = 1 << 20;  // 1 MB exec pools
 
     void flush_locked();  // drop cache + pools, resync generation
+    void patch_chain_edges_to(u32 target_pc, TbFunc target_func);
     u8* pool_alloc(u32 len);
     // Try to compile a TB at pc (stops at stop PCs / ineligible pcs).
     // Returns true with func/count on success. stable=false means the
