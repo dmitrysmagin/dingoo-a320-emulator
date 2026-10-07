@@ -1,6 +1,8 @@
 # Dingoo A320 Emulator
 
-A portable MIPS32 interpreter-based emulator for Dingoo A320 (JZ4730 SoC) `.app` games.
+A portable MIPS32 emulator for Dingoo A320 (JZ4730 SoC) `.app` games, with
+two execution tiers: a reference interpreter and a dynarec JIT
+(`--jit=on`, ~4× faster, bit-identical output).
 
 Runs any standard `.app` binary with Dingoo OS syscall interception, SDL2 display/audio/input, and resource archive support.
 
@@ -13,15 +15,20 @@ Runs any standard `.app` binary with Dingoo OS syscall interception, SDL2 displa
 │                      Host (SDL2 + your OS)                       │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │                    Emulator Core                          │   │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐ │   │
-│  │  │ MIPS32   │  │ MXU      │  │ Memory   │  │ COP0    │ │   │
-│  │  │ Decoder  │  │ (COP2)   │  │ Manager  │  │ (stub)  │ │   │
-│  │  │ + Exec   │  │          │  │ (flat    │  │         │ │   │
-│  │  │          │  │          │  │  KSEG0/1)│  │         │ │   │
-│  │  └──────────┘  └──────────┘  └──────────┘  └─────────┘ │   │
-│  │                                                          │   │
-│  │  ┌──────────────────────────────────────────────────┐   │   │
+ │  │                    Emulator Core                          │   │
+ │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐ │   │
+ │  │  │ MIPS32   │  │ MXU      │  │ Memory   │  │ COP0    │ │   │
+ │  │  │ Decoder  │  │ (COP2)   │  │ Manager  │  │ (stub)  │ │   │
+ │  │  │ + Exec   │  │          │  │ (flat    │  │         │ │   │
+ │  │  │          │  │          │  │  KSEG0/1)│  │         │ │   │
+ │  │  └──────────┘  └──────────┘  └──────────┘  └─────────┘ │   │
+ │  │                                                          │   │
+ │  │  ┌──────────────────────────────────────────────────┐   │   │
+ │  │  │           Dynarec JIT (`--jit=on`)                 │   │   │
+ │  │  │ cached straight-line + branch TBs, interp fallback│   │   │
+ │  │  └──────────────────────────────────────────────────┘   │   │
+ │  │                                                          │   │
+ │  │  ┌──────────────────────────────────────────────────┐   │   │
 │  │  │           Dingoo OS Syscall Interception         │   │   │
 │  │  │ 97 implemented + 83 stubs = 180 intercepted     │   │   │
 │  │  └──────────────────────────────────────────────────┘   │   │
@@ -45,6 +52,7 @@ Runs any standard `.app` binary with Dingoo OS syscall interception, SDL2 displa
 | Module | File(s) | Role |
 |--------|---------|------|
 | MIPS32 interpreter | `cpu.cpp`, `cpu.h` | Fetches, decodes, executes all standard MIPS32 r1 opcodes |
+| Dynarec JIT | `jit/` (`jit.cpp`, `frontend.cpp`, `emit_*.cpp`) | Cached x86-64 translation blocks (ALU, memory fast path, COP0/COP2 calls, branch exits); interpreter fallback for the rest |
 | COP0 | `cop0.cpp`, `cop0.h` | MIPS32 CP0 register handling, TLB-emulation-free mode |
 | MXU (COP2) | `mxu.cpp`, `cpu.cpp` | Dingoo DSP coprocessor (30+ ops for audio mixing, fixed-point math) |
 | Memory manager | `memory.cpp`, `memory.h` | Flat KSEG0/KSEG1 address map, identity-mapped KUSEG |
@@ -95,6 +103,9 @@ Options:
   --nosound           Disable audio output
   --audio-latency <ms>  Max queued audio ahead of playback (default 80, range 20–500)
   --rotate <deg>      Rotate the SDL window and D-pad (90, -90, or 270)
+  --jit={off,on}      Execution tier: interpreter reference (default) or dynarec JIT
+  --jit-stats         Print JIT cache/TB counters at exit (implies nothing else)
+  --jit-tests         Run the JIT discharge test suite (no ROM) and exit
 ```
 
 ### Examples
@@ -137,6 +148,18 @@ number increments so existing files are not overwritten.
 `--rotate 90` turns the window clockwise (portrait 240×320) and remaps the D-pad
 so arrow keys follow the screen. `--rotate -90` and `--rotate 270` are
 counter-clockwise (the same transform). A/B/X/Y and other buttons are unchanged.
+
+### JIT mode
+
+`--jit=on` executes games through cached x86-64 translation blocks instead of
+the interpreter loop: straight-line ALU runs, a RAM fast path for loads/stores
+(MMIO/unmapped/code-section accesses exit back to the interpreter), calls into
+the existing COP0/MXU implementations, and branch exits with inlined delay
+slots. JR/JALR, syscalls, GOT dispatch, and anything unmapped still run on the
+interpreter, so output is bit-identical (same frames, same syscall profile —
+verified across all 28 bundled titles). `--jit=off` (default) keeps the pure
+interpreter as the reference. Design and phase history live in
+[docs/DYNAREC_PLAN.md](docs/DYNAREC_PLAN.md).
 
 ---
 
@@ -286,7 +309,9 @@ The emulator reports English as the firmware language. Games that can switch loc
 
 ## Performance
 
-- ~64 million guest MIPS instructions / second on modern x86
+- Interpreter: ~35–50 million guest MIPS instructions / second on modern x86
+- JIT (`--jit=on`): ~200 million guest insns / second on large titles
+  (~4× the interpreter; 98% of insns run inside cached TBs on 7days)
 - Typically 2M instructions per CPU frame, ~50–60 CPU frames for 1 rendered frame
 - Runs approximately 5× slower than real JZ4730 hardware (360 MHz)
 - Audio handled via lock-free ring + SDL callback (~20–32 ms fragments)
