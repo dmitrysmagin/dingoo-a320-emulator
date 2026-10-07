@@ -140,6 +140,14 @@ struct alignas(16) CpuState {
   `LWC2/SWC2` → MXU helper (Phase 4) or inline `xregs[rt]` move + slow mem.
 - Gate: `7days.app --frames 500` JIT vs interp: same `write_count` hotspots,
   same screenshots; measure insn/s uplift (expect 3–5× on straight code).
+- Status ✅ DISCHARGE-DONE (2026-10-07): hand-encoded fast path for all 8
+  ops in `src/jit/emit_mem.cpp` (KSEG strip, overflow-safe bounds, code-
+  section reject on stores, `write_counts` bump, null-base slow exit with
+  `exit_arg` = op index); `LWL/LWR/SWL/SWR`, `LL/SC`, `CACHE`, `LWCx/SWCx`
+  stay interpreter-only (`JIT_STOP_MEM`). `--jit-tests`: 22837 passed,
+  0 failed (fast-RAM diffs, slow-exit vectors, read-your-write chains,
+  KSEG0/1/KUSEG coverage). Game-execution gate deferred to Phase 5 —
+  the JIT is not wired into the main loop yet (interpreter runs games).
 
 ### Phase 4 — COP0/COP2/MXU (correctness, not speed)
 - `MFC0/MTC0` (Count/Compare/Status/Cause/EPC/PRId/Config + TLB regs as stubs),

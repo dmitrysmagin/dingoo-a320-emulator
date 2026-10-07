@@ -1,14 +1,16 @@
 #ifndef JIT_FRONTEND_H
 #define JIT_FRONTEND_H
 
-// Phase 1 MIPS32 straight-line ALU frontend.
+// Phase 1 MIPS32 straight-line ALU frontend (extended through Phase 3).
 //
 // Decodes guest instructions (little-endian u32) into a TB plan: a bounded
-// run of compilable ALU ops terminated by a stop reason. The decoder's
+// run of compilable ops terminated by a stop reason. The decoder's
 // tick-box for each opcode mirrors CPU::execute()/exec_special() in
 // cpu.cpp — anything the JIT does not understand ends the TB so the
-// interpreter handles it (branches, loads/stores, COP0/COP2, JR/JALR,
-// SYSCALL/BREAK, GOT targets are all stops, never compiled here).
+// interpreter handles it (JR/JALR, SYSCALL/BREAK, COP0/COP2, slow mem,
+// GOT targets are all stops, never compiled here).
+// Phase 3 compiles LB/LH/LW/LBU/LHU/SB/SH/SW inline (fast RAM path;
+// MMIO/unmapped/code-section exits to the interpreter).
 
 #include "../types.h"
 
@@ -61,6 +63,11 @@ enum JitAluOp {
     JIT_ALU_BNEL,    // BNEL rs, rt, offset (likely not taken)
     JIT_ALU_BLEZL,   // BLEZL rs, offset (likely not taken)
     JIT_ALU_BGTZL,   // BGTZL rs, offset (likely not taken)
+    
+    // Phase 3: Memory ops (inline load/store)
+    JIT_ALU_LB, JIT_ALU_LH, JIT_ALU_LW, JIT_ALU_LBU,
+    JIT_ALU_LHU, JIT_ALU_SB, JIT_ALU_SH, JIT_ALU_SW,
+    JIT_ALU_LWL, JIT_ALU_LWR, JIT_ALU_SWL, JIT_ALU_SWR,
 };
 
 struct JitAluInsn {

@@ -74,9 +74,7 @@ static JitOpProbe probe_special3(u32 insn, u32 rs, u32 rt, u32 rd, u32 func) {
     p.valid = false;
     p.stop = JIT_STOP_SPECIAL3;
     // cpu.cpp exec_special3: func 0x00 = EXT, func 0x04 = INS.
-    // pos = sa (bits 10:6), size = rd+1 (EXT) — NOT the SPECIAL2 CLZ pattern.
-    // EXT Rd encoding: op=0x1F rs rt rd pos func=0x00 (rd holds msb, NOT rd+1!).
-    // Per MIPS32 spec: size = msb-lsb+1 where msb=rd, lsb=pos(sa).
+    // pos = sa (bits 10:6), size = rd + 1 (rd encodes size-1).
     if (func == 0x00) {  // EXT
         JitAluInsn o;
         o.op = JIT_ALU_EXT;
@@ -133,16 +131,44 @@ static JitOpProbe probe_imm(u32 op, u32 rs, u32 rt, u32 insn) {
     return p;
 }
 
-static bool is_mem_op(u32 op) {
+// Phase 3: fast-path loads/stores. Loads with rt==0 are NOP (interpreter
+// guards `if (rt)`); stores ALWAYS execute (interpreter stores regs[0]==0).
+static JitOpProbe probe_mem(u32 op, u32 rs, u32 rt, u32 insn) {
+    JitOpProbe p;
+    p.valid = true;
+    p.stop = JIT_STOP_NONE;
+    p.op.rs = rs; p.op.rt = rt; p.op.rd = 0;
+    p.op.sa = 0; p.op.imm = sext16(insn); p.op.uimm = 0;
+    bool is_store = (op == 0x28 || op == 0x29 || op == 0x2B);
     switch (op) {
-    case 0x1A: case 0x1B:  // LDLD/LD, STC/SC (LL/SC live here)
-    case 0x20: case 0x21: case 0x22: case 0x23: case 0x24: case 0x25:
-    case 0x26: case 0x27: case 0x28: case 0x29: case 0x2A: case 0x2B:
-    case 0x2E: case 0x2F:  // SWL/SWC1
+    case 0x20: p.op.op = JIT_ALU_LB; break;
+    case 0x21: p.op.op = JIT_ALU_LH; break;
+    case 0x23: p.op.op = JIT_ALU_LW; break;
+    case 0x24: p.op.op = JIT_ALU_LBU; break;
+    case 0x25: p.op.op = JIT_ALU_LHU; break;
+    case 0x28: p.op.op = JIT_ALU_SB; break;
+    case 0x29: p.op.op = JIT_ALU_SH; break;
+    default:   p.op.op = JIT_ALU_SW; break;
+    }
+    if (rt == 0 && !is_store)
+        p.op.op = JIT_ALU_NOP;
+    return p;
+}
+
+static bool is_slow_mem_op(u32 op) {
+    // Everything memory-ish that the fast path does NOT compile: the
+    // interpreter handles these (LL/SC semantics, LWL/R merge formulas,
+    // CACHE/LWCx/SWCx nops, COP1X leftovers). Opcode numbers mirror cpu.cpp.
+    switch (op) {
+    case 0x1A: case 0x1B:
+    case 0x22: case 0x26: case 0x27:  // LWL/LWR/SWL-ish unaligned merges
+    case 0x2A: case 0x2E:  // SWL/SWR
+    case 0x2F:  // CACHE
     case 0x30: case 0x31: case 0x32: case 0x33:
-    case 0x34: case 0x35: case 0x36: case 0x37: case 0x38: case 0x39:
-    case 0x3A: case 0x3B: case 0x3C: case 0x3D: case 0x3E: case 0x3F:
-        return true;  // LB..LW/LBU.. /SB..SW/LWL/LWR/SWL/SWR/LL/SC/LWCx/SWCx/CACHE
+    case 0x34: case 0x35: case 0x36: case 0x37:
+    case 0x38: case 0x39: case 0x3A: case 0x3B:
+    case 0x3C: case 0x3D: case 0x3E: case 0x3F:
+        return true;
     default:
         return false;
     }
@@ -253,7 +279,12 @@ JitOpProbe jit_probe_op(u32 insn) {
     if (op == 0x10 || op == 0x11 || op == 0x12 || op == 0x13) {
         JitOpProbe p; p.valid = false; p.stop = JIT_STOP_COP; return p;
     }
-    if (is_mem_op(op)) {
+    // Phase 3: fast-path loads/stores compile inline; the rest exit to the
+    // interpreter (which owns palette/GPIO/LCD/DMA/log/write-protect).
+    if (op == 0x20 || op == 0x21 || op == 0x23 || op == 0x24 ||
+        op == 0x25 || op == 0x28 || op == 0x29 || op == 0x2B)
+        return probe_mem(op, rs, rt, insn);
+    if (is_slow_mem_op(op)) {
         JitOpProbe p; p.valid = false; p.stop = JIT_STOP_MEM; return p;
     }
     return probe_imm(op, rs, rt, insn);

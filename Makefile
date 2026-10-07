@@ -23,6 +23,7 @@ SOURCES = $(SRCDIR)/main.cpp \
           $(SRCDIR)/jit/frontend.cpp \
           $(SRCDIR)/jit/emit_alu.cpp \
           $(SRCDIR)/jit/emit_branch.cpp \
+          $(SRCDIR)/jit/emit_mem.cpp \
           $(SRCDIR)/jit/jit_test.cpp
 
 OBJECTS = $(patsubst $(SRCDIR)/%.cpp,$(OBJDIR)/%.o,$(SOURCES))

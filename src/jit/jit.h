@@ -29,12 +29,18 @@ struct JitState {
     u32 pc;           // Phase 2: current PC (for delay slot)
     u32 hi;           // Phase 1: HI register
     u32 lo;           // Phase 1: LO register
+    u64 mem_base;     // Phase 3: host pointer to Memory::m_mem[0] (0 = slow path)
+    u32 mem_size;     // Phase 3: RAM size in bytes (bounds check)
+    u32 code_start;   // Phase 3: code-section phys start (stores inside -> slow exit)
+    u32 code_end;     // Phase 3: code-section phys end (exclusive)
+    u64 wc_base;      // Phase 3: host pointer to write_counts[0] (u32 per 4K page)
 };
 
 enum JitExit : u32 {
     JIT_EXIT_DONE = 0,   // proof TB executed v0=1 successfully
     JIT_EXIT_ERROR = 1,  // TB failed / not available
-    JIT_EXIT_NEXT_PC = 2 // Phase 2: exit to dispatcher with next_pc set
+    JIT_EXIT_NEXT_PC = 2, // Phase 2: exit to dispatcher with next_pc set
+    JIT_EXIT_SLOW_MEM = 3 // Phase 3: unmapped/MMIO/code access at op [exit_arg]
 };
 
 enum JitMode {

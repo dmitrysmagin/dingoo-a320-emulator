@@ -1,8 +1,6 @@
 #include "emit.h"
-#include "frontend.h"
 
-#include "emit.h"
-#include "frontend.h"
+#include <cstddef>
 
 // Compute branch target for a given instruction and PC
 // J: target = (imm26 << 2) | (pc & 0xF0000000)
@@ -19,7 +17,10 @@ u32 compute_branch_target(const JitAluInsn& op, u32 pc)
         case JIT_ALU_BLEZ: case JIT_ALU_BGTZ:
         case JIT_ALU_BLEZL: case JIT_ALU_BGTZL:
             // I-type branches: target = pc + 4 + (sext16(imm16) << 2)
-            return (u32)((s32)pc + 4 + ((op.imm & 0xFFFF) << 2));
+            return (u32)((s32)pc + 4 + (op.imm << 2));
+        case JIT_ALU_BLTZ: case JIT_ALU_BGEZ:
+        case JIT_ALU_BLTZAL: case JIT_ALU_BGEZAL:
+            return (u32)((s32)pc + 4 + (op.imm << 2));
         default:
             return 0xFFFFFFFFu; // Invalid
     }
@@ -28,8 +29,7 @@ u32 compute_branch_target(const JitAluInsn& op, u32 pc)
 // Emit branch exit: for unconditional jumps, set next_pc; for conditional branches, set next_pc conditionally
 void emit_branch_exit(JitEmit& e, const JitAluInsn& op, u32 target)
 {
-    // For all branch ops, emit a MOV of the target into next_pc
-    // In production, conditional branches would emit conditional jumps
-    // For Phase 2, we use a simple approach: always set next_pc
-    emit_mov_imm(e, JIT_OFF_NEXT_PC, target);
+    (void)op;
+    // Store the target into next_pc (JitState.next_pc at JIT_OFF_NEXT_PC).
+    emit_mov_rdx_disp32(e, JIT_OFF_NEXT_PC, target);
 }
