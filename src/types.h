@@ -27,6 +27,15 @@ static constexpr u32 RAWD_LOAD_PHYS    = 0x00A00000;
 static constexpr u32 GOT_ENTRY_SIZE    = 8;
 static constexpr u32 MAX_GOT_ENTRIES   = 256;
 
+// Guest CPU timing (JZ4730 / Dingoo A320). Real hardware is 360 MHz; many units
+// run at 420 MHz. The main loop executes up to GUEST_INSNS_PER_SLICE guest
+// instructions then simulate_vsync (~60 Hz cadence), so effective MHz ≈
+// GUEST_CPU_HZ when the host keeps up. (The old hard-coded 2M/slice ≈ 120 MHz.)
+static constexpr u32 GUEST_CPU_HZ_STOCK    = 360'000'000u;
+static constexpr u32 GUEST_CPU_HZ        = 420'000'000u;
+static constexpr u32 GUEST_VSYNC_HZ        = 60u;
+static constexpr u32 GUEST_INSNS_PER_SLICE = GUEST_CPU_HZ / GUEST_VSYNC_HZ;
+
 // Stack
 static constexpr u32 STACK_TOP         = 0x80C10000;
 static constexpr u32 STACK_SIZE        = 64 * 1024;

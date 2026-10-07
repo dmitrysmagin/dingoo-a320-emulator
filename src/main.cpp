@@ -318,6 +318,8 @@ int main(int argc, char* argv[]) {
     };
 
     printf("[INIT] RAM size: %u MB\n", mem.size() / (1024 * 1024));
+    printf("[INIT] Guest CPU: %u MHz (%u insns/vsync slice @ %u Hz)\n",
+           GUEST_CPU_HZ / 1'000'000u, GUEST_INSNS_PER_SLICE, GUEST_VSYNC_HZ);
     printf("[INIT] Display: %dx%d (scale %d)\n", Display::WIDTH, Display::HEIGHT, Display::SCALE);
     printf("[INIT] JIT: %s\n", arg_jit == JIT_ON ? "on (TB dispatcher)" : "off (interpreter)");
 
@@ -354,7 +356,7 @@ int main(int argc, char* argv[]) {
 
     srand((u32)time(NULL));
     clock_t start = clock();
-    u32 max_insns_per_frame = 2000000;
+    u32 max_insns_per_frame = GUEST_INSNS_PER_SLICE;
     u32 frame_count = 0;
 
     // --seconds covers the whole run, not just Phase 2: a game whose dl_main never
