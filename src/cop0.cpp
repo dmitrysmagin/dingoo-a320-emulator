@@ -39,6 +39,18 @@ u32 COP0::mfc0(int rd) {
     }
 }
 
+void COP0::flush_ticks(u32 n, bool fast_when_wired0) {
+    if (!n)
+        return;
+    if (fast_when_wired0 && regs.wired == 0) {
+        regs.count += n;
+        regs.random = (regs.random - n) & 31u;
+        return;
+    }
+    for (u32 i = 0; i < n; i++)
+        tick();
+}
+
 void COP0::mtc0(int rd, u32 value) {
     switch (rd) {
     case 0:  regs.index = value; break;

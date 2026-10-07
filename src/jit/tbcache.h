@@ -44,6 +44,7 @@ public:
         u8 chain_n;
         u16 chain_off[2];
         u32 chain_target[2];
+        u8 tick_fast;  // 1: TB has no MTC0 — COP0 flush may batch if wired==0
     };
 
     JitTbCache()
@@ -54,17 +55,20 @@ public:
             s.func = nullptr;
             s.count = 0;
             s.chain_n = 0;
+            s.tick_fast = 0;
         }
     }
 
     // Tag match (func may be null = negative entry). No stats inside;
     // the caller counts hits/negatives (branch-free here keeps it fast).
-    bool find(u32 pc, JitTbFunc& func, u32& count) const {
+    bool find(u32 pc, JitTbFunc& func, u32& count, bool* tick_fast = nullptr) const {
         const Slot& s = m_table[(pc >> 2) & kMask];
         if (s.key != pc)
             return false;
         func = s.func;
         count = s.count;
+        if (tick_fast)
+            *tick_fast = s.tick_fast != 0;
         return true;
     }
 
@@ -78,7 +82,8 @@ public:
     // Insert or refresh. Returns true when a *different* live entry was
     // evicted (caller counts it; refreshes and empty fills don't count).
     // Chain metadata is stored alongside; clear() drops it with the TB.
-    bool insert(u32 pc, JitTbFunc func, u32 count, const JitChainInfo* chain) {
+    bool insert(u32 pc, JitTbFunc func, u32 count, bool tick_fast,
+                const JitChainInfo* chain) {
         Slot& s = m_table[(pc >> 2) & kMask];
         bool evicted = (s.key != kEmpty && s.key != pc);
         if (s.key == kEmpty)
@@ -86,6 +91,7 @@ public:
         s.key = pc;
         s.func = func;
         s.count = count;
+        s.tick_fast = tick_fast ? 1 : 0;
         s.chain_n = 0;
         if (chain) {
             for (u32 i = 0; i < chain->n && i < 2; i++) {
@@ -121,6 +127,7 @@ public:
             s.func = nullptr;
             s.count = 0;
             s.chain_n = 0;
+            s.tick_fast = 0;
         }
         m_used = 0;
     }

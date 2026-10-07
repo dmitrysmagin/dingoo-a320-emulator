@@ -2,6 +2,7 @@
 #include "emit.h"
 #include "frontend.h"
 #include "../memory.h"
+#include "../cop0.h"
 
 #include <cstdio>
 #include <cstring>
@@ -986,6 +987,37 @@ void test_stops() {
     if (g_verbose) printf("[jit-test] stop classification done\n");
 }
 
+void test_cop0_tick_batch() {
+    Rng rng;
+    rng.s = 0xABCDEF01u;
+    for (int t = 0; t < 5000; t++) {
+        COP0 a, b;
+        a.reset();
+        b.reset();
+        a.regs.random = rng.next() & 31u;
+        b.regs.random = a.regs.random;
+        u32 n = (rng.next() % 200u) + 1u;
+        a.flush_ticks(n, true);
+        for (u32 i = 0; i < n; i++)
+            b.tick();
+        CHECK(a.regs.count == b.regs.count, "tick batch count wired0");
+        CHECK(a.regs.random == b.regs.random, "tick batch random wired0");
+    }
+    COP0 a, b;
+    a.reset();
+    b.reset();
+    a.regs.wired = 5;
+    b.regs.wired = 5;
+    a.regs.random = 20;
+    b.regs.random = 20;
+    u32 n = 50;
+    a.flush_ticks(n, true);
+    for (u32 i = 0; i < n; i++)
+        b.tick();
+    CHECK(a.regs.count == b.regs.count, "tick batch count wired>0");
+    CHECK(a.regs.random == b.regs.random, "tick batch random wired>0");
+}
+
 }  // namespace
 
 JitTestResult jit_run_phase1_tests(bool verbose) {
@@ -1016,7 +1048,8 @@ JitTestResult jit_run_phase1_tests(bool verbose) {
     test_formation();
     printf("[jit-test] formation done, stops...\n"); fflush(stdout);
     test_stops();
-    // Overflow: tiny buffer must fail cleanly (return 0, no crash).
+    test_cop0_tick_batch();
+    // Overflow: tiny buffer must fail cleanly (return 0, no cache).
     {
         u32 w = w_special(2, 3, 4, 0, 0x21);
         JitTbPlan plan = jit_decode_tb(&w, 1);

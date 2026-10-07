@@ -79,6 +79,8 @@ struct JitStats {
     u64 chain_patches = 0;  // dynamic chain edges installed
     u64 chain_stub_hits = 0;  // stub fast-path hits (target already cached)
     u64 chain_unpatched = 0;  // stub slow-path hits (target uncached)
+    u64 tick_flush_fast = 0;  // guest insns: COP0 flush used wired==0 batch
+    u64 tick_flush_slow = 0;  // guest insns: COP0 flush used tick() loop
     u64 slow_exits = 0;   // TB slow-mem exits (faulting op ran on interpreter)
     u64 flushes = 0;      // cache flushes (code-gen change or LRU cap)
     // Perf counters below are raw TSC cycles (converted to ns for display
@@ -175,6 +177,7 @@ private:
 
     void flush_locked();  // drop cache + pools, resync generation
     void patch_chain_edges_to(u32 target_pc, TbFunc target_func);
+    void flush_tb_ticks(CPU* cpu, u32 n, bool tick_fast_tb);
     u8* pool_alloc(u32 len);
     // Try to compile a TB at pc (stops at stop PCs / ineligible pcs).
     // Returns true with func/count on success. stable=false means the

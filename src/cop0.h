@@ -48,6 +48,10 @@ struct COP0 {
             regs.random = r;
         }
     }
+
+    // Batch `n` tick() calls when wired==0 (closed form). Otherwise falls
+    // back to n× tick() (correct for wired!=0 and MTC0-affected paths).
+    void flush_ticks(u32 n, bool fast_when_wired0);
 };
 
 #endif // COP0_H

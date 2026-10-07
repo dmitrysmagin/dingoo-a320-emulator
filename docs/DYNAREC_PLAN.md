@@ -249,8 +249,8 @@ struct alignas(16) CpuState {
   Done since: (1) direct-mapped TB cache (`tbcache.h`); (2) TB chaining
   (16-byte patchable branch exits, `patch_edges_to` on compile/NEXT_PC,
   chain entry at `TB+JIT_PROLOG_CHAIN_OFF`, `insn_delta` across chains).
-  Deferred: (3) tick-flush
-  fast path (`tick_delta` batch + `JIT_EXIT_ERET` exit declared); (4) GPR
+  Done: (3) tick-flush fast path (`COP0::flush_ticks`, wired==0 batch,
+  TB flagged `tick_fast` when no MTC0). Deferred: (4) GPR
   pinning / constprop / fallback diet. The bottleneck: dispatch lookup
   (~9ns/iter, 28% loop), TB sync (35%), fallbacks (30%). All measurements
   are approximate (rdtsc overhead folded); ratios are the reliable data.

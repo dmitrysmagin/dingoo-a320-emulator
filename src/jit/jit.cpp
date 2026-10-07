@@ -61,6 +61,14 @@ static void sleep_ms(u32 ms) {
 static inline u64 tsc_now() { return wall_ns(); }
 #endif
 
+static bool jit_plan_has_mtc0(const JitTbPlan& plan) {
+    for (u32 i = 0; i < plan.count; i++) {
+        if (plan.ops[i].op == JIT_COP_MTC0)
+            return true;
+    }
+    return false;
+}
+
 }  // namespace
 
 // Hand-encoded x86-64 proof TB. Disassembly (Win64 shown; SysV uses RDI):
@@ -252,6 +260,9 @@ void Jit::print_stats() const {
     printf("[JIT] branch_tbs=%llu nextpc_exits=%llu chain_patch=%llu chain_unpatched=%llu\n",
            (unsigned long long)m_stats.tb_branches, (unsigned long long)m_stats.tb_nextpc,
            (unsigned long long)m_stats.chain_patches, (unsigned long long)m_stats.chain_unpatched);
+    printf("[JIT] tick_flush: fast=%llu slow=%llu insns\n",
+           (unsigned long long)m_stats.tick_flush_fast,
+           (unsigned long long)m_stats.tick_flush_slow);
     printf("[JIT] tb_insns=%llu interp_insns=%llu slow_exits=%llu flushes=%llu cache=%u/%u pools=%u\n",
            (unsigned long long)m_stats.tb_insns, (unsigned long long)m_stats.interp_insns,
            (unsigned long long)m_stats.slow_exits, (unsigned long long)m_stats.flushes,
@@ -309,6 +320,17 @@ void Jit::flush_locked() {
     m_cached_gen = g_code_gen;
     m_gen_valid = true;
     m_stats.flushes++;
+}
+
+void Jit::flush_tb_ticks(CPU* cpu, u32 n, bool tick_fast_tb) {
+    if (!n || !cpu)
+        return;
+    bool batch = tick_fast_tb && cpu->cop0.regs.wired == 0;
+    if (batch)
+        m_stats.tick_flush_fast += n;
+    else
+        m_stats.tick_flush_slow += n;
+    cpu->cop0.flush_ticks(n, tick_fast_tb);
 }
 
 void Jit::patch_chain_edges_to(u32 target_pc, TbFunc target_func) {
@@ -394,7 +416,8 @@ bool Jit::compile_tb(CPU* cpu, u32 pc, u32 stop_pc, u32 alt_stop_pc,
 #else
     __builtin___clear_cache((char*)dst, (char*)dst + len);
 #endif
-    m_cache.insert(pc, (TbFunc)dst, equiv,
+    bool tick_fast = !jit_plan_has_mtc0(plan);
+    m_cache.insert(pc, (TbFunc)dst, equiv, tick_fast,
                    formed.has_branch ? &chain : nullptr);
     patch_chain_edges_to(pc, (TbFunc)dst);
 
@@ -442,9 +465,10 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
         u32 pc = cpu->pc;
         TbFunc func = nullptr;
         u32 count = 0;
+        bool tick_fast = false;
         u64 cc = 0;  // compile cycles this iteration (excluded from dispatch)
         if (jit_pc_eligible(mem, pc)) {
-            if (m_cache.find(pc, func, count)) {  // direct-mapped, ~9ns
+            if (m_cache.find(pc, func, count, &tick_fast)) {  // direct-mapped, ~9ns
                 if (func)
                     m_stats.tb_hits++;
                 else
@@ -464,10 +488,12 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
                 if (!ok) {
                     func = nullptr;
                     if (stable) {
-                        if (m_cache.insert(pc, nullptr, 0, nullptr))
+                        if (m_cache.insert(pc, nullptr, 0, false, nullptr))
                             m_stats.tb_evictions++;
                         m_stats.tb_uncompilable++;
                     }
+                } else {
+                    m_cache.find(pc, func, count, &tick_fast);
                 }
             }
         }
@@ -510,8 +536,7 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
             memcpy(cpu->regs, st.gpr, sizeof(st.gpr));
             cpu->hi = st.hi;
             cpu->lo = st.lo;
-            for (u32 i = 0; i < st.tick_delta; i++)
-                cpu->cop0.tick();
+            flush_tb_ticks(cpu, st.tick_delta, tick_fast);
             cpu->insn_count += applied;
             executed += applied;
             m_stats.tb_insns += applied;
@@ -527,8 +552,7 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
             m_stats.fallback_cycles += tsc_now() - t_fb;
         } else if (exit == (u32)JIT_EXIT_DONE) {
             cpu->pc = st.next_pc;
-            for (u32 i = 0; i < st.tick_delta; i++)
-                cpu->cop0.tick();
+            flush_tb_ticks(cpu, st.tick_delta, tick_fast);
             cpu->insn_count += ran;
             executed += ran;
             m_stats.tb_insns += ran;
@@ -544,8 +568,7 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
                 patch_chain_edges_to(target, target_tb);
             else
                 m_stats.chain_unpatched++;
-            for (u32 i = 0; i < st.tick_delta; i++)
-                cpu->cop0.tick();
+            flush_tb_ticks(cpu, st.tick_delta, tick_fast);
             cpu->insn_count += ran;
             executed += ran;
             m_stats.tb_insns += ran;
