@@ -160,6 +160,20 @@ struct alignas(16) CpuState {
   print + fall through in interpreter; JIT must call the same path, not trap.
 - Gate: audio titles (`tetris`, `Block Breaker`) — MXU mixing bit-identical;
   `7days` heavy-MXU path (310K COP2 per `TLB.md`) runs without `[MXU?] Unknown`.
+- Status ✅ DISCHARGE-DONE (2026-10-07): `MFC0/MTC0`, `MFC2/MTC2/CFC2/CTC2`,
+  COP2 `exec_custom`, SPECIAL2 `S32M2I/S32I2M` (the only MXU1 funcs without
+  a runtime `MXU_EN` branch) in `src/jit/emit_cop.cpp` as calls into the
+  existing `cop0.cpp`/`mxu.cpp` — emitter only marshals `(state, reg, val)`,
+  preserves RDX across the call, follows Win64 (shadow space) / SysV ABIs.
+  `ERET→STOP_ERET`, TLB/COP1/COP3 stay `STOP_COP` (trap exits); `WAIT`
+  traps in the interpreter (C0 default arm), mirrored as `STOP_COP`.
+  Ticks accumulate in `tick_delta` (DONE adds count, slow-mem adds idx;
+  Phase 5 flushes). `--jit-tests`: 29735 passed, 0 failed (100 randomized
+  COP TBs incl. `$0`-dest mirrors and unknown-reg paths, mixed ALU+mem+COP
+  TBs, decode classification). Game-execution gate deferred to Phase 5 —
+  the JIT is not wired into the main loop yet. Remaining SPECIAL2
+  (`MADD`/`MSUB`/`CLZ`/`CLO`/MXU1 compute) stays interpreter-only: the
+  `MXU_EN` dispatch is runtime state the frontend cannot see statically.
 
 ### Phase 5 — GOT/syscall/task exits + TB cache mgmt (productionise)
 - TB end on GOT address: flush state, exit `EXIT_GOT idx`; dispatcher runs

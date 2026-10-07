@@ -133,6 +133,65 @@ static JitOpProbe probe_imm(u32 op, u32 rs, u32 rt, u32 insn) {
 
 // Phase 3: fast-path loads/stores. Loads with rt==0 are NOP (interpreter
 // guards `if (rt)`); stores ALWAYS execute (interpreter stores regs[0]==0).
+// Phase 4: COP0/COP2 decode. Mirrors cpu.cpp execute() cases 0x10/0x12
+// exactly, including quirks: MFC writes regs[rt] unconditionally (even
+// rt==0), MTC reads regs[rt] (0 for $0), unknown rs in COP0 is a NOP.
+// (WAIT is COP0/C0 func 0x20, which the interpreter traps via the C0
+// default arm — so it decodes STOP_COP here, same as the other C0 traps.)
+static JitOpProbe probe_cop0(u32 insn, u32 rt, u32 rd) {
+    JitOpProbe p;
+    p.valid = false;
+    p.stop = JIT_STOP_COP;
+    u32 rs = (insn >> 21) & 0x1F;
+    u32 func = insn & 0x3F;
+    if (rs == 0x00) {  // MFC0 (any func — interpreter ignores it)
+        p.valid = true;
+        p.stop = JIT_STOP_NONE;
+        p.op.op = JIT_COP_MFC0;
+        p.op.rs = 0; p.op.rt = rt; p.op.rd = rd;
+        p.op.sa = 0; p.op.imm = 0; p.op.uimm = 0;
+        return p;
+    }
+    if (rs == 0x04) {  // MTC0
+        p.valid = true;
+        p.stop = JIT_STOP_NONE;
+        p.op.op = JIT_COP_MTC0;
+        p.op.rs = 0; p.op.rt = rt; p.op.rd = rd;
+        p.op.sa = 0; p.op.imm = 0; p.op.uimm = 0;
+        return p;
+    }
+    if (rs == 0x10 && func == 0x18) {  // ERET -> TB exit (Phase 5: pc=epc)
+        p.stop = JIT_STOP_ERET;
+        return p;
+    }
+    if (rs == 0x02 || rs == 0x06) {
+        // No such COP0 move exists; the interpreter's if/elif chain falls
+        // through with no effect. Compile as NOP to keep TBs whole.
+        p.valid = true;
+        p.stop = JIT_STOP_NONE;
+        p.op.op = JIT_ALU_NOP;
+        p.op.rs = 0; p.op.rt = 0; p.op.rd = 0;
+        p.op.sa = 0; p.op.imm = 0; p.op.uimm = 0;
+        return p;
+    }
+    return p;  // C0 TLB ops / unknown funcs -> trap exit (STOP_COP)
+}
+
+static JitOpProbe probe_cop2(u32 insn, u32 rt, u32 rd) {
+    JitOpProbe p;
+    p.valid = true;
+    p.stop = JIT_STOP_NONE;
+    u32 rs = (insn >> 21) & 0x1F;
+    p.op.rs = 0; p.op.rt = rt; p.op.rd = rd;
+    p.op.sa = 0; p.op.imm = 0; p.op.uimm = insn;
+    if (rs == 0x00) p.op.op = JIT_COP_MFC2;
+    else if (rs == 0x04) p.op.op = JIT_COP_MTC2;
+    else if (rs == 0x02) p.op.op = JIT_COP_CFC2;
+    else if (rs == 0x06) p.op.op = JIT_COP_CTC2;
+    else p.op.op = JIT_COP_CUSTOM;
+    return p;
+}
+
 static JitOpProbe probe_mem(u32 op, u32 rs, u32 rt, u32 insn) {
     JitOpProbe p;
     p.valid = true;
@@ -182,9 +241,11 @@ JitOpProbe jit_probe_op(u32 insn) {
         return probe_special(rs, rt, rd, sa, func);
     if (op == 0x1C) {  // SPECIAL2
         // MUL (func 0x02) is MIPS-only (no MXU1 conflict per cpu.cpp:133).
-        // MADD/MADDU/MSUB/MSUBU/CLZ/CLO conflict with MXU1 when MXU_EN is set
-        // at RUNTIME (mxu.state.ctrl bit 0) — the JIT cannot know statically,
-        // so they stay interpreter-only (Phase 4). Same for all MXU1 funcs.
+        // MADD/MADDU/MSUB/MSUBU/CLZ/CLO conflict with MXU_EN at RUNTIME
+        // (mxu.state.ctrl bit 0) — the JIT cannot know statically, so they
+        // stay interpreter-only. Same for all MXU1 funcs EXCEPT S32M2I
+        // (0x2E) / S32I2M (0x2F), which cpu.cpp handles unconditionally
+        // (plain GPR<->XR moves, no MXU_EN branch) and are safe via helper.
         if (func == 0x02) {
             JitOpProbe p;
             p.valid = true;
@@ -194,6 +255,15 @@ JitOpProbe jit_probe_op(u32 insn) {
             p.op.sa = 0; p.op.imm = 0; p.op.uimm = 0;
             if (rd == 0)
                 p.op.op = JIT_ALU_NOP;
+            return p;
+        }
+        if (func == 0x2E || func == 0x2F) {
+            JitOpProbe p;
+            p.valid = true;
+            p.stop = JIT_STOP_NONE;
+            p.op.op = JIT_COP_MXU1;
+            p.op.rs = rs; p.op.rt = rt; p.op.rd = rd;
+            p.op.sa = sa; p.op.imm = 0; p.op.uimm = insn;
             return p;
         }
         JitOpProbe p; p.valid = false; p.stop = JIT_STOP_SPECIAL2; return p;
@@ -276,7 +346,11 @@ JitOpProbe jit_probe_op(u32 insn) {
     default:
         break;
     }
-    if (op == 0x10 || op == 0x11 || op == 0x12 || op == 0x13) {
+    if (op == 0x10)
+        return probe_cop0(insn, rt, rd);
+    if (op == 0x12)
+        return probe_cop2(insn, rt, rd);
+    if (op == 0x11 || op == 0x13) {
         JitOpProbe p; p.valid = false; p.stop = JIT_STOP_COP; return p;
     }
     // Phase 3: fast-path loads/stores compile inline; the rest exit to the

@@ -28,6 +28,7 @@ enum JitStop {
     JIT_STOP_SPECIAL3,   // SPECIAL3 other than EXT/INS (Phase 4)
     JIT_STOP_TRAP,       // SYSCALL/BREAK (exit to raise_exception, Phase 5)
     JIT_STOP_UNKNOWN,    // anything else the emitter cannot handle
+    JIT_STOP_ERET,       // ERET (Phase 5: exit with pc=epc, status&=~2)
 };
 
 // Compilable ALU op ids. One enum value per emitter case in emit_alu.cpp.
@@ -68,6 +69,13 @@ enum JitAluOp {
     JIT_ALU_LB, JIT_ALU_LH, JIT_ALU_LW, JIT_ALU_LBU,
     JIT_ALU_LHU, JIT_ALU_SB, JIT_ALU_SH, JIT_ALU_SW,
     JIT_ALU_LWL, JIT_ALU_LWR, JIT_ALU_SWL, JIT_ALU_SWR,
+
+    // Phase 4: COP0/COP2 ops (emitted as calls into cop0.cpp/mxu.cpp).
+    // rt = GPR side, rd = coprocessor register (fs for COP2),
+    // uimm = full insn word for CUSTOM/MXU1.
+    JIT_COP_MFC0, JIT_COP_MTC0,
+    JIT_COP_MFC2, JIT_COP_MTC2, JIT_COP_CFC2, JIT_COP_CTC2,
+    JIT_COP_CUSTOM, JIT_COP_MXU1,
 };
 
 struct JitAluInsn {

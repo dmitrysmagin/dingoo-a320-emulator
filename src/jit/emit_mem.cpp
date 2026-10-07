@@ -100,6 +100,11 @@ static u32 m_emit_base(JitEmit& e) {
 
 static void m_emit_slow(JitEmit& e, u32 idx) {
     m8(e, 0xC7); m8(e, 0x82); m32(e, JIT_OFF_EXIT_ARG); m32(e, idx);
+    // Partial tick accounting: idx ops completed before the slow one.
+    // (The DONE path adds the full count; see jit_compile_tb.)
+    if (idx > 0 && idx < 128) {
+        m8(e, 0x83); m8(e, 0x82); m32(e, JIT_OFF_TICK_DELTA); m8(e, (u8)idx);
+    }
     m8(e, 0xB8); m32(e, (u32)JIT_EXIT_SLOW_MEM);  // mov eax, SLOW_MEM
     m8(e, 0xC3);                                   // ret
 }
@@ -195,6 +200,11 @@ u32 jit_run_mem_reference(const JitTbPlan& plan, JitMemState& st, u32& fail_idx)
     fail_idx = 0;
     for (u32 i = 0; i < plan.count; i++) {
         const JitAluInsn& o = plan.ops[i];
+        // Tick accounting mirrors the emitter: DONE adds plan.count, slow
+        // exits add the completed-op count (see m_emit_slow). Bump per op
+        // here; the slow return below stops before the failing op's tick.
+        if (st.tick_delta)
+            (*st.tick_delta)++;
         switch (o.op) {
         case JIT_ALU_LB: case JIT_ALU_LH: case JIT_ALU_LW:
         case JIT_ALU_LBU: case JIT_ALU_LHU:
@@ -215,6 +225,10 @@ u32 jit_run_mem_reference(const JitTbPlan& plan, JitMemState& st, u32& fail_idx)
             else if (is_store && phys >= st.code_start && phys < st.code_end)
                 slow = true;
             if (slow) {
+                // The failing op's tick was pre-bumped above; take it back
+                // (the emitter counts only completed ops: exit_arg == idx).
+                if (st.tick_delta)
+                    (*st.tick_delta)--;
                 fail_idx = i;
                 return (u32)JIT_EXIT_SLOW_MEM;
             }
@@ -244,6 +258,13 @@ u32 jit_run_mem_reference(const JitTbPlan& plan, JitMemState& st, u32& fail_idx)
             }
             break;
         }
+        case JIT_COP_MFC0: case JIT_COP_MTC0:
+        case JIT_COP_MFC2: case JIT_COP_MTC2:
+        case JIT_COP_CFC2: case JIT_COP_CTC2:
+        case JIT_COP_CUSTOM: case JIT_COP_MXU1:
+            // Phase 4: same calls the emitted helpers make (emit_cop.cpp).
+            jit_apply_cop_one(o, st);
+            break;
         default:
             // ALU/branch ops share semantics with the ALU reference.
             jit_apply_alu(o, st.regs, st.hi, st.lo);

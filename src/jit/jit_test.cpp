@@ -76,9 +76,10 @@ struct ExecPage {
     }
 };
 
-// Layout-compatible with the emitter: gpr[32] then hi/lo at JIT_OFF_HI/LO.
-// (JitState's exit fields sit at the same offsets; tests use EAX return.)
-struct AluState {
+
+// Full JitState mirror for executing TBs (all phases share it; mem/cop TBs
+// read pointers past lo, and every TB now bumps tick_delta on exit).
+struct ExecState {
     u32 gpr[32];
     u32 exit_code;
     u32 exit_arg;
@@ -86,9 +87,28 @@ struct AluState {
     u32 pc;
     u32 hi;
     u32 lo;
+    u64 mem_base;
+    u32 mem_size;
+    u32 code_start;
+    u32 code_end;
+    u64 wc_base;
+    COP0* cop0;
+    MXU* mxu;
+    u32 tick_delta;
+    u32 tick_pad;
 };
+static_assert(offsetof(ExecState, gpr) == offsetof(JitState, gpr), "exec gpr");
+static_assert(offsetof(ExecState, exit_arg) == offsetof(JitState, exit_arg), "exec exit_arg");
+static_assert(offsetof(ExecState, hi) == offsetof(JitState, hi), "exec hi");
+static_assert(offsetof(ExecState, lo) == offsetof(JitState, lo), "exec lo");
+static_assert(offsetof(ExecState, mem_base) == offsetof(JitState, mem_base), "exec base");
+static_assert(offsetof(ExecState, wc_base) == offsetof(JitState, wc_base), "exec wc");
+static_assert(offsetof(ExecState, cop0) == offsetof(JitState, cop0), "exec cop0");
+static_assert(offsetof(ExecState, mxu) == offsetof(JitState, mxu), "exec mxu");
+static_assert(offsetof(ExecState, tick_delta) == offsetof(JitState, tick_delta), "exec tick");
+static_assert(sizeof(ExecState) == sizeof(JitState), "exec size");
 
-u32 run_tb(ExecPage& pg, const JitTbPlan& plan, AluState& st, u32* out_len) {
+u32 run_tb(ExecPage& pg, const JitTbPlan& plan, ExecState& st, u32* out_len = nullptr) {
     u8* buf = (u8*)pg.p;
     u32 len = jit_compile_tb(plan, buf, pg.size, (u32)JIT_EXIT_DONE);
     if (!len)
@@ -111,8 +131,18 @@ bool g_verbose = false;
     else { failures++; printf("[FAIL] " __VA_ARGS__); printf("\n"); } \
 } while (0)
 
-void diff_one(ExecPage& pg, const JitTbPlan& plan, AluState init, const char* tag) {
-    AluState a = init, b = init;
+static ExecState base_regs(Rng& rng) {
+    ExecState s;
+    memset(&s, 0, sizeof(s));
+    for (int r = 0; r < 32; r++) s.gpr[r] = rng.word();
+    s.gpr[0] = 0;
+    s.hi = rng.word(); s.lo = rng.word();
+    s.tick_delta = rng.next();
+    return s;
+}
+
+void diff_one(ExecPage& pg, const JitTbPlan& plan, ExecState init, const char* tag) {
+    ExecState a = init, b = init;
     u32 hi_b = init.hi, lo_b = init.lo;
     jit_run_reference(plan, b.gpr, &hi_b, &lo_b);
     b.hi = hi_b; b.lo = lo_b;
@@ -126,6 +156,9 @@ void diff_one(ExecPage& pg, const JitTbPlan& plan, AluState init, const char* ta
               tag, r, a.gpr[r], b.gpr[r]);
     CHECK(a.hi == b.hi, "%s: hi emit=0x%08X ref=0x%08X", tag, a.hi, b.hi);
     CHECK(a.lo == b.lo, "%s: lo emit=0x%08X ref=0x%08X", tag, a.lo, b.lo);
+    // Tick accounting: DONE path adds exactly plan.count.
+    CHECK(a.tick_delta == init.tick_delta + plan.count,
+          "%s: tick emit=%u want=%u", tag, a.tick_delta, init.tick_delta + plan.count);
     (void)len;
 }
 
@@ -164,7 +197,7 @@ void test_single_ops(ExecPage& pg) {
             printf("[jit-test] sll-tb len=%u bytes:", l2); fflush(stdout);
             for (u32 i = 0; i < l2 && i < 64; i++) { printf(" %02X", buf[i]); fflush(stdout); }
             printf("\n"); fflush(stdout);
-            AluState s; memset(&s, 0, sizeof(s));
+            ExecState s; memset(&s, 0, sizeof(s));
             s.gpr[9] = 0x12345678u;
             TbFunc fn = (TbFunc)buf;
 #ifdef _WIN32
@@ -188,7 +221,7 @@ void test_single_ops(ExecPage& pg) {
             JitTbPlan plan = jit_decode_tb(&w, 1);
             char tag[96];
             snprintf(tag, sizeof(tag), "special f=0x%02X", f);
-            AluState init;
+            ExecState init; memset(&init, 0, sizeof(init));
             for (int r = 0; r < 32; r++) init.gpr[r] = rng.word();
             init.gpr[0] = 0;
             init.hi = rng.word(); init.lo = rng.word();
@@ -203,7 +236,7 @@ void test_single_ops(ExecPage& pg) {
             JitTbPlan plan = jit_decode_tb(&w, 1);
             char tag[96];
             snprintf(tag, sizeof(tag), "imm op=0x%02X", op);
-            AluState init;
+            ExecState init; memset(&init, 0, sizeof(init));
             for (int r = 0; r < 32; r++) init.gpr[r] = rng.word();
             init.gpr[0] = 0;
             init.hi = rng.word(); init.lo = rng.word();
@@ -214,7 +247,7 @@ void test_single_ops(ExecPage& pg) {
     for (int iter = 0; iter < 20; iter++) {
         u32 w = w_special2_mul(rng.reg(), rng.reg(), rng.nzreg());
         JitTbPlan plan = jit_decode_tb(&w, 1);
-        AluState init;
+        ExecState init; memset(&init, 0, sizeof(init));
         for (int r = 0; r < 32; r++) init.gpr[r] = rng.word();
         init.gpr[0] = 0;
         init.hi = rng.word(); init.lo = rng.word();
@@ -229,7 +262,7 @@ void test_single_ops(ExecPage& pg) {
         JitTbPlan plan = jit_decode_tb(&w, 1);
         char tag[96];
         snprintf(tag, sizeof(tag), "%s msb=%u lsb=%u", (iter & 1) ? "INS" : "EXT", msb, lsb);
-        AluState init;
+        ExecState init; memset(&init, 0, sizeof(init));
         for (int r = 0; r < 32; r++) init.gpr[r] = rng.word();
         init.gpr[0] = 0;
         init.hi = rng.word(); init.lo = rng.word();
@@ -266,7 +299,7 @@ void test_multi_tb(ExecPage& pg) {
             }
         }
         JitTbPlan plan = jit_decode_tb(words, n);
-        AluState init;
+        ExecState init; memset(&init, 0, sizeof(init));
         for (int r = 0; r < 32; r++) init.gpr[r] = rng.word();
         init.gpr[0] = 0;
         init.hi = rng.word(); init.lo = rng.word();
@@ -277,67 +310,63 @@ void test_multi_tb(ExecPage& pg) {
 
 // ---- Phase 3 memory discharge tests ----
 
-// Full JitState mirror for executing mem TBs (ALU-only AluState is a prefix
-// of this layout; mem TBs read mem_base and beyond, so they need it all).
-struct MemState {
-    u32 gpr[32];
-    u32 exit_code;
-    u32 exit_arg;
-    u32 next_pc;
-    u32 pc;
-    u32 hi;
-    u32 lo;
-    u64 mem_base;
-    u32 mem_size;
-    u32 code_start;
-    u32 code_end;
-    u64 wc_base;
-};
-static_assert(offsetof(MemState, gpr) == offsetof(JitState, gpr), "memstate gpr");
-static_assert(offsetof(MemState, exit_arg) == offsetof(JitState, exit_arg), "memstate exit_arg");
-static_assert(offsetof(MemState, hi) == offsetof(JitState, hi), "memstate hi");
-static_assert(offsetof(MemState, lo) == offsetof(JitState, lo), "memstate lo");
-static_assert(offsetof(MemState, mem_base) == offsetof(JitState, mem_base), "memstate base");
-static_assert(offsetof(MemState, mem_size) == offsetof(JitState, mem_size), "memstate size");
-static_assert(offsetof(MemState, code_start) == offsetof(JitState, code_start), "memstate cs");
-static_assert(offsetof(MemState, code_end) == offsetof(JitState, code_end), "memstate ce");
-static_assert(offsetof(MemState, wc_base) == offsetof(JitState, wc_base), "memstate wc");
-static_assert(sizeof(MemState) == sizeof(JitState), "memstate size");
-
-static u32 run_mem_tb(ExecPage& pg, const JitTbPlan& plan, MemState& st) {
-    u8* buf = (u8*)pg.p;
-    u32 len = jit_compile_tb(plan, buf, pg.size, (u32)JIT_EXIT_DONE);
-    if (!len)
-        return 0xDEADDEADu;
-#ifdef _WIN32
-    FlushInstructionCache(GetCurrentProcess(), buf, len);
-#else
-    __builtin___clear_cache((char*)buf, (char*)buf + len);
-#endif
-    TbFunc fn = (TbFunc)buf;
-    return fn((JitState*)&st);
-}
+// ---- Phase 3/4 discharge: TBs over RAM and/or COP0/MXU ----
 
 static u32 w_mem(u32 op, u32 rs, u32 rt, u32 imm16) {
     return (op << 26) | (rs << 21) | (rt << 16) | (imm16 & 0xFFFFu);
 }
 
-// Diff one mem TB: emitted execution (MemState over ra/wca) vs the C++
-// reference (JitMemState over rb/wcb). RAM/WC start as copies.
+// Seed a COP0/MXU pair deterministically from random GPRs so MFC/MTC/
+// custom TBs exercise real state (counts, masks, MXU_EN both ways).
+static void seed_cop(COP0& c, MXU& m, const u32 gpr[32]) {
+    c.reset();
+    m.reset();
+    c.regs.count = gpr[7];
+    c.regs.compare = gpr[8];
+    c.regs.status = gpr[9];
+    c.regs.cause = gpr[10] & 0xFFFF0000u;
+    c.regs.epc = gpr[11];
+    c.regs.wired = gpr[12] & 0x1Fu;
+    c.regs.entry_hi = gpr[13];
+    c.regs.entry_lo0 = gpr[14];
+    c.regs.context = gpr[15];
+    for (int i = 0; i < 16; i++) m.state.xregs[i] = gpr[(i * 3 + 1) % 32];
+    m.state.acc[0] = gpr[17]; m.state.acc[1] = gpr[18];
+    m.state.acc[2] = gpr[19]; m.state.acc[3] = gpr[20];
+    m.state.ctrl = gpr[21];  // bit 0 (MXU_EN) random — harmless here
+    m.state.p0 = gpr[22]; m.state.p1 = gpr[23]; m.state.p2 = gpr[24];
+}
+
+static bool cop_equal(const COP0& a, const COP0& b) {
+    return memcmp(&a.regs, &b.regs, sizeof(a.regs)) == 0;
+}
+
+static bool mxu_equal(const MXU& a, const MXU& b) {
+    return memcmp(&a.state, &b.state, sizeof(a.state)) == 0;
+}
+
+// Diff one mem/cop TB: emitted execution (ExecState over ra/wca/ca/ma)
+// vs the C++ reference (JitMemState over rb/wcb/cb/mb). All start as copies.
 static void diff_mem(ExecPage& pg, const JitTbPlan& plan,
                      const std::vector<u8>& ram_init,
                      u32 code_start, u32 code_end,
-                     MemState init_regs, const char* tag) {
+                     ExecState init_regs, const char* tag) {
     std::vector<u8> ra = ram_init, rb = ram_init;
     u32 pages = (u32)(ram_init.size() + 4095) / 4096;
     std::vector<u32> wca(pages, 0), wcb(pages, 0);
+    COP0 ca, cb;
+    MXU ma, mb;
+    seed_cop(ca, ma, init_regs.gpr);
+    seed_cop(cb, mb, init_regs.gpr);
 
-    MemState a = init_regs;
+    ExecState a = init_regs;
     a.mem_base = (u64)(uintptr_t)ra.data();
     a.mem_size = (u32)ra.size();
     a.code_start = code_start;
     a.code_end = code_end;
     a.wc_base = (u64)(uintptr_t)wca.data();
+    a.cop0 = &ca;
+    a.mxu = &ma;
     a.exit_arg = 0xDEADBEEFu;
 
     JitMemState ref;
@@ -346,10 +375,14 @@ static void diff_mem(ExecPage& pg, const JitTbPlan& plan,
     ref.ram = rb.data(); ref.ram_size = (u32)rb.size();
     ref.code_start = code_start; ref.code_end = code_end;
     ref.wc = wcb.data(); ref.wc_pages = pages;
+    ref.cop0 = &cb;
+    ref.mxu = &mb;
+    u32 ref_tick = init_regs.tick_delta;
+    ref.tick_delta = &ref_tick;
     u32 ref_fail = 0xDEADBEEFu;
     u32 ref_exit = jit_run_mem_reference(plan, ref, ref_fail);
 
-    u32 exit = run_mem_tb(pg, plan, a);
+    u32 exit = run_tb(pg, plan, a);
     CHECK(exit == ref_exit, "%s: exit emit=%u ref=%u", tag, exit, ref_exit);
     if (exit == 0xDEADDEADu)
         return;  // compile failed; nothing else to compare
@@ -363,15 +396,10 @@ static void diff_mem(ExecPage& pg, const JitTbPlan& plan,
     CHECK(a.lo == ref.lo, "%s: lo emit=0x%08X ref=0x%08X", tag, a.lo, ref.lo);
     CHECK(ra == rb, "%s: RAM mismatch", tag);
     CHECK(wca == wcb, "%s: write_counts mismatch", tag);
-}
-
-static MemState base_mem_regs(Rng& rng) {
-    MemState s;
-    memset(&s, 0, sizeof(s));
-    for (int r = 0; r < 32; r++) s.gpr[r] = rng.word();
-    s.gpr[0] = 0;
-    s.hi = rng.word(); s.lo = rng.word();
-    return s;
+    CHECK(cop_equal(ca, cb), "%s: COP0 mismatch", tag);
+    CHECK(mxu_equal(ma, mb), "%s: MXU mismatch", tag);
+    CHECK(a.tick_delta == ref_tick, "%s: tick emit=%u ref=%u",
+          tag, a.tick_delta, ref_tick);
 }
 
 void test_mem_fast(ExecPage& pg) {
@@ -388,7 +416,7 @@ void test_mem_fast(ExecPage& pg) {
         // Random regs/words; retry until the reference reports all-fast
         // (bounded tries), then diff emitted-vs-reference.
         JitTbPlan plan;
-        MemState init;
+        ExecState init;
         bool all_fast = false;
         for (int attempt = 0; attempt < 20 && !all_fast; attempt++) {
             for (u32 i = 0; i < n; i++) {
@@ -398,7 +426,7 @@ void test_mem_fast(ExecPage& pg) {
                 words[i] = w_mem(mop, rs, rt, rng.next() & 0xFFFFu);
             }
             plan = jit_decode_tb(words, n);
-            init = base_mem_regs(rng);
+            init = base_regs(rng);
             // Bias rs values into KSEG0 so most attempts land in fast RAM.
             for (u32 i = 0; i < n; i++) {
                 u32 rs = plan.ops[i].rs;
@@ -414,6 +442,9 @@ void test_mem_fast(ExecPage& pg) {
             probe.code_start = 0x1000; probe.code_end = 0x2000;
             std::vector<u32> wcs((ram.size() + 4095) / 4096, 0);
             probe.wc = wcs.data(); probe.wc_pages = (u32)wcs.size();
+            probe.cop0 = nullptr; probe.mxu = nullptr;  // mem-only plans
+            u32 probe_tick = init.tick_delta;
+            probe.tick_delta = &probe_tick;
             u32 fail = 0;
             all_fast = (jit_run_mem_reference(plan, probe, fail) == (u32)JIT_EXIT_DONE);
         }
@@ -455,7 +486,7 @@ void test_mem_slow(ExecPage& pg) {
     };
     for (const SlowCase& c : cases) {
         JitTbPlan plan = jit_decode_tb(&c.word, 1);
-        MemState init; memset(&init, 0, sizeof(init));
+        ExecState init; memset(&init, 0, sizeof(init));
         init.gpr[1] = c.rs_val;
         init.gpr[2] = 0xDEADBEEFu;
         init.gpr[3] = 0x12345678u;
@@ -468,7 +499,7 @@ void test_mem_slow(ExecPage& pg) {
     {
         u32 words[3] = {w_mem(0x2B, 1, 4, 0), w_mem(0x23, 1, 5, 0), w_mem(0x23, 7, 6, 0)};
         JitTbPlan plan = jit_decode_tb(words, 3);
-        MemState init; memset(&init, 0, sizeof(init));
+        ExecState init; memset(&init, 0, sizeof(init));
         init.gpr[1] = 0x00005000u;     // fast KUSEG base (outside code range)
         init.gpr[4] = 0x11223344u;     // stored by op0, loaded back by op1
         init.gpr[5] = 0x00000000u;
@@ -480,16 +511,19 @@ void test_mem_slow(ExecPage& pg) {
     {
         u32 words[2] = {w_mem(0x09, 1, 2, 1), w_mem(0x23, 1, 3, 0)};  // addiu, LW
         JitTbPlan plan = jit_decode_tb(words, 2);
-        MemState init; memset(&init, 0, sizeof(init));
+        ExecState init; memset(&init, 0, sizeof(init));
         init.gpr[1] = 0x80000010u;
         std::vector<u8> ra = ram, rb = ram;
         u32 pages = (u32)(ram.size() + 4095) / 4096;
         std::vector<u32> wca(pages, 0), wcb(pages, 0);
-        MemState a = init;
+        COP0 ca, cb; ca.reset(); cb.reset();
+        MXU ma, mb; ma.reset(); mb.reset();
+        ExecState a = init;
         a.mem_base = 0;  // null -> slow
         a.mem_size = SZ;
         a.code_start = 0x1000; a.code_end = 0x2000;
         a.wc_base = (u64)(uintptr_t)wca.data();
+        a.cop0 = &ca; a.mxu = &ma;
         a.exit_arg = 0xDEADBEEFu;
         JitMemState ref;
         memcpy(ref.regs, init.gpr, sizeof(ref.regs));
@@ -497,14 +531,154 @@ void test_mem_slow(ExecPage& pg) {
         ref.ram = nullptr; ref.ram_size = SZ;  // null -> slow
         ref.code_start = 0x1000; ref.code_end = 0x2000;
         ref.wc = wcb.data(); ref.wc_pages = pages;
+        ref.cop0 = &cb; ref.mxu = &mb;
+        u32 ref_tick = 0;
+        ref.tick_delta = &ref_tick;
         u32 ref_fail = 0;
         u32 ref_exit = jit_run_mem_reference(plan, ref, ref_fail);
-        u32 exit = run_mem_tb(pg, plan, a);
+        u32 exit = run_tb(pg, plan, a);
         CHECK(exit == ref_exit && exit == (u32)JIT_EXIT_SLOW_MEM, "mem nullbase exit");
         CHECK(a.exit_arg == 1 && ref_fail == 1, "mem nullbase idx");
         CHECK(a.gpr[2] == ref.regs[2], "mem nullbase alu-applied");
+        CHECK(a.tick_delta == ref_tick && ref_tick == 1, "mem nullbase tick");
     }
     if (g_verbose) printf("[jit-test] mem slow done\n");
+}
+
+void test_cop(ExecPage& pg) {
+    // Randomized COP0/COP2/MXU TBs (1-5 ops) diffed against the reference.
+    // RAM is present but untouched by COP ops; COP0/MXU/tick are compared.
+    Rng rng; rng.s = 0xC0DECAFEu;
+    std::vector<u8> ram(64 * 1024, 0x55);
+    const u32 cop0_mfc_rds[] = {0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 26, 27, 28, 30};
+    const u32 cop0_mtc_rds[] = {0, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 16};
+    const u32 customs[] = {0x01, 0x03, 0x08, 0x09, 0x0B, 0x11, 0x14, 0x19, 0x1B, 0x1E};
+    auto w_cop0 = [](u32 rs, u32 rt, u32 rd, u32 func) {
+        return (0x10u << 26) | ((rs & 0x1Fu) << 21) | ((rt & 0x1Fu) << 16) |
+               ((rd & 0x1Fu) << 11) | (func & 0x3Fu);
+    };
+    auto w_cop2 = [](u32 rs, u32 rt, u32 rd) {
+        return (0x12u << 26) | ((rs & 0x1Fu) << 21) | ((rt & 0x1Fu) << 16) |
+               ((rd & 0x1Fu) << 11);
+    };
+    auto w_custom = [](u32 rs, u32 rt, u32 rd, u32 sa, u32 func) {
+        return (0x12u << 26) | ((rs & 0x1Fu) << 21) | ((rt & 0x1Fu) << 16) |
+               ((rd & 0x1Fu) << 11) | ((sa & 0x1Fu) << 6) | (func & 0x3Fu);
+    };
+    auto w_mxu1 = [](u32 rs, u32 rt, u32 rd, u32 func) {
+        return (0x1Cu << 26) | ((rs & 0x1Fu) << 21) | ((rt & 0x1Fu) << 16) |
+               ((rd & 0x1Fu) << 11) | (func & 0x3Fu);
+    };
+    const u32 custom_rs[] = {1, 3, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+    for (int tb = 0; tb < 100; tb++) {
+        u32 n = 1 + rng.next() % 5;
+        u32 words[6];
+        for (u32 i = 0; i < n; i++) {
+            u32 pick = rng.next() % 10;
+            u32 rt = (rng.next() & 7) == 0 ? 0 : rng.nzreg();  // sometimes $0
+            switch (pick) {
+            case 0: words[i] = w_cop0(0, rt, cop0_mfc_rds[rng.next() % 20], 0); break;
+            case 1: words[i] = w_cop0(4, rng.reg(), cop0_mtc_rds[rng.next() % 14], 0); break;
+            case 2: words[i] = w_cop2(0, rt, rng.next() % 28); break;  // MFC2 (0-27)
+            case 3: words[i] = w_cop2(4, rng.reg(), rng.next() % 28); break;  // MTC2
+            case 4: words[i] = w_cop2(2, rt, rng.next() % 4); break;  // CFC2
+            case 5: words[i] = w_cop2(6, rng.reg(), rng.next() % 4); break;  // CTC2
+            case 6: case 7: {  // custom (xreg indices < 16; the impl is unmasked)
+                u32 rs = custom_rs[rng.next() % 12];
+                words[i] = w_custom(rs, rng.next() % 16, rng.next() % 16,
+                                    rng.next() % 32, customs[rng.next() % 10]);
+                break;
+            }
+            case 8: words[i] = w_mxu1(rng.next() % 16, rng.reg(), rng.next() % 16, 0x2E); break;
+            default: words[i] = w_mxu1(rng.next() % 16, rng.reg(), rng.next() % 16, 0x2F); break;
+            }
+        }
+        JitTbPlan plan = jit_decode_tb(words, n);
+        ExecState init = base_regs(rng);
+        char tag[64];
+        snprintf(tag, sizeof(tag), "cop tb=%d n=%u", tb, n);
+        diff_mem(pg, plan, ram, 0x1000, 0x2000, init, tag);
+    }
+    // Unknown-register paths (each prints once per side; lock no-crash).
+    {
+        u32 words[3] = {
+            w_cop0(0, 3, 7, 0),    // MFC0 unknown rd=7 -> 0
+            w_cop0(4, 3, 15, 0),   // MTC0 unknown rd=15 -> ignored
+            w_custom(8, 1, 2, 0, 0x00),  // custom unknown func -> ignored
+        };
+        JitTbPlan plan = jit_decode_tb(words, 3);
+        ExecState init = base_regs(rng);
+        diff_mem(pg, plan, ram, 0x1000, 0x2000, init, "cop unknown");
+    }
+    // MFC to $0 mirrors the interpreter (writes regs[0], r0 corruption and all).
+    {
+        u32 words[2] = {w_cop0(0, 0, 9, 0), w_cop2(0, 0, 5)};
+        JitTbPlan plan = jit_decode_tb(words, 2);
+        ExecState init = base_regs(rng);
+        diff_mem(pg, plan, ram, 0x1000, 0x2000, init, "cop mfc-r0");
+    }
+    if (g_verbose) printf("[jit-test] cop done\n");
+}
+
+void test_mixed(ExecPage& pg) {
+    // Mixed ALU + mem + COP TBs (fast RAM): the full reference path.
+    Rng rng; rng.s = 0x5EED1234u;
+    std::vector<u8> ram(64 * 1024, 0x33);
+    for (int tb = 0; tb < 60; tb++) {
+        u32 n = 2 + rng.next() % 5;
+        u32 words[7];
+        for (u32 i = 0; i < n; i++) {
+            u32 pick = rng.next() % 12;
+            if (pick < 5) {  // ALU
+                u32 rs = rng.nzreg(), rt = rng.nzreg(), rd = rng.nzreg();
+                const u32 f[] = {0x21, 0x25, 0x2B, 0x00, 0x24};
+                words[i] = (rs << 21) | (rt << 16) | (rd << 11) | f[pick];
+                if (pick == 3) words[i] |= (rng.next() % 32) << 6;  // SLL sa
+            } else if (pick < 9) {  // mem
+                const u32 mop[] = {0x20, 0x23, 0x24, 0x28, 0x2B};
+                words[i] = w_mem(mop[pick - 5], rng.reg(), rng.nzreg(), rng.next() & 0xFFFFu);
+            } else if (pick == 9) {  // MFC0 count
+                words[i] = (0x10u << 26) | (rng.nzreg() << 16) | (9 << 11);
+            } else if (pick == 10) {  // MTC2
+                words[i] = (0x12u << 26) | (4 << 21) | (rng.reg() << 16) | ((rng.next() % 16) << 11);
+            } else {  // custom music-mixer-ish (func 0x01 MAC)
+                words[i] = (0x12u << 26) | (8 << 21) | ((rng.next() % 16) << 16) |
+                           ((rng.next() % 16) << 11) | 0x01;
+            }
+        }
+        JitTbPlan plan = jit_decode_tb(words, n);
+        ExecState init = base_regs(rng);
+        for (u32 i = 0; i < n; i++) {
+            u32 rs = plan.ops[i].rs;
+            if (rs != 0 && (rng.next() & 1))
+                init.gpr[rs] = 0x80000000u + (rng.next() % (u32)ram.size());
+        }
+        // Retry unless all-fast (mem addrs may miss).
+        bool all_fast = false;
+        for (int attempt = 0; attempt < 10 && !all_fast; attempt++) {
+            JitMemState probe;
+            memcpy(probe.regs, init.gpr, sizeof(probe.regs));
+            probe.hi = init.hi; probe.lo = init.lo;
+            std::vector<u8> scratch = ram;
+            probe.ram = scratch.data(); probe.ram_size = (u32)scratch.size();
+            probe.code_start = 0x1000; probe.code_end = 0x2000;
+            std::vector<u32> wcs((ram.size() + 4095) / 4096, 0);
+            probe.wc = wcs.data(); probe.wc_pages = (u32)wcs.size();
+            COP0 pc0; pc0.reset(); MXU pmx; pmx.reset();
+            probe.cop0 = &pc0; probe.mxu = &pmx;
+            u32 pt = init.tick_delta;
+            probe.tick_delta = &pt;
+            u32 fail = 0;
+            all_fast = (jit_run_mem_reference(plan, probe, fail) == (u32)JIT_EXIT_DONE);
+            if (!all_fast) init = base_regs(rng);
+        }
+        if (!all_fast)
+            continue;
+        char tag[64];
+        snprintf(tag, sizeof(tag), "mixed tb=%d n=%u", tb, n);
+        diff_mem(pg, plan, ram, 0x1000, 0x2000, init, tag);
+    }
+    if (g_verbose) printf("[jit-test] mixed done\n");
 }
 
 void test_stops() {
@@ -521,8 +695,10 @@ void test_stops() {
         {0xC4000000u, JIT_STOP_MEM, "LWC1"},
         {0xC8000000u, JIT_STOP_MEM, "LWC2"},
         {0xD4000000u, JIT_STOP_MEM, "SWC1"},
-        {0x40000000u, JIT_STOP_COP, "MFC0"},
-        {0x48000000u, JIT_STOP_COP, "COP2"},
+        {0x44000000u, JIT_STOP_COP, "COP1"},
+        {0x4C000000u, JIT_STOP_COP, "COP3"},
+        {0x42000002u, JIT_STOP_COP, "TLBWI"},
+        {0x42000008u, JIT_STOP_COP, "TLBP"},
         {0x00000008u, JIT_STOP_JR, "JR"},
         {0x00000009u, JIT_STOP_JR, "JALR"},
         {0x0000000Cu, JIT_STOP_TRAP, "SYSCALL"},
@@ -561,6 +737,40 @@ void test_stops() {
         JitOpProbe ps = jit_probe_op((0x2Bu << 26) | (3 << 21) | (0 << 16));
         CHECK(ps.valid && ps.op.op == JIT_ALU_SW, "SW r0 stays live");
     }
+    // Phase 4: COP0/COP2 decode (mirrors cpu.cpp, quirks included).
+    {
+        // MFC0/MTC0 valid (any func — interpreter ignores it).
+        JitOpProbe mfc = jit_probe_op((0x10u << 26) | (0 << 21) | (2 << 16) | (9 << 11));
+        CHECK(mfc.valid && mfc.op.op == JIT_COP_MFC0, "MFC0 valid");
+        JitOpProbe mtc = jit_probe_op((0x10u << 26) | (4 << 21) | (3 << 16) | (12 << 11));
+        CHECK(mtc.valid && mtc.op.op == JIT_COP_MTC0, "MTC0 valid");
+        // WAIT traps in the interpreter (COP0/C0 func 0x20 hits the C0
+        // default arm -> EXC_RI), so it decodes STOP_COP like other C0 traps.
+        JitOpProbe wait = jit_probe_op(0x42000020u);
+        CHECK(!wait.valid && wait.stop == JIT_STOP_COP, "WAIT traps");
+        // MFC0/MFC2 to $0 stay valid (interpreter writes regs[0]; mirrored).
+        JitOpProbe mfc0 = jit_probe_op((0x10u << 26) | (0 << 21) | (0 << 16) | (9 << 11));
+        CHECK(mfc0.valid && mfc0.op.op == JIT_COP_MFC0, "MFC0 r0 valid");
+        // COP0 rs=2/6 (no such move): NOP, still valid.
+        JitOpProbe nop0 = jit_probe_op((0x10u << 26) | (2 << 21));
+        CHECK(nop0.valid && nop0.op.op == JIT_ALU_NOP, "COP0 rs=2 NOP");
+        // ERET ends the TB with STOP_ERET.
+        JitOpProbe eret = jit_probe_op(0x42000018u);
+        CHECK(!eret.valid && eret.stop == JIT_STOP_ERET, "ERET stop");
+        // COP2 moves + custom valid.
+        CHECK(jit_probe_op((0x12u << 26)).valid, "MFC2 valid");
+        CHECK(jit_probe_op((0x12u << 26) | (4 << 21)).valid, "MTC2 valid");
+        CHECK(jit_probe_op((0x12u << 26) | (2 << 21)).valid, "CFC2 valid");
+        CHECK(jit_probe_op((0x12u << 26) | (6 << 21)).valid, "CTC2 valid");
+        JitOpProbe cust = jit_probe_op((0x12u << 26) | (8 << 21) | 0x01);
+        CHECK(cust.valid && cust.op.op == JIT_COP_CUSTOM, "COP2 custom valid");
+        // SPECIAL2 S32M2I/S32I2M valid (unconditional in cpu.cpp); MADD stays slow.
+        JitOpProbe m2i = jit_probe_op((0x1Cu << 26) | 0x2E);
+        CHECK(m2i.valid && m2i.op.op == JIT_COP_MXU1, "S32M2I valid");
+        JitOpProbe i2m = jit_probe_op((0x1Cu << 26) | 0x2F);
+        CHECK(i2m.valid && i2m.op.op == JIT_COP_MXU1, "S32I2M valid");
+        CHECK(!jit_probe_op(0x70000004u).valid, "MSUB stays slow");
+    }
     if (g_verbose) printf("[jit-test] stop classification done\n");
 }
 
@@ -584,7 +794,11 @@ JitTestResult jit_run_phase1_tests(bool verbose) {
     test_mem_fast(pg);
     printf("[jit-test] mem fast done, mem slow...\n"); fflush(stdout);
     test_mem_slow(pg);
-    printf("[jit-test] mem slow done, stops...\n"); fflush(stdout);
+    printf("[jit-test] mem slow done, cop...\n"); fflush(stdout);
+    test_cop(pg);
+    printf("[jit-test] cop done, mixed...\n"); fflush(stdout);
+    test_mixed(pg);
+    printf("[jit-test] mixed done, stops...\n"); fflush(stdout);
     test_stops();
     // Overflow: tiny buffer must fail cleanly (return 0, no crash).
     {

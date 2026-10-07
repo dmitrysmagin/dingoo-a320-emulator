@@ -156,6 +156,13 @@ static bool emit_one(JitEmit& e, const JitAluInsn& o, u32 idx) {
     case JIT_ALU_LBU: case JIT_ALU_LHU:
     case JIT_ALU_SB: case JIT_ALU_SH: case JIT_ALU_SW:
         return emit_mem_op(e, o, idx);
+    // Phase 4 COP0/COP2 (emit_cop.cpp): calls into cop0.cpp/mxu.cpp.
+    // ERET never reaches here (frontend STOP_ERET).
+    case JIT_COP_MFC0: case JIT_COP_MTC0:
+    case JIT_COP_MFC2: case JIT_COP_MTC2:
+    case JIT_COP_CFC2: case JIT_COP_CTC2:
+    case JIT_COP_CUSTOM: case JIT_COP_MXU1:
+        return emit_cop_op(e, o);
     case JIT_ALU_SLL:
         emit_load_slot(e, 0, slot_off(o.rt));
         emit_shift_imm(e, 4, o.sa);
@@ -516,6 +523,14 @@ u32 jit_compile_tb(const JitTbPlan& plan, u8* buf, u32 cap, u32 exit_code) {
     for (u32 i = 0; i < plan.count; i++) {
         if (!emit_one(e, plan.ops[i], i)) return 0;
         if (e.oom) return 0;
+    }
+    // Phase 4 tick accounting: one cop0.tick() per executed op. The DONE
+    // path ran all plan.count ops; slow-mem exits add their own partial
+    // count (see emit_mem.cpp). Phase 5 flushes tick_delta into COP0.
+    // ADD r/m32,imm8 (83 /0 ib): plan.count <= 64 always fits.
+    if (plan.count > 0) {
+        emit_u8(e, 0x83); emit_u8(e, 0x82); emit_u32(e, JIT_OFF_TICK_DELTA);
+        emit_u8(e, (u8)plan.count);
     }
     emit_epilog(e, exit_code);
     if (e.oom) return 0;

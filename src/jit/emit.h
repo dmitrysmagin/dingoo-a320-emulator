@@ -33,6 +33,8 @@
 // compile_tb() decodes + emits a whole plan in one call.
 
 #include "../types.h"
+#include "../cop0.h"
+#include "../mxu.h"
 #include "frontend.h"
 #include "jit.h"  // JitState layout + JIT_EXIT_*
 
@@ -50,6 +52,9 @@ static constexpr u32 JIT_OFF_EXIT_ARG = 32 * 4 + 4;  // 132 - exit_arg (slow-mem
 static constexpr u32 JIT_OFF_CODE_START = 32 * 4 + 36; // 164 - u32 code phys start
 static constexpr u32 JIT_OFF_CODE_END = 32 * 4 + 40;   // 168 - u32 code phys end
 static constexpr u32 JIT_OFF_WC_BASE = 32 * 4 + 48;    // 176 - u64 write_counts pointer
+static constexpr u32 JIT_OFF_COP0_PTR = 32 * 4 + 56;   // 184 - u64 COP0*
+static constexpr u32 JIT_OFF_MXU_PTR = 32 * 4 + 64;    // 192 - u64 MXU*
+static constexpr u32 JIT_OFF_TICK_DELTA = 32 * 4 + 72; // 200 - u32 unflushed ticks
 
 // Emitter cursor over a raw byte buffer.
 struct JitEmit {
@@ -103,8 +108,21 @@ struct JitMemState {
     u32 code_end;
     u32* wc;          // write_counts (u32 per 4K page), may be null
     u32 wc_pages;     // wc entries available
+    COP0* cop0;       // Phase 4: COP0 for MFC0/MTC0 (null = no COP ops)
+    MXU* mxu;         // Phase 4: MXU for COP2 (null = no COP ops)
+    u32* tick_delta;  // Phase 4: bumped once per executed op (may be null)
 };
 u32 jit_run_mem_reference(const JitTbPlan& plan, JitMemState& st, u32& fail_idx);
+
+// Phase 4: emit one COP op (MFC0/MTC0/MFC2/MTC2/CFC2/CTC2/custom/MXU1) as a
+// call into the existing C++ implementations (correctness, not speed).
+// The call preserves the RDX state base and follows the host ABI (Win64
+// shadow space / SysV). Returns false on overflow/unsupported op.
+bool emit_cop_op(JitEmit& e, const JitAluInsn& op);
+
+// Phase 4: apply one COP op to regs + COP0/MXU objects (reference side of
+// the discharge diff; mirrors the helpers in emit_cop.cpp call for call).
+void jit_apply_cop_one(const JitAluInsn& o, JitMemState& st);
 
 // Offset of a GPR slot within JitState (gpr[i] at offset i*4).
 static inline u32 slot_off(u32 reg) { return reg * 4; }

@@ -17,6 +17,8 @@
 //   main.cpp --jit flag -> Jit::init -> jit_enter() -> proof TB -> shutdown.
 
 #include "../types.h"
+#include "../cop0.h"
+#include "../mxu.h"
 
 // Shared CPU state for JIT-compiled translation blocks.
 // Phase 0 uses only gpr[2] (v0), ra, and exit fields; later phases fill
@@ -34,13 +36,18 @@ struct JitState {
     u32 code_start;   // Phase 3: code-section phys start (stores inside -> slow exit)
     u32 code_end;     // Phase 3: code-section phys end (exclusive)
     u64 wc_base;      // Phase 3: host pointer to write_counts[0] (u32 per 4K page)
+    COP0* cop0;       // Phase 4: COP0 for MFC0/MTC0 helpers
+    MXU* mxu;         // Phase 4: MXU for COP2 helpers
+    u32 tick_delta;   // Phase 4: unflushed cop0.tick() count (Phase 5 flushes)
+    u32 tick_pad;     // padding to keep 8-byte size
 };
 
 enum JitExit : u32 {
     JIT_EXIT_DONE = 0,   // proof TB executed v0=1 successfully
     JIT_EXIT_ERROR = 1,  // TB failed / not available
     JIT_EXIT_NEXT_PC = 2, // Phase 2: exit to dispatcher with next_pc set
-    JIT_EXIT_SLOW_MEM = 3 // Phase 3: unmapped/MMIO/code access at op [exit_arg]
+    JIT_EXIT_SLOW_MEM = 3, // Phase 3: unmapped/MMIO/code access at op [exit_arg]
+    JIT_EXIT_ERET = 4   // Phase 4: ERET executed (Phase 5: pc=epc, status&=~2)
 };
 
 enum JitMode {
