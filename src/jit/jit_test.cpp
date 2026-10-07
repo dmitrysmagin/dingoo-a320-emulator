@@ -3,6 +3,9 @@
 #include "frontend.h"
 #include "../memory.h"
 #include "../cop0.h"
+#include "../cpu.h"
+#include "../syscalls.h"
+#include "../display.h"
 
 #include <cstdio>
 #include <cstring>
@@ -860,13 +863,15 @@ void test_formation() {
         JitFormed f = jit_form_tb(&mem, B, B + 12, 0);
         CHECK(f.n == 2 && !f.has_branch, "form stopdelay n=%u", f.n);
     }
-    // 6. GOT range stops formation.
+    // 6. GOT range stops normal formation; GOT head may form (Phase 6c).
     mem.set_got_range(B + 16, 2);
+    put(B + 16, alu);
+    put(B + 20, alu);
     {
         JitFormed f = jit_form_tb(&mem, B, 0, 0);
         CHECK(f.n == 4 && f.has_branch, "form got n=%u", f.n);
-        JitFormed g = jit_form_tb(&mem, B + 16, 0, 0);
-        CHECK(g.n == 0, "form gothead n=%u", g.n);
+        JitFormed g = jit_form_got_at(&mem, B + 16);
+        CHECK(g.n == 2 && g.is_got, "form gothead n=%u", g.n);
     }
     mem.set_got_range(0, 0);
     // 7. KUSEG / OS-area PCs never form.

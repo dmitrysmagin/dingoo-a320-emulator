@@ -692,6 +692,9 @@ void CPU::execute_one_impl(bool jit_path) {
         if (idx >= 0 && (u32)idx < MAX_GOT_ENTRIES) {
             sync_gcpu_full(regs, pc, hi, lo);
             u32 return_addr = regs[31];
+            // RTOS saves g_cpu_pc on OSTimeDly/OSSemPend/etc. inside handlers.
+            // The guest is logically at $ra, not on the GOT trampoline word.
+            g_cpu_pc = return_addr;
             syscalls->clear_task_switched();
             syscalls->dispatch(idx, return_addr);
             memcpy(regs, g_cpu_regs, sizeof(regs));

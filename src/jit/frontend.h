@@ -116,10 +116,8 @@ bool jit_op_is_branch(JitAluOp op);
 // Mem = fast-path load/store (the 8 inline ops; LWL-enum never decodes).
 bool jit_op_is_mem(JitAluOp op);
 
-// TB eligibility for a guest PC. Mirrors cpu.cpp fetch/GOT/halt rules so
-// anything with special semantics falls back to CPU::execute_one():
-// KUSEG/KSEG2/3 excluded (fetch-0/log + [KUSEG] halt), OS area excluded
-// (fetch returns JR $ra), GOT excluded (dispatch + task switch).
+// TB eligibility for a guest PC. KUSEG/OS area excluded. GOT entries are
+// eligible when jit_form_got_at accepts the stub insns (Phase 6c).
 bool jit_pc_eligible(Memory* mem, u32 pc);
 
 // Phase 6 TB formation: a linear word run plus one optional terminal
@@ -138,9 +136,16 @@ struct JitFormed {
     u32 n;            // words collected
     bool has_branch;  // words[n-2] is a branch, words[n-1] its delay slot
     u32 branch_idx;   // index of the branch word (delay slot at +1)
+    bool is_got;      // Phase 6c: GOT stub TB (ends in jit_got_dispatch)
     JitChainExit exits[2];  // valid iff has_branch (n_exits 1 or 2)
     u32 n_exits;
 };
 JitFormed jit_form_tb(Memory* mem, u32 pc, u32 stop_pc, u32 alt_stop_pc);
+
+class CPU;
+// Phase 6c: form a straight-line GOT stub (same 8-byte slot, no branches).
+JitFormed jit_form_got_at(Memory* mem, u32 pc);
+// True when execute_one_jit from entry_pc performs GOT dispatch (uses live CPU).
+bool jit_got_entry_valid(CPU* cpu, u32 entry_pc, JitFormed* formed, int* got_idx);
 
 #endif // JIT_FRONTEND_H

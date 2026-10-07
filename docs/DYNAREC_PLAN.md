@@ -264,8 +264,13 @@ struct alignas(16) CpuState {
   inline chain on `NEXT_PC` when the target is cached (skips a dispatch loop).
   In-pool x86 miss-stub (`jmp rel32`) deferred: separate VirtualAllocs can
   exceed x86 rel32 span on Win64; use epilog + C-side resolve for now.
-  **Next ranked win:** Phase 6c HLE/GOT direct emit (§Phase 6c) — avoid
-  interpreter → trampoline for libgot; emit `call` from TB instead.
+  Done: (6) Phase 6c HLE/GOT gateway — GOT-entry TBs call `jit_got_dispatch`
+  (`JIT_EXIT_GOT`), `Syscalls*` on `JitState`, compile-time slot validation.
+  GOT TBs must **not** execute libgot stub words (JAL/JR lands on the slot and
+  `cpu.cpp` dispatches immediately); executing those words broke titles such as
+  Zhao Yun Chuan (English) (input/menu). Before `dispatch()`, set **`g_cpu_pc =
+  $ra`** (not the GOT slot) so `save_current_task()` inside `OSTimeDly` /
+  semaphores saves a valid resume PC under JIT.
   Deferred: GPR pinning / constprop. The bottleneck: dispatch lookup
   (~9ns/iter, 28% loop), TB sync (35%), fallbacks (30%). All measurements
   are approximate (rdtsc overhead folded); ratios are the reliable data.
@@ -333,9 +338,10 @@ handlers that must escalate (MMIO, code remap, full COP0 side effects).
 #### Strategy 1 — Compile GOT sites as TB endings (highest ROI)
 
 - **When:** `is_got_address(pc)` at TB formation time (stable libgot stub).
-- **Emit:** After prolog + delay slot (branch-TB rules: link, likely-nullify,
-  condition order = interpreter), **`CALL` thin `extern "C"` shim** with
-  `JitState*` (Win64 `RCX` / SysV `RDI`) and **slot index** (imm or
+- **Emit:** **`CALL` thin `extern "C"` shim** only (no execution of the 8-byte
+  stub words in the slot — same as interpreter after JAL/JR). Branch TBs still
+  finish with delay-slot rules before a separate GOT TB at the landing PC.
+  Args: `JitState*` (Win64 `RCX` / SysV `RDI`) and **slot index** (imm or
   `st.exit_arg`), not `JIT_EXIT_NEXT_PC` + fallback.
 - **Shim:** Reuse `Syscalls::dispatch()` logic: read args from `st.gpr[]`,
   write `v0`, set `pc = ra` or task-switch `pc = g_cpu_pc`, return exit code.

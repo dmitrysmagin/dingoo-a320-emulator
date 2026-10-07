@@ -28,6 +28,8 @@
 // Shared CPU state for JIT-compiled translation blocks.
 // Phase 0 uses only gpr[2] (v0), ra, and exit fields; later phases fill
 // the rest (pc/next_pc/hi/lo/cop0/mxu/mem pointers per DYNAREC_PLAN.md).
+struct Syscalls;  // syscalls.h (Phase 6c GOT dispatch)
+
 struct JitState {
     u32 gpr[32];      // MIPS GPRs; gpr[31] = ra
     u32 exit_code;    // why the TB returned (see JitExit)
@@ -43,6 +45,7 @@ struct JitState {
     u64 wc_base;      // Phase 3: host pointer to write_counts[0] (u32 per 4K page)
     COP0* cop0;       // Phase 4: COP0 for MFC0/MTC0 helpers
     MXU* mxu;         // Phase 4: MXU for COP2 helpers
+    Syscalls* syscalls;  // Phase 6c: GOT/HLE dispatch from compiled TBs
     u32 tick_delta;   // Phase 4: unflushed cop0.tick() count (Phase 5 flushes)
     u32 chain_left;   // Phase 6: chained-TB budget before forced exit
     u32 insn_delta;   // Phase 6: chained insns executed (stub-tracked)
@@ -54,7 +57,8 @@ enum JitExit : u32 {
     JIT_EXIT_ERROR = 1,  // TB failed / not available
     JIT_EXIT_NEXT_PC = 2, // Phase 2: exit to dispatcher with next_pc set
     JIT_EXIT_SLOW_MEM = 3, // Phase 3: unmapped/MMIO/code access at op [exit_arg]
-    JIT_EXIT_ERET = 4   // Phase 4: ERET executed (Phase 5: pc=epc, status&=~2)
+    JIT_EXIT_ERET = 4,   // Phase 4: ERET executed (Phase 5: pc=epc, status&=~2)
+    JIT_EXIT_GOT = 5     // Phase 6c: Syscalls::dispatch done; next_pc = ra or g_cpu_pc
 };
 
 enum JitMode {
@@ -79,6 +83,8 @@ struct JitStats {
     u64 chain_patches = 0;  // dynamic chain edges installed
     u64 chain_stub_hits = 0;  // stub fast-path hits (target already cached)
     u64 chain_unpatched = 0;  // stub slow-path hits (target uncached)
+    u64 got_tb = 0;           // compiled GOT-entry TBs
+    u64 got_dispatches = 0;   // GOT exits via jit_got_dispatch (not interpreter)
     u64 tick_flush_fast = 0;  // guest insns: COP0 flush used wired==0 batch
     u64 tick_flush_slow = 0;  // guest insns: COP0 flush used tick() loop
     u64 fb_sync_skips = 0;  // skipped st->cpu memcpy before back-to-back fallback

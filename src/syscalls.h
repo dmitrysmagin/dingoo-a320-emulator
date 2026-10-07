@@ -367,6 +367,7 @@ private:
     std::unique_ptr<s16[]> m_audio_block_pcm;
     u32 m_got_call_count;
     u32 m_got_call_counts[MAX_GOT_ENTRIES];
+    int m_last_got_dispatch_index = -1;
     std::vector<u32> m_semaphores;
 
     // Frame buffer pool for format conversion (ARGB8888→RGB565)
@@ -483,6 +484,7 @@ public:
     void shutdown_audio();
     static void SDLCALL audio_callback(void* userdata, Uint8* stream, int len);
     u32 got_call_count() const { return m_got_call_count; }
+    int last_got_dispatch_index() const { return m_last_got_dispatch_index; }
     u32 got_call_counts(int i) const { return m_got_call_counts[i]; }
     bool simulate_vsync();
     void set_idle_regs(const u32 regs[32]);

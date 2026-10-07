@@ -5,7 +5,7 @@
 static_assert(offsetof(JitState, cop0) == (size_t)JIT_OFF_COP0_PTR, "cop0 moved");
 static_assert(offsetof(JitState, mxu) == (size_t)JIT_OFF_MXU_PTR, "mxu moved");
 static_assert(offsetof(JitState, tick_delta) == (size_t)JIT_OFF_TICK_DELTA, "tick moved");
-static_assert(sizeof(JitState) == 216, "JitState size changed");
+static_assert(sizeof(JitState) == 224, "JitState size changed");
 
 // Phase 4 COP0/COP2/MXU: calls into the existing cop0.cpp/mxu.cpp
 // implementations (correctness, not speed). The emitter only marshals

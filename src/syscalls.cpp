@@ -1004,6 +1004,7 @@ bool Syscalls::got_is_stub(int index) const {
 
 void Syscalls::dispatch(int got_index, u32 return_addr) {
     (void)return_addr;
+    m_last_got_dispatch_index = got_index;
     m_got_call_count++;
     if (got_index >= 0 && got_index < (int)MAX_GOT_ENTRIES)
         m_got_call_counts[got_index]++;

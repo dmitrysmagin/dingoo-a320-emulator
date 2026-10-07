@@ -278,6 +278,8 @@ void Jit::print_stats() const {
            (unsigned long long)m_stats.tb_branches, (unsigned long long)m_stats.tb_nextpc,
            (unsigned long long)m_stats.chain_patches, (unsigned long long)m_stats.chain_stub_hits,
            (unsigned long long)m_stats.chain_unpatched, (unsigned long long)m_stats.chain_hits);
+    printf("[JIT] got_tb=%llu got_dispatch=%llu\n",
+           (unsigned long long)m_stats.got_tb, (unsigned long long)m_stats.got_dispatches);
     printf("[JIT] tick_flush: fast=%llu slow=%llu insns fb_sync_skip=%llu\n",
            (unsigned long long)m_stats.tick_flush_fast,
            (unsigned long long)m_stats.tick_flush_slow,
@@ -401,35 +403,46 @@ bool Jit::compile_tb(CPU* cpu, u32 pc, u32 stop_pc, u32 alt_stop_pc,
     // per phase, so the dispatcher may negative-cache them. Only exec-OOM
     // is transient (stable=false: retry later).
     stable = true;
-    // Phase 6 formation: linear run + optional terminal branch (with
-    // validated delay slot). Shared with discharge tests (frontend.cpp).
     u64 t_f0 = tsc_now();
-    JitFormed formed = jit_form_tb(cpu->mem, pc, stop_pc, alt_stop_pc);
-    if (formed.n == 0)
-        return false;
-    JitTbPlan plan = jit_decode_tb(formed.words, formed.n);
-    // Decode is deterministic over validated words: a formed run decodes
-    // 1:1 (branches validate by construction). Bail if it ever doesn't.
-    if (plan.count != formed.n)
-        return false;
+    JitFormed formed{};
+    int got_idx = -1;
+    if (cpu->mem->is_got_address(pc)) {
+        if (!jit_got_entry_valid(cpu, pc, &formed, &got_idx))
+            return false;
+    } else {
+        formed = jit_form_tb(cpu->mem, pc, stop_pc, alt_stop_pc);
+        if (formed.n == 0)
+            return false;
+    }
     u64 t_f1 = tsc_now();
     // Emit into a stack buffer first so a failed compile wastes no pool.
     u8 tmp[16 << 10];
     u32 len = 0;
-    u32 equiv = plan.count;  // execute_one-equivalents (ticks + insn_count)
+    u32 equiv = formed.n;  // execute_one-equivalents (ticks + insn_count)
     JitChainInfo chain{};
-    if (formed.has_branch) {
-        // Defensive: the branch must be where formation put it.
-        if (formed.branch_idx + 2 > plan.count ||
-            !jit_op_is_branch(plan.ops[formed.branch_idx].op))
-            return false;
-        len = jit_compile_branch_tb(plan, formed.branch_idx, pc, tmp,
-                                    (u32)sizeof(tmp), &chain);
-        // Branch+delay share one tick/insn_count with the interpreter
-        // (execute_one ticks once for both): prefix + 1.
-        equiv = formed.branch_idx + 1;
+    JitTbPlan plan{};
+    if (formed.is_got) {
+        len = jit_compile_got_tb(pc, got_idx, tmp, (u32)sizeof(tmp));
+        equiv = 1;
     } else {
-        len = jit_compile_tb(plan, tmp, (u32)sizeof(tmp), (u32)JIT_EXIT_DONE, pc);
+        plan = jit_decode_tb(formed.words, formed.n);
+        // Decode is deterministic over validated words: a formed run decodes
+        // 1:1 (branches validate by construction). Bail if it ever doesn't.
+        if (plan.count != formed.n)
+            return false;
+        if (formed.has_branch) {
+            // Defensive: the branch must be where formation put it.
+            if (formed.branch_idx + 2 > plan.count ||
+                !jit_op_is_branch(plan.ops[formed.branch_idx].op))
+                return false;
+            len = jit_compile_branch_tb(plan, formed.branch_idx, pc, tmp,
+                                        (u32)sizeof(tmp), &chain);
+            // Branch+delay share one tick/insn_count with the interpreter
+            // (execute_one ticks once for both): prefix + 1.
+            equiv = formed.branch_idx + 1;
+        } else {
+            len = jit_compile_tb(plan, tmp, (u32)sizeof(tmp), (u32)JIT_EXIT_DONE, pc);
+        }
     }
     u64 t_f2 = tsc_now();
     if (!len) {
@@ -457,6 +470,8 @@ bool Jit::compile_tb(CPU* cpu, u32 pc, u32 stop_pc, u32 alt_stop_pc,
     if (formed.has_branch && chain.n)
         patch_outgoing_chain_edges((TbFunc)dst, &chain);  // patch to cached targets
 
+    if (formed.is_got)
+        m_stats.got_tb++;
     if (formed.has_branch)
         m_stats.tb_branches++;
     m_stats.form_cycles += t_f1 - t_f0;
@@ -489,6 +504,7 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
     st.wc_base = (u64)(uintptr_t)mem->write_counts_base();
     st.cop0 = &cpu->cop0;
     st.mxu = &cpu->mxu;
+    st.syscalls = cpu->syscalls;
     u32 executed = 0;
     // true when cpu->regs/hi/lo already match m_st (skip redundant pre-fallback sync).
     bool cpu_gpr_live = true;
@@ -598,6 +614,29 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
             m_stats.tb_insns += ran;
             m_stats.tb_cycles += tsc_now() - t_pre;
             cpu_gpr_live = false;
+        } else if (exit == (u32)JIT_EXIT_GOT) {
+            u32 resume = st.next_pc;
+            cpu->pc = resume;
+            st.pc = resume;
+            m_stats.got_dispatches++;
+            flush_tb_ticks(cpu, st.tick_delta, tick_fast);
+            cpu->insn_count += ran;
+            executed += ran;
+            m_stats.tb_insns += ran;
+            m_stats.tb_cycles += tsc_now() - t_pre;
+            cpu_gpr_live = false;
+            TbFunc resume_tb = nullptr;
+            u32 resume_count = 0;
+            bool resume_tick_fast = false;
+            if (m_cache.find(resume, resume_tb, resume_count, &resume_tick_fast) &&
+                resume_tb) {
+                m_stats.chain_hits++;
+                func = resume_tb;
+                count = resume_count;
+                tick_fast = resume_tick_fast;
+                pc = resume;
+                goto run_tb;
+            }
         } else if (exit == (u32)JIT_EXIT_NEXT_PC) {
             // Branch TB: st.next_pc holds taken/fallthrough target.
             u32 target = st.next_pc;

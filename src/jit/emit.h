@@ -54,8 +54,9 @@ static constexpr u32 JIT_OFF_CODE_END = 32 * 4 + 40;   // 168 - u32 code phys en
 static constexpr u32 JIT_OFF_WC_BASE = 32 * 4 + 48;    // 176 - u64 write_counts pointer
 static constexpr u32 JIT_OFF_COP0_PTR = 32 * 4 + 56;   // 184 - u64 COP0*
 static constexpr u32 JIT_OFF_MXU_PTR = 32 * 4 + 64;    // 192 - u64 MXU*
-static constexpr u32 JIT_OFF_TICK_DELTA = 32 * 4 + 72; // 200 - u32 unflushed ticks
-static constexpr u32 JIT_OFF_INSN_DELTA = 32 * 4 + 80; // 208 - chained insn accounting
+static constexpr u32 JIT_OFF_SYSCALLS_PTR = 32 * 4 + 72; // 200 - u64 Syscalls*
+static constexpr u32 JIT_OFF_TICK_DELTA = 32 * 4 + 80; // 208 - u32 unflushed ticks
+static constexpr u32 JIT_OFF_INSN_DELTA = 32 * 4 + 88; // 216 - chained insn accounting
 static constexpr u32 JIT_PROLOG_CHAIN_OFF = 3; // skip mov rdx, rcx/rdi on chain entry
 
 // Byte offset of a chain exit site within a TB (for patching).
@@ -128,6 +129,11 @@ u32 jit_compile_tb(const JitTbPlan& plan, u8* buf, u32 cap, u32 exit_code, u32 e
 // branch_idx indexes the branch insn in plan.ops; the delay slot
 // and any prefix ops are emitted as part of this TB.
 u32 jit_compile_branch_tb(const JitTbPlan& plan, u32 branch_idx, u32 entry_pc, u8* buf, u32 cap, JitChainInfo* chain = nullptr);
+
+// Phase 6c: GOT dispatch TB — jit_got_dispatch(st, got_index) only (stub
+// words in the slot are not executed; matches cpu.cpp JAL/JR landing).
+u32 jit_compile_got_tb(u32 entry_pc, s32 got_index, u8* buf, u32 cap);
+extern "C" u32 jit_got_dispatch(JitState* st, s32 got_index);
 
 // Per-op ALU semantics shared by jit_run_reference() and the mem reference
 // below (single source of truth for discharge diffs).

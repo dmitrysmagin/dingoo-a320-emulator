@@ -1,4 +1,7 @@
 #include "frontend.h"
+
+#include "../cpu.h"
+#include "../syscalls.h"
 #include "../memory.h"
 
 // Bit helpers (match cpu.cpp decode).
@@ -408,8 +411,50 @@ bool jit_pc_eligible(Memory* mem, u32 pc) {
     if (pc >= 0x80000000u && pc < 0x80A00000u)
         return false;
     if (mem->is_got_address(pc))
-        return false;
+        return jit_form_got_at(mem, pc).n != 0;
     return mem->is_mapped(pc);
+}
+
+JitFormed jit_form_got_at(Memory* mem, u32 pc) {
+    JitFormed f{};
+    f.n = 0;
+    f.has_branch = false;
+    f.is_got = false;
+    if (!mem->is_got_address(pc))
+        return f;
+    int idx0 = mem->got_index(pc);
+    if (idx0 < 0)
+        return f;
+    for (; f.n < JIT_TB_MAX_INSNS && f.n < 2;) {
+        u32 pn = pc + f.n * 4;
+        if (mem->got_index(pn) != idx0)
+            break;
+        if (!mem->is_mapped(pn))
+            break;
+        u32 w = mem->read_u32(pn);
+        JitOpProbe pr = jit_probe_op(w);
+        if (!pr.valid || jit_op_is_branch(pr.op.op) || jit_op_is_mem(pr.op.op))
+            break;
+        f.words[f.n++] = w;
+    }
+    if (f.n == 0)
+        return f;
+    f.is_got = true;
+    return f;
+}
+
+bool jit_got_entry_valid(CPU* cpu, u32 entry_pc, JitFormed* formed, int* got_idx) {
+    if (!cpu || !cpu->mem || !cpu->syscalls || !formed || !got_idx)
+        return false;
+    JitFormed f = jit_form_got_at(cpu->mem, entry_pc);
+    if (f.n == 0 || !f.is_got)
+        return false;
+    int idx = cpu->mem->got_index(entry_pc);
+    if (idx < 0)
+        return false;
+    *got_idx = idx;
+    *formed = f;
+    return true;
 }
 
 JitFormed jit_form_tb(Memory* mem, u32 pc, u32 stop_pc, u32 alt_stop_pc) {
@@ -417,6 +462,7 @@ JitFormed jit_form_tb(Memory* mem, u32 pc, u32 stop_pc, u32 alt_stop_pc) {
     f.n = 0;
     f.has_branch = false;
     f.branch_idx = 0;
+    f.is_got = false;
     for (; f.n < JIT_TB_MAX_INSNS;) {
         u32 pn = pc + f.n * 4;
         // Never overshoot a stop PC: the run loop must observe it.
