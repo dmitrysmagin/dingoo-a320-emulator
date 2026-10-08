@@ -1,4 +1,5 @@
 #include "cpu.h"
+#include "log.h"
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -39,7 +40,7 @@ u32 CPU::fetch() {
     if (pc >= 0x80000000 && pc < 0x80A00000) {
         static bool warned = false;
         if (!warned) {
-            printf("[CPU] PC in OS area 0x%08X - returning JR $ra\n", pc);
+            log_dbg("[CPU] PC in OS area 0x%08X - returning JR $ra\n", pc);
             warned = true;
         }
         return 0x03E00008;  // JR $ra
@@ -51,7 +52,7 @@ void CPU::raise_exception(u32 code) {
     cop0.regs.cause = (cop0.regs.cause & ~0x7C) | (code << 2);
     cop0.regs.epc = pc - 4;
     cop0.regs.bad_vaddr = pc;
-    printf("[EXCEPTION] code=%u at PC=0x%08X\n", code, pc);
+    log_warn("[EXCEPTION] code=%u at PC=0x%08X", code, pc);
     running = false;
 }
 
@@ -100,7 +101,7 @@ void CPU::exec_special(u32 insn) {
         static bool warned = false;
         if (!warned) {
             warned = true;
-            printf("[CPU] SPECIAL non-standard func=0x%02X at PC=0x%08X insn=0x%08X (treated as NOP, possibly MXU)\n", func, pc - 4, insn);
+            log_dbg("[CPU] SPECIAL non-standard func=0x%02X at PC=0x%08X insn=0x%08X (treated as NOP, possibly MXU)\n", func, pc - 4, insn);
         }
         break;
     }
@@ -303,7 +304,7 @@ void CPU::exec_special2(u32 insn) {
         break;
 
     default:
-        printf("[CPU] SPECIAL2 unknown func=0x%02X at PC=0x%08X insn=0x%08X\n",
+        log_dbg("[CPU] SPECIAL2 unknown func=0x%02X at PC=0x%08X insn=0x%08X\n",
                func, pc - 4, insn);
         raise_exception(EXC_RI);
         break;
@@ -327,7 +328,7 @@ void CPU::exec_special3(u32 insn) {
         u32 mask = ((1u << size) - 1) << pos;
         regs[rt] = (regs[rt] & ~mask) | ((regs[rs] & ((1u << size) - 1)) << pos);
     } else {
-        printf("[CPU] SPECIAL3 unknown func=0x%02X at PC=0x%08X insn=0x%08X\n", func, pc - 4, insn);
+        log_dbg("[CPU] SPECIAL3 unknown func=0x%02X at PC=0x%08X insn=0x%08X\n", func, pc - 4, insn);
         raise_exception(EXC_RI);
     }
 }
@@ -357,7 +358,7 @@ void CPU::execute(u32 insn) {
             static bool warned = false;
             if (!warned) {
                 warned = true;
-                printf("[CPU] REGIMM non-standard rt=0x%02X at PC=0x%08X insn=0x%08X\n", rt_field, pc - 4, insn);
+                log_dbg("[CPU] REGIMM non-standard rt=0x%02X at PC=0x%08X insn=0x%08X\n", rt_field, pc - 4, insn);
             }
             break;
         }
@@ -398,19 +399,19 @@ void CPU::execute(u32 insn) {
             // C0 (TLB / ERET) — function is in bits 5-0
             switch (func) {
             case 0x01: // TLBR — TLB removed; trap
-                printf("[CPU] TLBR (unhandled) at PC=0x%08X insn=0x%08X\n", pc - 4, insn);
+                log_dbg("[CPU] TLBR (unhandled) at PC=0x%08X insn=0x%08X\n", pc - 4, insn);
                 raise_exception(EXC_RI);
                 break;
             case 0x02: // TLBWI — TLB removed; trap
-                printf("[CPU] TLBWI (unhandled) at PC=0x%08X insn=0x%08X\n", pc - 4, insn);
+                log_dbg("[CPU] TLBWI (unhandled) at PC=0x%08X insn=0x%08X\n", pc - 4, insn);
                 raise_exception(EXC_RI);
                 break;
             case 0x06: // TLBWR — TLB removed; trap
-                printf("[CPU] TLBWR (unhandled) at PC=0x%08X insn=0x%08X\n", pc - 4, insn);
+                log_dbg("[CPU] TLBWR (unhandled) at PC=0x%08X insn=0x%08X\n", pc - 4, insn);
                 raise_exception(EXC_RI);
                 break;
             case 0x08: // TLBP — TLB removed; trap (mark Index as not found)
-                printf("[CPU] TLBP (unhandled) at PC=0x%08X insn=0x%08X\n", pc - 4, insn);
+                log_dbg("[CPU] TLBP (unhandled) at PC=0x%08X insn=0x%08X\n", pc - 4, insn);
                 cop0.regs.index = 0x80000000; // bit 31 = 1: not found
                 raise_exception(EXC_RI);
                 break;
@@ -421,7 +422,7 @@ void CPU::execute(u32 insn) {
                 ll_addr = 0;
                 break;
             default:
-                printf("[CPU] COP0 C0 unknown func=0x%02X at PC=0x%08X insn=0x%08X\n", func, pc - 4, insn);
+                log_dbg("[CPU] COP0 C0 unknown func=0x%02X at PC=0x%08X insn=0x%08X\n", func, pc - 4, insn);
                 raise_exception(EXC_RI);
                 break;
             }
@@ -429,7 +430,7 @@ void CPU::execute(u32 insn) {
         break;
     }
     case 0x11:
-        printf("[CPU] COP1 (FPU) not implemented at PC=0x%08X insn=0x%08X\n", pc - 4, insn);
+        log_dbg("[CPU] COP1 (FPU) not implemented at PC=0x%08X insn=0x%08X\n", pc - 4, insn);
         raise_exception(EXC_RI);
         break;
     case 0x12: {
@@ -444,7 +445,7 @@ void CPU::execute(u32 insn) {
         break;
     }
     case 0x13:
-        printf("[CPU] COP3 not implemented at PC=0x%08X\n", pc - 4);
+        log_dbg("[CPU] COP3 not implemented at PC=0x%08X\n", pc - 4);
         raise_exception(EXC_RI);
         break;
     case 0x14: if (regs[rs] == regs[rt]) pc = pc + (imm << 2); else nullify_delay = true; break;  // BEQL
@@ -533,7 +534,7 @@ void CPU::execute(u32 insn) {
 
     case 0x2F: {  // CACHE (nop)
         static bool warned = false;
-        if (!warned) { warned = true; printf("[CPU] CACHE instruction at PC=0x%08X (ignored)\n", pc - 4); }
+        if (!warned) { warned = true; log_dbg("[CPU] CACHE instruction at PC=0x%08X (ignored)\n", pc - 4); }
         break;
     }
     case 0x30: {  // LL
@@ -546,7 +547,7 @@ void CPU::execute(u32 insn) {
     case 0x31: {  // LWC1
         mem->read_u32(regs[rs] + imm);
         static bool warned = false;
-        if (!warned) { warned = true; printf("[CPU] LWC1 instruction at PC=0x%08X (load discarded)\n", pc - 4); }
+        if (!warned) { warned = true; log_dbg("[CPU] LWC1 instruction at PC=0x%08X (load discarded)\n", pc - 4); }
         break;
     }
     case 0x32: {  // LWC2
@@ -557,7 +558,7 @@ void CPU::execute(u32 insn) {
     case 0x33: {  // LWC3
         mem->read_u32(regs[rs] + imm);
         static bool warned = false;
-        if (!warned) { warned = true; printf("[CPU] LWC3 instruction at PC=0x%08X (load discarded)\n", pc - 4); }
+        if (!warned) { warned = true; log_dbg("[CPU] LWC3 instruction at PC=0x%08X (load discarded)\n", pc - 4); }
         break;
     }
     case 0x34: {  // SC
@@ -573,7 +574,7 @@ void CPU::execute(u32 insn) {
     }
     case 0x35: {  // SWC1 (nop - no store)
         static bool warned = false;
-        if (!warned) { warned = true; printf("[CPU] SWC1 instruction at PC=0x%08X (store ignored)\n", pc - 4); }
+        if (!warned) { warned = true; log_dbg("[CPU] SWC1 instruction at PC=0x%08X (store ignored)\n", pc - 4); }
         break;
     }
     case 0x36: {  // SWC2
@@ -583,12 +584,12 @@ void CPU::execute(u32 insn) {
     }
     case 0x37: {  // SWC3 (nop - no store)
         static bool warned = false;
-        if (!warned) { warned = true; printf("[CPU] SWC3 instruction at PC=0x%08X (store ignored)\n", pc - 4); }
+        if (!warned) { warned = true; log_dbg("[CPU] SWC3 instruction at PC=0x%08X (store ignored)\n", pc - 4); }
         break;
     }
 
     default:
-        printf("[CPU] Unknown opcode=0x%02X at PC=0x%08X insn=0x%08X\n", opcode, pc - 4, insn);
+        log_warn("[CPU] Unknown opcode=0x%02X at PC=0x%08X insn=0x%08X", opcode, pc - 4, insn);
         raise_exception(EXC_RI);
         break;
     }
@@ -601,14 +602,14 @@ void CPU::trace_add(u32 pc_, u32 insn) {
 }
 
 void CPU::print_trace() {
-    printf("\n=== Last %d instructions (most recent last) ===\n", TRACE_SIZE);
+    log_dbg("\n=== Last %d instructions (most recent last) ===\n", TRACE_SIZE);
     for (int i = 0; i < TRACE_SIZE; i++) {
         int idx = (m_trace_idx - TRACE_SIZE + i + TRACE_SIZE) % TRACE_SIZE;
         if (m_trace_pc[idx] == 0) {
-            printf("  -- skip zero at idx %d (buf was not full yet)\n", idx);
+            log_dbg("  -- skip zero at idx %d (buf was not full yet)\n", idx);
             continue;
         }
-        printf("  [%03d] 0x%08X: 0x%08X  insn_count=%llu\n", i, m_trace_pc[idx], m_trace_insn[idx], 0ULL);
+        log_dbg("  [%03d] 0x%08X: 0x%08X  insn_count=%llu\n", i, m_trace_pc[idx], m_trace_insn[idx], 0ULL);
     }
 }
 
@@ -651,9 +652,9 @@ void CPU::execute_one_impl(bool jit_path) {
     }
 
     if ((pc & 0x80000000) == 0 && (pc == 0 || pc >= 0x4000)) {
-        printf("[KUSEG] Immediate: pc=0x%08X from insn=0x%08X at 0x%08X\n",
+        log_dbg("[KUSEG] Immediate: pc=0x%08X from insn=0x%08X at 0x%08X\n",
                pc, insn, next_pc - 4);
-        printf("[KUSEG] regs[31]=0x%08X regs[29]=0x%08X\n", regs[31], regs[29]);
+        log_dbg("[KUSEG] regs[31]=0x%08X regs[29]=0x%08X\n", regs[31], regs[29]);
         running = false;
         return;
     }
@@ -677,8 +678,8 @@ void CPU::execute_one_impl(bool jit_path) {
             sync_gcpu_full(regs, pc, hi, lo);
 
         if ((pc & 0x80000000) == 0 && (pc == 0 || pc >= 0x4000)) {
-            printf("[KUSEG] After delay slot: pc=0x%08X\n", pc);
-            printf("[KUSEG] delay_insn=0x%08X branch_target=0x%08X\n",
+            log_dbg("[KUSEG] After delay slot: pc=0x%08X\n", pc);
+            log_dbg("[KUSEG] delay_insn=0x%08X branch_target=0x%08X\n",
                    delay_insn, branch_target);
             running = false;
             return;
@@ -702,8 +703,8 @@ void CPU::execute_one_impl(bool jit_path) {
             lo = g_cpu_lo;
             pc = syscalls->task_switched() ? g_cpu_pc : return_addr;
             if ((pc & 0x80000000) == 0 && (pc == 0 || pc >= 0x4000)) {
-                printf("[KUSEG] GOT dispatch idx=%d pc=0x%08X (invalid)\n", idx, pc);
-                printf("[KUSEG] return_addr=0x%08X\n", return_addr);
+                log_dbg("[KUSEG] GOT dispatch idx=%d pc=0x%08X (invalid)\n", idx, pc);
+                log_dbg("[KUSEG] return_addr=0x%08X\n", return_addr);
                 running = false;
             }
         }

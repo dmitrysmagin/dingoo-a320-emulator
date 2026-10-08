@@ -1,4 +1,5 @@
 #include "memory.h"
+#include "log.h"
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -33,10 +34,10 @@ static void log_unmapped(u32 phys, u32 val, int width, int kind, u32 vaddr = 0) 
     else if (phys >= 0x16000000 && phys <  0x16004000)   region = "TCSM";
     else if (phys >= 0x1FC00000 && phys <  0x1FC02000)   region = "BootROM";
     if (phys == 0xFFFFFFFF)
-        printf("[HW-UNMAPPED] %s vaddr=0x%08X (%s) width=%d PC=0x%08X\n",
+        log_dbg("[HW-UNMAPPED] %s vaddr=0x%08X (%s) width=%d PC=0x%08X\n",
                kind ? "WRITE" : "READ", vaddr, region, width, g_cpu_pc);
     else
-        printf("[HW-UNMAPPED] %s phys=0x%08X (%s) width=%d val=0x%08X PC=0x%08X\n",
+        log_dbg("[HW-UNMAPPED] %s phys=0x%08X (%s) width=%d val=0x%08X PC=0x%08X\n",
                kind ? "WRITE" : "READ", phys, region, width, val, g_cpu_pc);
 }
 
@@ -54,7 +55,7 @@ bool Memory::load_raw(const std::vector<u8>& data, u32 phys_addr) {
         return false;
     }
     memcpy(&m_mem[phys_addr], data.data(), data.size());
-    printf("[MEM] Loaded %u bytes at phys 0x%08X\n", (u32)data.size(), phys_addr);
+    log_dbg("[MEM] Loaded %u bytes at phys 0x%08X\n", (u32)data.size(), phys_addr);
     return true;
 }
 
@@ -76,7 +77,7 @@ bool Memory::load_from_file(const std::string& path, u32 file_offset, u32 phys_a
         fprintf(stderr, "[MEM] load_from_file short read: %zu/%u bytes\n", read_bytes, size);
         return false;
     }
-    printf("[MEM] Loaded %u bytes from file+0x%X at phys 0x%08X\n", size, file_offset, phys_addr);
+    log_dbg("[MEM] Loaded %u bytes from file+0x%X at phys 0x%08X\n", size, file_offset, phys_addr);
     return true;
 }
 
@@ -161,7 +162,7 @@ static void log_lcd_write(u32 phys, u32 val, int width) {
     u32 off = phys - 0x13050000;
     if (off >= 0x200 && off < 0x400) {
         u32 idx = (off - 0x200) / 2;
-        printf("[LCD_PAL] write%d phys=0x%08X palette[%u] = 0x%08X\n", width, phys, idx, val);
+        log_dbg("[LCD_PAL] write%d phys=0x%08X palette[%u] = 0x%08X\n", width, phys, idx, val);
         return;
     }
     static const struct { u32 off; const char* name; } regs[] = {
@@ -175,7 +176,7 @@ static void log_lcd_write(u32 phys, u32 val, int width) {
     };
     const char* name = "LCD_???";
     for (auto& r : regs) if (r.off == off) { name = r.name; break; }
-    printf("[LCD_REG] write%d phys=0x%08X %-12s = 0x%08X\n", width, phys, name, val);
+    log_dbg("[LCD_REG] write%d phys=0x%08X %-12s = 0x%08X\n", width, phys, name, val);
 }
 
 // JZ4740 DMA controller register space: physical 0x10042000–0x100420FF
@@ -189,7 +190,7 @@ static void log_dma_write(u32 phys, u32 val, int width) {
     u32 off = phys - 0x10042000;
     const char* name = "DMA_???";
     for (auto& r : regs) if (r.off == off) { name = r.name; break; }
-    printf("[DMA] write%d phys=0x%08X %-12s = 0x%08X\n", width, phys, name, val);
+    log_dbg("[DMA] write%d phys=0x%08X %-12s = 0x%08X\n", width, phys, name, val);
 }
 
 // JZ4740 IPU register space: physical 0x13080000–0x130800FF
@@ -205,7 +206,7 @@ static void log_ipu_write(u32 phys, u32 val, int width) {
     u32 off = phys - 0x13080000;
     const char* name = "IPU_???";
     for (auto& r : regs) if (r.off == off) { name = r.name; break; }
-    printf("[IPU] write%d phys=0x%08X %-20s = 0x%08X\n", width, phys, name, val);
+    log_dbg("[IPU] write%d phys=0x%08X %-20s = 0x%08X\n", width, phys, name, val);
 }
 
 void Memory::write_u8(u32 vaddr, u8 val) {

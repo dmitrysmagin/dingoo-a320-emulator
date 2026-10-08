@@ -1,4 +1,5 @@
 #include "display.h"
+#include "log.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
@@ -95,10 +96,11 @@ bool Display::init() {
         SDL_Quit();
         return false;
     }
-    printf("[DISPLAY] SDL2 initialized: %dx%d (scale %d)", win_w, win_h, SCALE);
     if (m_rotate)
-        printf(" rotate=%d", m_rotate);
-    printf("\n");
+        log_dbg("[DISPLAY] SDL2 initialized: %dx%d (scale %d) rotate=%d",
+                win_w, win_h, SCALE, m_rotate);
+    else
+        log_dbg("[DISPLAY] SDL2 initialized: %dx%d (scale %d)", win_w, win_h, SCALE);
 
     m_initialized = true;
     return true;
@@ -322,7 +324,7 @@ void Display::save_screenshot(const char* path) {
     if (!dst) return;
     SDL_SaveBMP(dst, path);
     SDL_FreeSurface(dst);
-    printf("[DISPLAY] Screenshot saved: %s\n", path);
+    log_dbg("[DISPLAY] Screenshot saved: %s\n", path);
 }
 
 namespace {
@@ -455,7 +457,7 @@ void Display::save_screenshot_png(const char* path) {
     if (!ok)
         fprintf(stderr, "[DISPLAY] Failed to write PNG: %s\n", path);
     else
-        printf("[DISPLAY] Screenshot saved: %s (%dx%d)\n", path, WIDTH, HEIGHT);
+        log_dbg("[DISPLAY] Screenshot saved: %s (%dx%d)\n", path, WIDTH, HEIGHT);
 }
 
 void Display::set_game_name(const char* name) {

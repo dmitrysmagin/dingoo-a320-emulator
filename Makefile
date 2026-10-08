@@ -41,6 +41,7 @@ JIT_COMMON = $(SRCDIR)/jit/jit.cpp \
              $(SRCDIR)/jit/jit_test.cpp
 
 SOURCES = $(SRCDIR)/main.cpp \
+          $(SRCDIR)/log.cpp \
           $(SRCDIR)/app_parser.cpp \
           $(SRCDIR)/memory.cpp \
           $(SRCDIR)/cpu.cpp \
@@ -63,7 +64,7 @@ all: $(TARGET)
 $(OBJDIR):
 	mkdir -p $(OBJDIR)
 
-HEADERS = $(SRCDIR)/types.h $(SRCDIR)/syscalls.h $(SRCDIR)/cpu.h \
+HEADERS = $(SRCDIR)/types.h $(SRCDIR)/log.h $(SRCDIR)/syscalls.h $(SRCDIR)/cpu.h \
           $(SRCDIR)/memory.h $(SRCDIR)/cop0.h $(SRCDIR)/mxu.h \
           $(SRCDIR)/jit/jit.h $(SRCDIR)/jit/frontend.h $(JIT_EMIT_HDR) \
           $(SRCDIR)/jit/tbcache.h $(SRCDIR)/jit/host_config.h

@@ -6,6 +6,7 @@
 #include "syscalls.h"
 #include "jit/jit.h"
 #include "jit/jit_test.h"
+#include "log.h"
 #undef main
 #include <cstdio>
 #include <cstdlib>
@@ -14,16 +15,27 @@
 #include <algorithm>
 
 static void print_usage(const char* argv0) {
-    fprintf(stderr, "Usage: %s [--frames <n>] [--seconds <n>] [--save-screenshots] [--nosound] [--audio-latency <ms>] [--rotate <90|-90|270>] [--jit={off,on}] [--jit-stats] [--jit-tests] <app>\n", argv0);
+    fprintf(stderr,
+            "Usage: %s [--debug] [--frames <n>] [--seconds <n>] [--save-screenshots] "
+            "[--nosound] [--audio-latency <ms>] [--rotate <90|-90|270>] "
+            "[--jit={off,on}] [--jit-stats] [--jit-tests] <app>\n",
+            argv0);
+}
+
+static bool arg_present(int argc, char* argv[], const char* flag) {
+    for (int i = 1; i < argc; i++)
+        if (strcmp(argv[i], flag) == 0)
+            return true;
+    return false;
 }
 
 int main(int argc, char* argv[]) {
+    log_set_debug(arg_present(argc, argv, "--debug"));
+
     // --jit-tests runs the Phase-1 discharge tests with no ROM and exits.
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--jit-tests") == 0) {
-            bool verbose = false;
-            for (int j = 1; j < argc; j++)
-                if (strcmp(argv[j], "--jit-stats") == 0) verbose = true;
+            bool verbose = log_debug_enabled() || arg_present(argc, argv, "--jit-stats");
             printf("=== JIT Phase-1 discharge tests ===\n");
             fflush(stdout);
             JitTestResult r = jit_run_phase1_tests(verbose);
@@ -57,6 +69,8 @@ int main(int argc, char* argv[]) {
             arg_jit = JIT_ON;
         } else if (strcmp(argv[i], "--jit-stats") == 0) {
             arg_jit_stats = true;
+        } else if (strcmp(argv[i], "--debug") == 0) {
+            /* handled above */
         } else if (strncmp(argv[i], "--audio-latency=", 16) == 0) {
             audio_latency_ms = atoi(argv[i] + 16);
         } else if (strcmp(argv[i], "--audio-latency") == 0 && i + 1 < argc) {
@@ -85,7 +99,7 @@ int main(int argc, char* argv[]) {
         print_usage(argv[0]);
         return 1;
     }
-    printf("=== Dingoo A320 Emulator (Phase 2) ===\n\n");
+    log_info("=== Dingoo A320 Emulator (Phase 2) ===");
 
     // Parse the .app file
     AppBinary app;
@@ -107,7 +121,7 @@ int main(int argc, char* argv[]) {
     u32 prog_end_vaddr = app.load_addr + app.prog_size;
     u32 bss_start_phys = rawd_end_vaddr & 0x1FFFFFFF;
     u32 bss_size = prog_end_vaddr - rawd_end_vaddr;
-    printf("[INIT] Zeroing BSS: 0x%08X-0x%08X (%u bytes)\n", rawd_end_vaddr, prog_end_vaddr, bss_size);
+    log_dbg("[INIT] Zeroing BSS: 0x%08X-0x%08X (%u bytes)", rawd_end_vaddr, prog_end_vaddr, bss_size);
     mem.zero_region(bss_start_phys, bss_size);
 
     // Extract game name from app_path (basename without extension)
@@ -118,7 +132,6 @@ int main(int argc, char* argv[]) {
         std::string basename = (slash != std::string::npos) ? app_path_str.substr(slash + 1) : app_path_str;
         size_t dot = basename.find_last_of('.');
         game_name = (dot != std::string::npos) ? basename.substr(0, dot) : basename;
-        printf("[INIT] Game name: '%s'\n", game_name.c_str());
     }
 
     // Look up AppMain from export table — mandatory; all .app files must export it.
@@ -126,7 +139,6 @@ int main(int argc, char* argv[]) {
     for (const auto& exp : app.exports) {
         if (exp.name == "AppMain" || exp.name == "app_main") {
             app_main_addr = exp.address;
-            printf("[INIT] Found AppMain at 0x%08X from exports\n", app_main_addr);
             break;
         }
     }
@@ -145,9 +157,10 @@ int main(int argc, char* argv[]) {
     }
     if (got_base == 0) {
         got_base = 0x80AD67E0; // genuine fallback when no imports have valid addresses
-        printf("[WARN] No valid import addresses found; using default GOT base 0x%08X\n", got_base);
+        log_warn("[WARN] No valid import addresses found; using default GOT base 0x%08X", got_base);
     }
-    printf("[INIT] GOT base: 0x%08X (%u entries)\n", got_base, (u32)app.imports.size());
+    log_info("[INIT] Game '%s'  AppMain=0x%08X  GOT=0x%08X (%u imports)",
+             game_name.c_str(), app_main_addr, got_base, (u32)app.imports.size());
     mem.set_got_range(got_base, (u32)app.imports.size());
 
     // Write game name as wide string just above the program's BSS, in free RAM.
@@ -166,7 +179,7 @@ int main(int argc, char* argv[]) {
     if (game_name == "Nose Breaker") {
         mem.write_u32(0x80A00848, 0x00000000); // beq v0, zero, skip → nop
         mem.write_u32(0x80A007E0, 0x00000000); // same check on the other PlaySfx
-        printf("[PATCH] Nose Breaker: PlaySfx no longer gated on unset soundOn\n");
+        log_dbg("[PATCH] Nose Breaker: PlaySfx no longer gated on unset soundOn");
     }
 
     // Note: code section protection was intentionally REMOVED.
@@ -187,7 +200,7 @@ int main(int argc, char* argv[]) {
     const u32 STACK_TOP = 0x81FF0000;   // phys 0x01FF0000; 64 KB below 32MB ceiling
     u32 stack_phys = STACK_TOP & 0x1FFFFFFF;
     mem.zero_region(stack_phys - 0x10000, 0x10000);  // zero 64 KB below stack top
-    printf("[INIT] Zeroed stack area: phys 0x%08X-0x%08X\n", stack_phys - 0x10000, stack_phys);
+    log_dbg("[INIT] Zeroed stack area: phys 0x%08X-0x%08X", stack_phys - 0x10000, stack_phys);
 
     // Pre-populate the event queue exactly as the real Dingoo A320 OS does before launching
     // an app.  Phys 0x00BFECD8 falls inside the resource archive (loaded at 0x00B50000+), so
@@ -197,7 +210,7 @@ int main(int argc, char* argv[]) {
     // are used by the game as audio-buffer parameters — 0x8BFC4D89 is the empirically-observed
     // value from real hardware and must be used verbatim.
     mem.write_u32(0x80BFECD8, 0x8BFC4D89u);
-    printf("[INIT] Pre-populated event queue 0x80BFECD8 = 0x8BFC4D89 (hardware-ready)\n");
+    log_dbg("[INIT] Pre-populated event queue 0x80BFECD8 = 0x8BFC4D89 (hardware-ready)");
 
     // Sentinel: dl_main returns to this address, which signals Phase 1 is complete.
     // Sits in the zeroed stack area (0x80BFF000-0x80C10000), so it contains 0x00000000
@@ -209,7 +222,7 @@ int main(int argc, char* argv[]) {
     const u32 IDLE_LOOP_PC = 0x80BFFD00;
     mem.write_u32(IDLE_LOOP_PC + 0x00, 0x082FFF40); // j IDLE_LOOP_PC
     mem.write_u32(IDLE_LOOP_PC + 0x04, 0x00000000); // nop
-    printf("[PATCH] Scheduler idle loop at 0x%08X\n", IDLE_LOOP_PC);
+    log_dbg("[PATCH] Scheduler idle loop at 0x%08X", IDLE_LOOP_PC);
 
     // OS_TaskReturn: $ra for OSTaskCreate'd workers. Falling off the task
     // calls OSTaskDel(OS_PRIO_SELF) instead of jumping to 0 (KUSEG walk).
@@ -229,14 +242,14 @@ int main(int argc, char* argv[]) {
             mem.write_u32(TASK_RETURN_PC + 0x0C,
                           0x08000000u | ((IDLE_LOOP_PC >> 2) & 0x03FFFFFFu)); // j idle
             mem.write_u32(TASK_RETURN_PC + 0x10, 0x00000000);
-            printf("[PATCH] OS_TaskReturn at 0x%08X -> OSTaskDel@0x%08X\n",
-                   TASK_RETURN_PC, ostaskdel_got);
+            log_dbg("[PATCH] OS_TaskReturn at 0x%08X -> OSTaskDel@0x%08X",
+                    TASK_RETURN_PC, ostaskdel_got);
         } else {
             mem.write_u32(TASK_RETURN_PC + 0x04,
                           0x08000000u | ((IDLE_LOOP_PC >> 2) & 0x03FFFFFFu));
             mem.write_u32(TASK_RETURN_PC + 0x08, 0x00000000);
-            printf("[PATCH] OS_TaskReturn at 0x%08X -> idle (no OSTaskDel import)\n",
-                   TASK_RETURN_PC);
+            log_dbg("[PATCH] OS_TaskReturn at 0x%08X -> idle (no OSTaskDel import)",
+                    TASK_RETURN_PC);
         }
     }
 
@@ -249,7 +262,7 @@ int main(int argc, char* argv[]) {
     mem.write_u32(timer_ret_stub + 0x04, 0x27BD0010);
     mem.write_u32(timer_ret_stub + 0x08, 0x03E00008);
     mem.write_u32(timer_ret_stub + 0x0C, 0x00000000);
-    printf("[PATCH] Timer return stub at 0x%08X\n", timer_ret_stub);
+    log_dbg("[PATCH] Timer return stub at 0x%08X", timer_ret_stub);
 
     // Initialize display (SDL2)
     Display display;
@@ -269,12 +282,12 @@ int main(int argc, char* argv[]) {
     if (app.resource_size > 0) {
         if (archive.load(app_path, app.resource_offset, app.resource_size)) {
             archive_ptr = &archive;
-            printf("[INIT] Resource archive loaded: %zu entries\n", archive.count());
+            log_dbg("[INIT] Resource archive loaded: %zu entries", archive.count());
         } else {
             fprintf(stderr, "[INIT] Warning: failed to parse resource archive from %s\n", app_path);
         }
     } else {
-        printf("[INIT] No resource archive present; skipping load\n");
+        log_dbg("[INIT] No resource archive present; skipping load");
     }
 
     // Initialize syscalls
@@ -285,8 +298,8 @@ int main(int argc, char* argv[]) {
     syscalls.set_nosound(nosound);
     syscalls.set_audio_target_latency_ms(audio_latency_ms);
     if (audio_latency_ms != Syscalls::AUDIO_TARGET_LATENCY_MS_DEFAULT) {
-        printf("[AUDIO] target latency: %d ms (default %d)\n",
-               audio_latency_ms, Syscalls::AUDIO_TARGET_LATENCY_MS_DEFAULT);
+        log_dbg("[AUDIO] target latency: %d ms (default %d)",
+                audio_latency_ms, Syscalls::AUDIO_TARGET_LATENCY_MS_DEFAULT);
     }
 
     // Resolve GOT slot handlers by name (works for all app formats)
@@ -317,11 +330,11 @@ int main(int argc, char* argv[]) {
         mem.write_u32(KERN_KEY_MAILBOX,  hw);
     };
 
-    printf("[INIT] RAM size: %u MB\n", mem.size() / (1024 * 1024));
-    printf("[INIT] Guest CPU: %u MHz (%u insns/vsync slice @ %u Hz)\n",
-           GUEST_CPU_HZ / 1'000'000u, GUEST_INSNS_PER_SLICE, GUEST_VSYNC_HZ);
-    printf("[INIT] Display: %dx%d (scale %d)\n", Display::WIDTH, Display::HEIGHT, Display::SCALE);
-    printf("[INIT] JIT: %s\n", arg_jit == JIT_ON ? "on (TB dispatcher)" : "off (interpreter)");
+    log_info("[INIT] RAM %u MB  CPU %u MHz (%u insns/vsync @ %u Hz)  display %dx%d×%d  JIT %s",
+             mem.size() / (1024 * 1024),
+             GUEST_CPU_HZ / 1'000'000u, GUEST_INSNS_PER_SLICE, GUEST_VSYNC_HZ,
+             Display::WIDTH, Display::HEIGHT, Display::SCALE,
+             arg_jit == JIT_ON ? "on" : "off");
 
     // === Phase 5 JIT: prove exec-alloc + ABI, then dispatch TBs in the loops below ===
     // --jit=on runs one hand-encoded proof TB at startup, then executes games
@@ -334,24 +347,27 @@ int main(int argc, char* argv[]) {
             u32 scratch[32];
             memset(scratch, 0, sizeof(scratch));
             u32 exit = jit.run_proof(scratch);
-            printf("[JIT] proof TB: exit=%u v0=%u (expect 0/1)\n", exit, scratch[2]);
+            log_dbg("[JIT] proof TB: exit=%u v0=%u (expect 0/1)", exit, scratch[2]);
             if (exit != (u32)JIT_EXIT_DONE || scratch[2] != 1) {
-                printf("[JIT] proof FAILED — continuing on interpreter\n");
+                log_warn("[JIT] proof FAILED — continuing on interpreter");
             } else {
                 use_jit = true;
+                log_info("[JIT] dynarec enabled");
             }
             if (arg_jit_stats)
                 jit.print_stats();
         } else {
-            printf("[JIT] init failed — continuing on interpreter\n");
+            log_warn("[JIT] init failed — continuing on interpreter");
         }
     }
 
-    printf("[INIT] Imported APIs:\n");
-    for (u32 i = 0; i < (u32)app.imports.size() && i < MAX_GOT_ENTRIES; i++) {
-        const char* name = app.imports[i].name.c_str();
-        printf("  [%2u] %-30s %s\n", i, name,
-               syscalls.got_is_stub((int)i) ? "stub" : "implemented");
+    if (log_debug_enabled()) {
+        log_dbg("[INIT] Imported APIs:");
+        for (u32 i = 0; i < (u32)app.imports.size() && i < MAX_GOT_ENTRIES; i++) {
+            const char* name = app.imports[i].name.c_str();
+            log_dbg("  [%2u] %-30s %s", i, name,
+                    syscalls.got_is_stub((int)i) ? "stub" : "implemented");
+        }
     }
 
     srand((u32)time(NULL));
@@ -363,7 +379,7 @@ int main(int argc, char* argv[]) {
     // returns would otherwise ignore the limit and hang forever.
     const u32 run_deadline = arg_max_seconds ? SDL_GetTicks() + arg_max_seconds * 1000 : 0;
     if (arg_max_seconds)
-        printf("[INIT] Time limit: %u seconds\n", arg_max_seconds);
+        log_info("[INIT] Time limit: %u seconds", arg_max_seconds);
 
     // =========================================================
     // Phase 1: run dl_main to completion
@@ -378,7 +394,7 @@ int main(int argc, char* argv[]) {
     cpu.regs[4] = 0;   // a0 = argc = 0
     cpu.regs[5] = 0;   // a1 = argv = NULL (first-time init)
 
-    printf("\n=== Phase 1: dl_main at 0x%08X ===\n\n", cpu.pc);
+    log_info("=== Phase 1: dl_main at 0x%08X ===", cpu.pc);
     fflush(stdout);
 
     {
@@ -393,20 +409,21 @@ int main(int argc, char* argv[]) {
             syscalls.process_timers();
             dl_frame++;
             if (dl_frame % 500 == 0)
-                printf("[PHASE 1] frame=%u PC=0x%08X insns=%llu\n", dl_frame, cpu.pc, cpu.insn_count);
+                log_dbg("[PHASE 1] frame=%u PC=0x%08X insns=%llu", dl_frame, cpu.pc, cpu.insn_count);
             if (run_deadline && SDL_GetTicks() >= run_deadline) {
-                printf("[PHASE 1] Time limit reached at frame %u PC=0x%08X — dl_main never returned\n",
-                       dl_frame, cpu.pc);
+                log_warn("[PHASE 1] Time limit reached at frame %u PC=0x%08X — dl_main never returned",
+                         dl_frame, cpu.pc);
                 fflush(stdout);
                 return 0;
             }
         }
-        printf("[PHASE 1] dl_main returned after %u frames (insns=%llu)\n", dl_frame, cpu.insn_count);
+        log_info("[PHASE 1] dl_main returned after %u frames (insns=%llu)", dl_frame, cpu.insn_count);
     }
 
     if (!cpu.running) {
-        fprintf(stderr, "[PHASE 1] dl_main did not return cleanly — halting\n");
-        cpu.print_trace();
+        log_err("[PHASE 1] dl_main did not return cleanly — halting");
+        if (log_debug_enabled())
+            cpu.print_trace();
         return 1;
     }
 
@@ -439,23 +456,23 @@ int main(int argc, char* argv[]) {
     // audio only gets CPU when AppMain blocks (OSSemPend/OSTimeDly).
     syscalls.register_main_context(app_main_addr, name_addr, 5);
 
-    printf("\n=== Phase 2: AppMain at 0x%08X ===\n\n", app_main_addr);
+    log_info("=== Phase 2: AppMain at 0x%08X ===", app_main_addr);
     fflush(stdout);
 
     u32 frame = 0;
     u32 max_frames = arg_max_frames;  // 0 = unlimited
     if (max_frames)
-        printf("[INIT] Frame limit: %u CPU frames\n", max_frames);
+        log_info("[INIT] Frame limit: %u CPU frames", max_frames);
 
     while (cpu.running && (max_frames == 0 || frame < max_frames)) {
         if (run_deadline && SDL_GetTicks() >= run_deadline) {
-            printf("[HALT] Time limit reached at frame %u\n", frame);
+            log_info("[HALT] Time limit reached at frame %u", frame);
             break;
         }
 
         // Process SDL events (quit, keyboard)
         if (display.pump_events()) {
-            printf("[DISPLAY] Quit requested\n");
+            log_info("[DISPLAY] Quit requested");
             break;
         }
 
@@ -522,7 +539,7 @@ int main(int argc, char* argv[]) {
             if (syscalls.has_blocked_tasks()) {
                 continue;
             }
-            printf("[PHASE 2] Sentinel hit at frame %u — no runnable task, stopping\n", frame);
+            log_info("[PHASE 2] Sentinel hit at frame %u — no runnable task, stopping", frame);
             break;
         }
 
@@ -534,7 +551,7 @@ int main(int argc, char* argv[]) {
         // Check if PC is in valid code region
         u32 pc_phys = cpu.pc & 0x1FFFFFFF;
         if (pc_phys >= mem.size()) {
-            printf("[HALT] PC=0x%08X outside RAM (phys=0x%08X)\n", cpu.pc, pc_phys);
+            log_warn("[HALT] PC=0x%08X outside RAM (phys=0x%08X)", cpu.pc, pc_phys);
             cpu.running = false;
         }
 
@@ -542,47 +559,47 @@ int main(int argc, char* argv[]) {
             clock_t elapsed = clock() - start;
             double seconds = (double)elapsed / CLOCKS_PER_SEC;
             double insns_per_sec = cpu.insn_count / (seconds > 0 ? seconds : 0.001);
-            printf("[FRAME %u] PC=0x%08X insns=%llu (%.0f/s) rendered=%u got=%u\n",
-                   frame, cpu.pc, cpu.insn_count, insns_per_sec, frame_count,
-                   syscalls.got_call_count());
+            log_dbg("[FRAME %u] PC=0x%08X insns=%llu (%.0f/s) rendered=%u got=%u",
+                    frame, cpu.pc, cpu.insn_count, insns_per_sec, frame_count,
+                    syscalls.got_call_count());
             fflush(stdout);
         }
 
         if (!cpu.running) {
-            printf("\n[EMULATION STOPPED] PC=0x%08X total_insns=%llu frames=%u\n",
-                   cpu.pc, cpu.insn_count, frame);
+            log_warn("[EMULATION STOPPED] PC=0x%08X total_insns=%llu frames=%u",
+                     cpu.pc, cpu.insn_count, frame);
         }
     }
     fflush(stdout);
 
     clock_t total = clock() - start;
-    printf("\n=== Emulation Summary ===\n");
-    printf("Total frames: %u\n", frame);
-    printf("Total instructions: %llu\n", cpu.insn_count);
-    printf("Total syscalls dispatched: %u\n", syscalls.got_call_count());
-    printf("Frames rendered: %u\n", frame_count);
-    printf("Total time: %.3f seconds\n", (double)total / CLOCKS_PER_SEC);
+    log_info("=== Emulation Summary ===");
+    log_info("Frames %u  rendered %u  insns %llu  GOT calls %u  time %.3fs  PC 0x%08X",
+             frame, frame_count, cpu.insn_count, syscalls.got_call_count(),
+             (double)total / CLOCKS_PER_SEC, cpu.pc);
     if (total > 0) {
-        printf("Instructions/second: %.0f\n", cpu.insn_count / ((double)total / CLOCKS_PER_SEC));
+        log_info("Throughput: %.0f insns/s",
+                 cpu.insn_count / ((double)total / CLOCKS_PER_SEC));
     }
-    printf("Final PC: 0x%08X\n", cpu.pc);
 
-    printf("\nGOT call counts:\n");
-    for (int i = 0; i < (int)app.imports.size(); i++) {
-        if (syscalls.got_call_counts(i) > 0) {
-            const char* impl = syscalls.got_is_stub(i) ? "(stub)" : "";
-            printf("  [%2d] %-30s %u %s\n", i, syscalls.got_name(i), syscalls.got_call_counts(i), impl);
+    if (log_debug_enabled()) {
+        log_dbg("GOT call counts:");
+        for (int i = 0; i < (int)app.imports.size(); i++) {
+            if (syscalls.got_call_counts(i) > 0) {
+                const char* impl = syscalls.got_is_stub(i) ? "(stub)" : "";
+                log_dbg("  [%2d] %-30s %u %s", i, syscalls.got_name(i),
+                        syscalls.got_call_counts(i), impl);
+            }
         }
+        cpu.print_trace();
+        log_dbg("Registers:");
+        for (int i = 0; i < 32; i += 4) {
+            log_dbg("  $%2d: %08X  $%2d: %08X  $%2d: %08X  $%2d: %08X",
+                    i, cpu.regs[i], i + 1, cpu.regs[i + 1], i + 2, cpu.regs[i + 2],
+                    i + 3, cpu.regs[i + 3]);
+        }
+        log_dbg("  HI: %08X  LO: %08X", cpu.hi, cpu.lo);
     }
-
-    cpu.print_trace();
-
-    printf("\nRegisters:\n");
-    for (int i = 0; i < 32; i += 4) {
-        printf("  $%2d: %08X  $%2d: %08X  $%2d: %08X  $%2d: %08X\n",
-               i, cpu.regs[i], i+1, cpu.regs[i+1], i+2, cpu.regs[i+2], i+3, cpu.regs[i+3]);
-    }
-    printf("  HI: %08X  LO: %08X\n", cpu.hi, cpu.lo);
 
     if (arg_jit_stats)
         jit.print_stats();

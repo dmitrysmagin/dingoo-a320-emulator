@@ -1,4 +1,5 @@
 #include "mxu.h"
+#include "log.h"
 #include <cstdio>
 #include <cstring>
 
@@ -12,7 +13,7 @@ u32 MXU::mfc2(int fs) {
     if (fs == 25) return state.acc[1];
     if (fs == 26) return state.acc[2];
     if (fs == 27) return state.acc[3];
-    printf("[MXU] MFC2 unknown fs=%d\n", fs);
+    log_dbg("[MXU] MFC2 unknown fs=%d\n", fs);
     return 0;
 }
 
@@ -22,7 +23,7 @@ void MXU::mtc2(int fs, u32 value) {
     if (fs == 25) { state.acc[1] = value; return; }
     if (fs == 26) { state.acc[2] = value; return; }
     if (fs == 27) { state.acc[3] = value; return; }
-    printf("[MXU] MTC2 unknown fs=%d value=0x%08X\n", fs, value);
+    log_dbg("[MXU] MTC2 unknown fs=%d value=0x%08X\n", fs, value);
 }
 
 u32 MXU::cfc2(int fs) {
@@ -30,7 +31,7 @@ u32 MXU::cfc2(int fs) {
     if (fs == 1) return state.p0;
     if (fs == 2) return state.p1;
     if (fs == 3) return state.p2;
-    printf("[MXU] CFC2 unknown fs=%d\n", fs);
+    log_dbg("[MXU] CFC2 unknown fs=%d\n", fs);
     return 0;
 }
 
@@ -39,7 +40,7 @@ void MXU::ctc2(int fs, u32 value) {
     if (fs == 1) { state.p0 = value; return; }
     if (fs == 2) { state.p1 = value; return; }
     if (fs == 3) { state.p2 = value; return; }
-    printf("[MXU] CTC2 unknown fs=%d value=0x%08X\n", fs, value);
+    log_dbg("[MXU] CTC2 unknown fs=%d value=0x%08X\n", fs, value);
 }
 
 // Helpers for MXU1 data types
@@ -136,7 +137,7 @@ void MXU::exec_custom(u32 insn) {
         break;
     }
     default:
-        printf("[MXU] Unknown custom op 0x%02X rs=%d rd=%d rt=%d sa=%d\n",
+        log_dbg("[MXU] Unknown custom op 0x%02X rs=%d rd=%d rt=%d sa=%d\n",
                op, rs, rd, rt, sa);
         break;
     }
@@ -278,7 +279,7 @@ void MXU::exec_mxu1(u32 insn) {
         break;
     }
     case 0x09: // pool03: D16MULF, D16MULE (fixed-point variants)
-        printf("[MXU1] pool03 (D16MULF/MULE) not implemented\n");
+        log_dbg("[MXU1] pool03 (D16MULF/MULE) not implemented\n");
         break;
 
     case 0x0A: { // D16MAC
@@ -335,15 +336,15 @@ void MXU::exec_mxu1(u32 insn) {
         break;
 
     case 0x19: // pool12: D32ACC, D32ACCM, D32ASUM
-        printf("[MXU1] pool12 (D32ACC/ACCM/ASUM) not implemented\n");
+        log_dbg("[MXU1] pool12 (D32ACC/ACCM/ASUM) not implemented\n");
         break;
 
     case 0x1A: // pool13: Q16ACC, Q16ACCM, Q16ASUM
-        printf("[MXU1] pool13 (Q16ACC/ACCM/ASUM) not implemented\n");
+        log_dbg("[MXU1] pool13 (Q16ACC/ACCM/ASUM) not implemented\n");
         break;
 
     case 0x1B: // pool14: Q8ADDE, Q8ACCE, D8SUM, D8SUMC
-        printf("[MXU1] pool14 (Q8ADDE/ACCE/D8SUM/SUMC) not implemented\n");
+        log_dbg("[MXU1] pool14 (Q8ADDE/ACCE/D8SUM/SUMC) not implemented\n");
         break;
 
     // ── 32-bit multiply / extract (conflict with CLZ/CLO) ────────
@@ -396,7 +397,7 @@ void MXU::exec_mxu1(u32 insn) {
         break;
 
     case 0x27: // pool16: variable shifts
-        printf("[MXU1] pool16 (D32/Q16 var shifts) not implemented\n");
+        log_dbg("[MXU1] pool16 (D32/Q16 var shifts) not implemented\n");
         break;
 
     // ── Bitwise logic (pool15) ───────────────────────────────────
@@ -406,7 +407,7 @@ void MXU::exec_mxu1(u32 insn) {
             XR(rd) = (XR(rs) >> (sa & 0x1F)) | (XR(rt) << (32 - (sa & 0x1F)));
             break;
         case 1: XR(rd) = (XR(rs) << 8) | (XR(rt) >> 24); break; // S32ALN (approx)
-        case 2: printf("[MXU1] S32ALNI not implemented\n"); break;
+        case 2: log_dbg("[MXU1] S32ALNI not implemented\n"); break;
         case 3: XR(rd) = sa << 27; break; // S32LUI
         case 4: XR(rd) = ~(XR(rs) | XR(rt)); break; // S32NOR
         case 5: XR(rd) = XR(rs) & XR(rt); break; // S32AND
@@ -417,35 +418,35 @@ void MXU::exec_mxu1(u32 insn) {
 
     // ── Conditional move ─────────────────────────────────────────
     case 0x36: // pool18: S32MOVZ, S32MOVN, D16MOVZ, D16MOVN
-        printf("[MXU1] pool18 (movz/movn) not implemented\n");
+        log_dbg("[MXU1] pool18 (movz/movn) not implemented\n");
         break;
     case 0x39: // pool20: Q8MOVZ, Q8MOVN
-        printf("[MXU1] pool20 (Q8 movz/movn) not implemented\n");
+        log_dbg("[MXU1] pool20 (Q8 movz/movn) not implemented\n");
         break;
 
     // ── 8-bit ops ────────────────────────────────────────────────
     case 0x38: // pool19: Q8MUL, Q8MULSU
-        printf("[MXU1] Q8MUL not implemented\n");
+        log_dbg("[MXU1] Q8MUL not implemented\n");
         break;
     case 0x3A: // pool21: Q8MAC, Q8MACSU
-        printf("[MXU1] pool21 (Q8MAC) not implemented\n");
+        log_dbg("[MXU1] pool21 (Q8MAC) not implemented\n");
         break;
     case 0x3B: // Q16SCOP
-        printf("[MXU1] Q16SCOP not implemented\n");
+        log_dbg("[MXU1] Q16SCOP not implemented\n");
         break;
     case 0x3C: // Q8MADL
-        printf("[MXU1] Q8MADL not implemented\n");
+        log_dbg("[MXU1] Q8MADL not implemented\n");
         break;
     case 0x3D: // S32SFL: shuffle
-        printf("[MXU1] S32SFL not implemented\n");
+        log_dbg("[MXU1] S32SFL not implemented\n");
         break;
     case 0x3E: // Q8SAD: sum of absolute differences
-        printf("[MXU1] Q8SAD not implemented\n");
+        log_dbg("[MXU1] Q8SAD not implemented\n");
         break;
 
     default:
     unknown:
-        printf("[MXU1] Unknown/not-implemented func=0x%02X (rs=%d rt=%d rd=%d sa=%d)\n",
+        log_dbg("[MXU1] Unknown/not-implemented func=0x%02X (rs=%d rt=%d rd=%d sa=%d)\n",
                func, rs, rt, rd, sa);
         break;
     }

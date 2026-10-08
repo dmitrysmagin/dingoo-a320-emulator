@@ -1,4 +1,5 @@
 #include "app_parser.h"
+#include "log.h"
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
@@ -113,10 +114,10 @@ bool parse_app(const std::string& path, AppBinary& out) {
         return false;
     }
 
-    printf("[APP] File size: %ld bytes (0x%lX)\n", file_size, file_size);
-    printf("[APP] IMPT: offset=0x%X size=0x%X\n", impt.offset, impt.size);
-    printf("[APP] EXPT: offset=0x%X size=0x%X\n", expt.offset, expt.size);
-    printf("[APP] RAWD: offset=0x%X size=0x%X entry=0x%08X origin=0x%08X prog_size=0x%X\n",
+    log_dbg("[APP] File size: %ld bytes (0x%lX)\n", file_size, file_size);
+    log_dbg("[APP] IMPT: offset=0x%X size=0x%X\n", impt.offset, impt.size);
+    log_dbg("[APP] EXPT: offset=0x%X size=0x%X\n", expt.offset, expt.size);
+    log_dbg("[APP] RAWD: offset=0x%X size=0x%X entry=0x%08X origin=0x%08X prog_size=0x%X\n",
            rawd.offset, rawd.size, rawd.entry, rawd.origin, rawd.prog_size);
 
     // Read import table
@@ -124,7 +125,7 @@ bool parse_app(const std::string& path, AppBinary& out) {
     TableHeader impt_hdr;
     fread(&impt_hdr, sizeof(impt_hdr), 1, f);
 
-    printf("[APP] Imports: %u entries\n", impt_hdr.count);
+    log_dbg("[APP] Imports: %u entries\n", impt_hdr.count);
 
     std::vector<TableEntry> impt_entries(impt_hdr.count);
     fread(impt_entries.data(), sizeof(TableEntry), impt_hdr.count, f);
@@ -154,7 +155,7 @@ bool parse_app(const std::string& path, AppBinary& out) {
     TableHeader expt_hdr;
     fread(&expt_hdr, sizeof(expt_hdr), 1, f);
 
-    printf("[APP] Exports: %u entries\n", expt_hdr.count);
+    log_dbg("[APP] Exports: %u entries\n", expt_hdr.count);
 
     std::vector<TableEntry> expt_entries(expt_hdr.count);
     fread(expt_entries.data(), sizeof(TableEntry), expt_hdr.count, f);
@@ -194,7 +195,7 @@ bool parse_app(const std::string& path, AppBinary& out) {
         return false;
     }
 
-    printf("[APP] RAWD loaded: %u bytes\n", rawd.size);
+    log_dbg("[APP] RAWD loaded: %u bytes\n", rawd.size);
 
     // Resource section — dynamically locate the SPK archive
     u64 raopp  = (u64)rawd.offset + rawd.prog_size;
@@ -247,7 +248,7 @@ bool parse_app(const std::string& path, AppBinary& out) {
                      && erpt.offset < (u32)file_size;
     if (have_erpt) {
         out.resource_offset = erpt.offset;
-        printf("[APP] ERPT archive at 0x%X\n", erpt.offset);
+        log_dbg("[APP] ERPT archive at 0x%X\n", erpt.offset);
     }
 
     if (out.resource_offset == 0) {
@@ -257,7 +258,7 @@ bool parse_app(const std::string& path, AppBinary& out) {
             fseek(f, (long)off, SEEK_SET);
             u16 count;
             fread(&count, 2, 1, f);
-            printf("[APP] SPK archive at 0x%llX (%u entries)\n", off, count);
+            log_dbg("[APP] SPK archive at 0x%llX (%u entries)\n", off, count);
             break;
         }
     }
@@ -269,7 +270,7 @@ bool parse_app(const std::string& path, AppBinary& out) {
                 fseek(f, (long)off, SEEK_SET);
                 u16 count;
                 fread(&count, 2, 1, f);
-                printf("[APP] SPK archive at 0x%llX (%u entries, fallback)\n", off, count);
+                log_dbg("[APP] SPK archive at 0x%llX (%u entries, fallback)\n", off, count);
                 break;
             }
         }
@@ -281,7 +282,7 @@ bool parse_app(const std::string& path, AppBinary& out) {
         fprintf(stderr, "[APP] Warning: no valid SPK archive found; proceeding without resources\n");
     } else {
         out.resource_size = (u64)file_size - out.resource_offset;
-        printf("[APP] Resource section: offset=0x%llX size=0x%llX\n",
+        log_dbg("[APP] Resource section: offset=0x%llX size=0x%llX\n",
                out.resource_offset, out.resource_size);
     }
 

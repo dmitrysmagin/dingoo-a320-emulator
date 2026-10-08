@@ -1,4 +1,5 @@
 #include "archive.h"
+#include "log.h"
 #include <cstdio>
 #include <cstring>
 #include <cctype>
@@ -79,7 +80,7 @@ bool Archive::load(const std::string& app_path, u64 resource_offset, u64 resourc
     if (!fmt) {
         u32 raw_count = 0;
         memcpy(&raw_count, m_resource_data.data(), std::min<size_t>(4, m_resource_data.size()));
-        printf("[ARCHIVE] Unrecognized SPK format (leading word=%u)\n", raw_count);
+        log_dbg("[ARCHIVE] Unrecognized SPK format (leading word=%u)\n", raw_count);
         m_loaded = true;
         return true;
     }
@@ -88,13 +89,13 @@ bool Archive::load(const std::string& app_path, u64 resource_offset, u64 resourc
     u32 name_len = fmt->name_len;
     u32 dir_size = fmt->count_bytes + parsed_count * entry_size;
 
-    printf("[ARCHIVE] SPK format: %s (%u entries, %u-byte dir, %u-byte entries)\n",
+    log_dbg("[ARCHIVE] SPK format: %s (%u entries, %u-byte dir, %u-byte entries)\n",
            fmt->label, parsed_count, dir_size, entry_size);
 
     if (fmt->xor_key) {
         for (size_t i = dir_size; i < m_resource_data.size(); i++)
             m_resource_data[i] ^= fmt->xor_key;
-        printf("[ARCHIVE] Deobfuscated payload (XOR 0x%02X)\n", fmt->xor_key);
+        log_dbg("[ARCHIVE] Deobfuscated payload (XOR 0x%02X)\n", fmt->xor_key);
     }
 
     m_entries.resize(parsed_count);
@@ -155,7 +156,7 @@ bool Archive::load(const std::string& app_path, u64 resource_offset, u64 resourc
         m_name_to_index[lower_copy(back)] = i;
     }
 
-    printf("[ARCHIVE] Loaded %u entries from SPK archive\n", parsed_count);
+    log_dbg("[ARCHIVE] Loaded %u entries from SPK archive\n", parsed_count);
     m_loaded = true;
     return true;
 }

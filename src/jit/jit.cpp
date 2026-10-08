@@ -1,6 +1,7 @@
 #include <cstdio>
 #include "jit.h"
 #include "../cpu.h"
+#include "../log.h"
 #include "frontend.h"
 #include "host_config.h"
 #include "emit.h"
@@ -171,9 +172,9 @@ bool Jit::init() {
     if (m_ready)
         return true;
 #if !defined(JIT_HOST_X64)
-    printf("[JIT] host backend %s is stub-only — staying on interpreter "
-           "(rebuild with JIT_HOST=x64 for dynarec)\n",
-           JIT_HOST_NAME);
+    log_info("[JIT] host backend %s is stub-only — staying on interpreter "
+             "(rebuild with JIT_HOST=x64 for dynarec)",
+             JIT_HOST_NAME);
     return false;
 #endif
 #ifdef _WIN32
@@ -189,7 +190,7 @@ bool Jit::init() {
 
     m_page = exec_alloc(m_page_size);
     if (!m_page) {
-        printf("[JIT] exec_alloc(%u) failed — staying on interpreter\n", m_page_size);
+        log_warn("[JIT] exec_alloc(%u) failed — staying on interpreter", m_page_size);
         return false;
     }
     memcpy(m_page, kProofCode, kProofSize);
@@ -202,8 +203,8 @@ bool Jit::init() {
 #endif
     m_proof_tb = (TbFunc)m_page;
     m_ready = true;
-    printf("[JIT] Phase-0 harness ready: exec page %u bytes, proof TB %u bytes\n",
-           m_page_size, kProofSize);
+    log_dbg("[JIT] Phase-0 harness ready: exec page %u bytes, proof TB %u bytes",
+            m_page_size, kProofSize);
     // Calibrate the TSC against the wall clock for perf counters (~50 ms,
     // once). A zero delta falls back to a nominal 3 GHz (wrong scale, but
     // ratios between regions stay exact).
@@ -227,9 +228,9 @@ bool Jit::init() {
                 best = b - a;
         }
         m_tsc_cost = best;
-        printf("[JIT] TSC %.2f GHz, rdtsc round-trip ~%lluns\n",
-               (double)m_tsc_hz / 1e9,
-               (unsigned long long)to_ns(m_tsc_cost));
+        log_dbg("[JIT] TSC %.2f GHz, rdtsc round-trip ~%lluns",
+                (double)m_tsc_hz / 1e9,
+                (unsigned long long)to_ns(m_tsc_cost));
     }
     return true;
 }
@@ -672,7 +673,7 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
                 goto run_tb;
             }
         } else {
-            printf("[JIT] unexpected exit=%u at PC=0x%08X — halting\n", exit, pc);
+            log_warn("[JIT] unexpected exit=%u at PC=0x%08X — halting", exit, pc);
             memcpy(cpu->regs, st.gpr, sizeof(st.gpr));
             cpu->hi = st.hi;
             cpu->lo = st.lo;

@@ -1,4 +1,5 @@
 #include "syscalls.h"
+#include "log.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -234,7 +235,7 @@ void Syscalls::init_slot_handlers(const std::vector<ImportEntry>& imports) {
         int hi = find_handler("OSTimeGet");
         if (hi >= 0) {
             m_slot_handlers[166] = hi;
-            printf("[INIT] 172-import GOT: slot 166 U8TOU16 -> OSTimeGet "
+            log_dbg("[INIT] 172-import GOT: slot 166 U8TOU16 -> OSTimeGet "
                    "(libc GetTickCount wrapper)\n");
         }
     }
@@ -343,7 +344,7 @@ Syscalls::Syscalls(Memory& mem, Display& display)
 void Syscalls::shutdown_audio() {
     if (m_audio_underruns || m_audio_overruns || m_audio_high_water
         || m_audio_block_count || m_audio_unblock_count || m_audio_sem_post_count) {
-        printf("[AUDIO] stats: underruns=%u overruns=%u high_water=%u/%u blocks=%u unblocks=%u sem_posts=%u\n",
+        log_dbg("[AUDIO] stats: underruns=%u overruns=%u high_water=%u/%u blocks=%u unblocks=%u sem_posts=%u\n",
                m_audio_underruns, m_audio_overruns, m_audio_high_water, m_ring_cap,
                m_audio_block_count, m_audio_unblock_count, m_audio_sem_post_count);
     }
@@ -386,7 +387,7 @@ void Syscalls::audio_alloc_ring(u32 rate, u32 channels) {
     m_audio_high_water = 0;
     m_audio_has_data = false;
     audio_reset_ring();
-    printf("[AUDIO] ring cap=%u samples (target=%ums ring=%ums @ %uHz %uch)\n",
+    log_dbg("[AUDIO] ring cap=%u samples (target=%ums ring=%ums @ %uHz %uch)\n",
            m_ring_cap, m_audio_target_latency_ms, AUDIO_RING_MS, rate, channels);
 }
 
@@ -515,7 +516,7 @@ bool Syscalls::audio_open_device(int sample_rate, int channels) {
     m_audio_sample_rate = (u32)obtained.freq;
     m_audio_channels = (u32)obtained.channels;
     if (obtained.freq != sample_rate || obtained.channels != (Uint8)channels) {
-        printf("[AUDIO] device adjusted: wanted %dHz %dch %d samples, got %dHz %dch %d samples\n",
+        log_dbg("[AUDIO] device adjusted: wanted %dHz %dch %d samples, got %dHz %dch %d samples\n",
                sample_rate, channels, pow2, obtained.freq, obtained.channels, obtained.samples);
     }
     SDL_PauseAudioDevice(m_audio_device, m_audio_paused ? 1 : 0);
@@ -767,7 +768,7 @@ int Syscalls::audio_do_write(u32 buf_addr, u32 byte_size) {
     if (sample_count <= 0)
         return 0;
     if (sample_count > AUDIO_MAX_CHUNK_SAMPLES) {
-        printf("[AUDIO] write too large: %u bytes (%d samples)\n", byte_size, sample_count);
+        log_dbg("[AUDIO] write too large: %u bytes (%d samples)\n", byte_size, sample_count);
         return 0;
     }
     if (!m_audio_scratch)
@@ -887,7 +888,7 @@ void Syscalls::set_app_path(const char* path) {
         name = "app";
     m_home_dir = std::string("home/") + name;
     ensure_host_dir(m_home_dir);
-    printf("[INIT] uOS2 home (cwd): %s\n", m_home_dir.c_str());
+    log_dbg("[INIT] uOS2 home (cwd): %s\n", m_home_dir.c_str());
 }
 
 void Syscalls::set_guest_image(u32 load_addr, u32 rawd_size) {
@@ -1015,7 +1016,7 @@ void Syscalls::dispatch(int got_index, u32 return_addr) {
             return;
         }
     }
-    printf("[SYSCALL] Unknown GOT index %d\n", got_index);
+    log_warn("[SYSCALL] Unknown GOT index %d", got_index);
     // NOTE: regs[31] is set by dispatch caller from g_cpu_regs after dispatch returns.
     // Do NOT set g_cpu_regs[31] here - it would override task context switches.
 }
@@ -1031,7 +1032,7 @@ u32 Syscalls::heap_alloc(u32 size) {
     if (size == 0) size = 1;
     size = (size + 7) & ~7;
     if (size > HEAP_MAX_SINGLE) {
-        printf("[HEAP] OOM: rejected oversize allocation size=%u PC=0x%08X\n", size, g_cpu_pc);
+        log_warn("[HEAP] OOM: rejected oversize allocation size=%u PC=0x%08X", size, g_cpu_pc);
         return 0;
     }
     u32 top = m_heap_top;
@@ -1039,7 +1040,7 @@ u32 Syscalls::heap_alloc(u32 size) {
         top = 0x00C10000;
     u64 new_top = (u64)top + size;
     if (new_top > HEAP_LIMIT) {
-        printf("[HEAP] OOM: top=0x%08X size=%u (limit 0x%08X)\n", top, size, HEAP_LIMIT);
+        log_warn("[HEAP] OOM: top=0x%08X size=%u (limit 0x%08X)", top, size, HEAP_LIMIT);
         return 0;
     }
     u32 addr = top;
@@ -1340,7 +1341,7 @@ std::string Syscalls::format_string(const std::string& fmt, int first_arg) {
 // === GOT 0-10: libc ===
 
 void Syscalls::impl_abort() {
-    printf("[ABORT] abort() called from PC=0x%08X (returning as no-op)\n", g_cpu_pc);
+    log_warn("[ABORT] abort() called from PC=0x%08X (returning as no-op)", g_cpu_pc);
     g_cpu_regs[2] = 0;
 }
 
@@ -1428,14 +1429,14 @@ void Syscalls::impl_LcdGetDisMode() {
 }
 
 void Syscalls::impl_vxGoHome() {
-    printf("[STUB] vxGoHome\n");
+    log_dbg("[STUB] vxGoHome\n");
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_StartSwTimer() {
     u32 period = arg(0);
     u32 callback = arg(1);
-    printf("[TIMER] StartSwTimer(period=%u, callback=0x%08X)\n", period, callback);
+    log_dbg("[TIMER] StartSwTimer(period=%u, callback=0x%08X)\n", period, callback);
 
     // Find free slot
     int idx = -1;
@@ -1455,7 +1456,7 @@ void Syscalls::impl_StartSwTimer() {
 
 void Syscalls::process_timers() {
     if (m_timers.size() > 64) {
-        printf("[TIMER] ignoring corrupt list size=%zu\n", m_timers.size());
+        log_dbg("[TIMER] ignoring corrupt list size=%zu\n", m_timers.size());
         fflush(stdout);
         return;
     }
@@ -1471,7 +1472,7 @@ void Syscalls::process_timers() {
         u32 steps = 0;
         while (t.elapsed >= t.period_ms && steps++ < 8) {
             t.elapsed -= t.period_ms;
-            printf("[TIMER] Firing timer callback 0x%08X\n", t.callback);
+            log_dbg("[TIMER] Firing timer callback 0x%08X\n", t.callback);
             call_guest_function(t.callback, 0);
         }
     }
@@ -1495,12 +1496,12 @@ void Syscalls::call_guest_function(u32 func_addr, u32 arg0) {
 }
 
 void Syscalls::impl_free_irq() {
-    printf("[STUB] free_irq\n");
+    log_dbg("[STUB] free_irq\n");
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_fsys_RefreshCache() {
-    printf("[STUB] fsys_RefreshCache\n");
+    log_dbg("[STUB] fsys_RefreshCache\n");
     g_cpu_regs[2] = 0;
 }
 
@@ -1584,7 +1585,7 @@ void Syscalls::impl__lcd_set_frame() {
             u32 white = (stride == 2) ? 0xFFFF : 0xFFFFFFFF;
             if (px != white) nonwhite++;
         }
-        printf("[LCD] frame %u: start=0x%08X bpp=%u nonzero=%u nonwhite=%u (of %u)\n",
+        log_dbg("[LCD] frame %u: start=0x%08X bpp=%u nonzero=%u nonwhite=%u (of %u)\n",
                lcd_sample_count, start, bpp, nonzero, nonwhite, PIXEL_COUNT);
         lcd_sample_count++;
     }
@@ -1648,7 +1649,7 @@ void Syscalls::impl__lcd_get_frame() {
         u32 pb = heap_alloc(BUF_SIZE_RGB) & 0x1FFFFFFF;
         m_lcd_hw_buf[0] = pa;
         m_lcd_hw_buf[1] = pb;
-        printf("[LCD] HW frame buffers: buf0=0x%08X buf1=0x%08X\n",
+        log_dbg("[LCD] HW frame buffers: buf0=0x%08X buf1=0x%08X\n",
                m_lcd_hw_buf[0], m_lcd_hw_buf[1]);
     }
 
@@ -1673,19 +1674,19 @@ void Syscalls::impl_lcd_flip() {
 }
 
 void Syscalls::impl___icache_invalidate_all() {
-    printf("[STUB] __icache_invalidate_all\n");
+    log_dbg("[STUB] __icache_invalidate_all\n");
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl___dcache_writeback_all() {
-    printf("[STUB] __dcache_writeback_all\n");
+    log_dbg("[STUB] __dcache_writeback_all\n");
     g_cpu_regs[2] = 0;
 }
 
 // === GOT 24-31: media / OS / serial / input ===
 
 void Syscalls::impl_TaskMediaFunStop() {
-    printf("[STUB] TaskMediaFunStop\n");
+    log_dbg("[STUB] TaskMediaFunStop\n");
     g_cpu_regs[2] = 0;
 }
 
@@ -1703,7 +1704,7 @@ void Syscalls::impl_OSCPURestoreSR() {
 }
 
 void Syscalls::impl_serial_getc() {
-    printf("[STUB] serial_getc\n");
+    log_dbg("[STUB] serial_getc\n");
     g_cpu_regs[2] = 0;
 }
 
@@ -1785,7 +1786,7 @@ void Syscalls::impl_fsys_fopen() {
             m_files[idx].archive = m_archive;
             m_files[idx].archive_entry = entry;
             m_files[idx].offset = 0;
-            printf("[FSYS] fopen('%s','%s') -> handle %d (archive, %u bytes)\n",
+            log_dbg("[FSYS] fopen('%s','%s') -> handle %d (archive, %u bytes)\n",
                    path.c_str(), mode.c_str(), idx + 1, (u32)entry->size);
             g_cpu_regs[2] = (u32)idx + 1;
             return;
@@ -1799,13 +1800,13 @@ void Syscalls::impl_fsys_fopen() {
     if (f) {
         m_files[idx].is_host = true;
         m_files[idx].host_file = f;
-        printf("[FSYS] fopen('%s','%s') -> handle %d (%s)\n",
+        log_dbg("[FSYS] fopen('%s','%s') -> handle %d (%s)\n",
                path.c_str(), mode.c_str(), idx + 1, host.c_str());
         g_cpu_regs[2] = (u32)idx + 1;
         return;
     }
 
-    printf("[FSYS] fopen('%s','%s') -> NOT FOUND (tried %s)\n",
+    log_dbg("[FSYS] fopen('%s','%s') -> NOT FOUND (tried %s)\n",
            path.c_str(), mode.c_str(), host.c_str());
     m_files[idx].in_use = false;
     g_cpu_regs[2] = 0;
@@ -1823,7 +1824,7 @@ void Syscalls::impl_fsys_fread() {
     u32 total = size * nmemb;
     u8 magic[4] = {};
     m_mem.read_block(buf, magic, std::min(total, 4u));
-    printf("[FREAD] handle=%u off=0x%08X size=%u*%u=%u -> %u items  dest=0x%08X  magic=%02X%02X%02X%02X\n",
+    log_dbg("[FREAD] handle=%u off=0x%08X size=%u*%u=%u -> %u items  dest=0x%08X  magic=%02X%02X%02X%02X\n",
            handle, before, size, nmemb, total, n, buf,
            magic[0], magic[1], magic[2], magic[3]);
     g_cpu_regs[2] = n;
@@ -1831,7 +1832,7 @@ void Syscalls::impl_fsys_fread() {
 
 void Syscalls::impl_fsys_fclose() {
     u32 handle = arg(0);
-    printf("[FCLOSE] handle=%u\n", handle);
+    log_dbg("[FCLOSE] handle=%u\n", handle);
     close_file_handle((int)handle - 1);
     g_cpu_regs[2] = 0;
 }
@@ -1841,7 +1842,7 @@ void Syscalls::impl_fsys_fseek() {
     s32 offset = (s32)arg(1);
     u32 whence = arg(2);
     static const char* whence_name[] = {"SET","CUR","END"};
-    printf("[FSEEK] handle=%u offset=0x%08X (%d) whence=%s\n",
+    log_dbg("[FSEEK] handle=%u offset=0x%08X (%d) whence=%s\n",
            handle, (u32)offset, offset, whence < 3 ? whence_name[whence] : "?");
     u32 ret = do_fseek(handle, offset, whence);
     g_cpu_regs[2] = ret;
@@ -1856,7 +1857,7 @@ void Syscalls::impl_fsys_remove() {
     if (!path_addr) { g_cpu_regs[2] = (u32)-1; return; }
     std::string path = read_guest_path(path_addr);
     std::string host = host_path_from_guest(path);
-    printf("[FSYS] remove('%s') -> %s\n", path.c_str(), host.c_str());
+    log_dbg("[FSYS] remove('%s') -> %s\n", path.c_str(), host.c_str());
     g_cpu_regs[2] = (remove(host.c_str()) == 0) ? 0 : (u32)-1;
 }
 
@@ -1868,7 +1869,7 @@ void Syscalls::impl_fsys_rename() {
     std::string new_path = read_guest_path(new_addr);
     std::string host_old = host_path_from_guest(old_path);
     std::string host_new = host_path_from_guest(new_path);
-    printf("[FSYS] rename('%s' -> '%s') (%s -> %s)\n",
+    log_dbg("[FSYS] rename('%s' -> '%s') (%s -> %s)\n",
            old_path.c_str(), new_path.c_str(), host_old.c_str(), host_new.c_str());
     ensure_host_parent(host_new);
     g_cpu_regs[2] = (rename(host_old.c_str(), host_new.c_str()) == 0) ? 0 : (u32)-1;
@@ -1888,7 +1889,7 @@ void Syscalls::impl_fsys_fwrite() {
     u32 nmemb  = arg(2);
     u32 handle = arg(3);
     u32 n = do_fwrite(buf, size, nmemb, handle);
-    printf("[FWRITE] handle=%u size=%u*%u=%u -> %u items\n",
+    log_dbg("[FWRITE] handle=%u size=%u*%u=%u -> %u items\n",
            handle, size, nmemb, size * nmemb, n);
     g_cpu_regs[2] = n;
 }
@@ -1916,7 +1917,7 @@ void Syscalls::impl_fsys_findfirst() {
     u32 info_addr = arg(2);
 
     std::string path = path_addr ? guest_string(path_addr) : "";
-    printf("[FSYS] findfirst(path='%s', filter=%d, info=0x%08X)\n", path.c_str(), filter, info_addr);
+    log_dbg("[FSYS] findfirst(path='%s', filter=%d, info=0x%08X)\n", path.c_str(), filter, info_addr);
 
     if (!info_addr) { g_cpu_regs[2] = (u32)-1; return; }
 
@@ -1939,7 +1940,7 @@ void Syscalls::impl_fsys_findfirst() {
     m_searches[idx].dir_path = dir_path;
 
     if (!m_searches[idx].dir) {
-        printf("[FSYS] findfirst: cannot open '%s' (guest '%s')\n",
+        log_dbg("[FSYS] findfirst: cannot open '%s' (guest '%s')\n",
                dir_path.c_str(), path.c_str());
         free_search_handle(idx);
         g_cpu_regs[2] = (u32)-1;
@@ -2036,24 +2037,24 @@ void Syscalls::impl_fsys_findclose() {
 }
 
 void Syscalls::impl_fsys_flush_cache() {
-    printf("[STUB] fsys_flush_cache\n");
+    log_dbg("[STUB] fsys_flush_cache\n");
     g_cpu_regs[2] = 0;
 }
 
 // === GOT 46-48: USB ===
 
 void Syscalls::impl_USB_Connect() {
-    printf("[STUB] USB_Connect\n");
+    log_dbg("[STUB] USB_Connect\n");
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_udc_attached() {
-    printf("[STUB] udc_attached\n");
+    log_dbg("[STUB] udc_attached\n");
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_USB_No_Connect() {
-    printf("[STUB] USB_No_Connect\n");
+    log_dbg("[STUB] USB_No_Connect\n");
     g_cpu_regs[2] = 0;
 }
 
@@ -2072,7 +2073,7 @@ void Syscalls::audio_set_volume_level(u32 vol) {
 void Syscalls::impl_waveout_open() {
     if (m_nosound) { g_cpu_regs[2] = 1; return; }
     u32 a0 = arg(0), a1 = arg(1), a2 = arg(2);
-    printf("[AUDIO] waveout_open raw args: a0=0x%08X a1=0x%08X a2=0x%08X\n", a0, a1, a2);
+    log_dbg("[AUDIO] waveout_open raw args: a0=0x%08X a1=0x%08X a2=0x%08X\n", a0, a1, a2);
 
     int sample_rate, channels, bits;
     u16 format = 16;
@@ -2083,7 +2084,7 @@ void Syscalls::impl_waveout_open() {
         format      = m_mem.read_u16(a0 + 4);
         channels    = (int)m_mem.read_u8(a0 + 6);
         volume      = m_mem.read_u8(a0 + 7);
-        printf("[AUDIO] struct@0x%08X: rate=%d format=%u ch=%u vol=%u\n",
+        log_dbg("[AUDIO] struct@0x%08X: rate=%d format=%u ch=%u vol=%u\n",
                a0, sample_rate, format, channels, volume);
     } else {
         sample_rate = (int)a0;
@@ -2116,7 +2117,7 @@ void Syscalls::impl_waveout_open() {
     m_audio_start_tick = SDL_GetTicks();
 
     if (!audio_open_device(sample_rate, channels)) {
-        printf("[AUDIO] waveout_open FAILED: %s\n", SDL_GetError());
+        log_dbg("[AUDIO] waveout_open FAILED: %s\n", SDL_GetError());
         m_audio_open = false;
         m_audio_device_open = false;
         g_cpu_regs[2] = 0;
@@ -2126,7 +2127,7 @@ void Syscalls::impl_waveout_open() {
     m_audio_open = true;
     m_audio_device_open = true;
     audio_write_os_state(true);
-    printf("[AUDIO] waveout_open: %dHz %dch %dbit -> device=%u\n",
+    log_dbg("[AUDIO] waveout_open: %dHz %dch %dbit -> device=%u\n",
            sample_rate, channels, bits, m_audio_device);
     g_cpu_regs[2] = 1;
 }
@@ -2155,7 +2156,7 @@ void Syscalls::impl_waveout_set_volume() {
     if (vol > 100)
         vol = arg(1);
     audio_set_volume_level(vol);
-    printf("[AUDIO] waveout_set_volume(%u) -> %.2f\n", vol, m_volume);
+    log_dbg("[AUDIO] waveout_set_volume(%u) -> %.2f\n", vol, m_volume);
     g_cpu_regs[2] = 0;
 }
 
@@ -2165,7 +2166,7 @@ void Syscalls::impl_waveout_get_volume() {
 
 void Syscalls::impl_HP_Mute_sw() {
     if (m_nosound) { g_cpu_regs[2] = 0; return; }
-    printf("[AUDIO] HP_Mute_sw -> muted\n");
+    log_dbg("[AUDIO] HP_Mute_sw -> muted\n");
     m_audio_muted = true;
     g_cpu_regs[2] = 0;
 }
@@ -2177,10 +2178,10 @@ void Syscalls::impl_waveout_write() {
     if (m_nosound) { g_cpu_regs[2] = size; return; }
 
     if (m_audio_write_count < 10) {
-        printf("[AUDIO] waveout_write #%u: buf=0x%08X size=%u\n",
+        log_dbg("[AUDIO] waveout_write #%u: buf=0x%08X size=%u\n",
                m_audio_write_count, buf_addr, size);
     } else if (m_audio_write_count == 10) {
-        printf("[AUDIO] waveout_write: subsequent calls suppressed\n");
+        log_dbg("[AUDIO] waveout_write: subsequent calls suppressed\n");
     }
 
     m_last_waveout_bytes = -1;
@@ -2197,7 +2198,7 @@ void Syscalls::impl_waveout_write() {
                 if (a > peak) peak = a;
             }
             if (peak > 64) {
-                printf("[AUDIO] first audible write #%u peak=%d\n",
+                log_dbg("[AUDIO] first audible write #%u peak=%d\n",
                        m_audio_write_count, peak);
                 s_logged_audible = true;
             }
@@ -2333,7 +2334,7 @@ void Syscalls::impl_pcm_ioctl() {
         g_cpu_regs[2] = m_pcm_volume;
         break;
     default:
-        printf("[PCM] ioctl unknown cmd=%u arg=0x%08X\n", cmd, arg_val);
+        log_dbg("[PCM] ioctl unknown cmd=%u arg=0x%08X\n", cmd, arg_val);
         g_cpu_regs[2] = 0;
         break;
     }
@@ -2348,7 +2349,7 @@ void Syscalls::save_current_task() {
     // A KUSEG PC means the CPU already jumped off the rails — keep the last
     // valid resume address so a later switch can restart at task_entry.
     if ((g_cpu_pc & 0x80000000) == 0) {
-        printf("[SCHEDULER] not saving KUSEG pc=0x%08X for task %d (keeping 0x%08X)\n",
+        log_dbg("[SCHEDULER] not saving KUSEG pc=0x%08X for task %d (keeping 0x%08X)\n",
                g_cpu_pc, t, m_tasks[t].pc);
         return;
     }
@@ -2362,7 +2363,7 @@ void Syscalls::switch_to_task(int task_idx) {
     if (task_idx < 0 || task_idx >= m_task_count) return;
     Task& t = m_tasks[task_idx];
     if ((t.pc & 0x80000000) == 0) {
-        printf("[SCHEDULER] task %d invalid resume pc=0x%08X, resetting to entry 0x%08X\n",
+        log_dbg("[SCHEDULER] task %d invalid resume pc=0x%08X, resetting to entry 0x%08X\n",
                task_idx, t.pc, t.task_entry);
         t.pc = t.task_entry;
     }
@@ -2417,7 +2418,7 @@ void Syscalls::impl_OSSemCreate() {
     m_mem.write_u8 (ecb + 53, 0);          // OSEventName[1]
     g_cpu_regs[2] = ecb;
     m_semaphores.push_back(ecb);
-    printf("[OSSemCreate] ecb=0x%08X cnt=%u\n", ecb, cnt);
+    log_dbg("[OSSemCreate] ecb=0x%08X cnt=%u\n", ecb, cnt);
 }
 
 void Syscalls::impl_OSTaskCreate() {
@@ -2426,13 +2427,13 @@ void Syscalls::impl_OSTaskCreate() {
     u32 stack_top = arg(2);
     u32 prio = arg(3);
 
-    printf("[OSTaskCreate] entry=0x%08X arg=0x%08X stack=0x%08X prio=%u (task_count=%d)\n",
+    log_dbg("[OSTaskCreate] entry=0x%08X arg=0x%08X stack=0x%08X prio=%u (task_count=%d)\n",
            entry, task_arg, stack_top, prio, m_task_count);
 
     // Real OSTaskCreate validates prio <= OS_LOWEST_PRIO (=254) and returns
     // OS_PRIO_INVALID = 38 otherwise.
     if (prio > 254) {
-        printf("[OSTaskCreate] FAILED: prio %u > OS_LOWEST_PRIO\n", prio);
+        log_dbg("[OSTaskCreate] FAILED: prio %u > OS_LOWEST_PRIO\n", prio);
         g_cpu_regs[2] = 38; /* OS_PRIO_INVALID */
         return;
     }
@@ -2440,7 +2441,7 @@ void Syscalls::impl_OSTaskCreate() {
     // Duplicate priorities are now allowed (original µC/OS-II check removed).
     // for (int i = 0; i < m_task_count; i++) {
     //     if (m_tasks[i].active && m_tasks[i].task_prio == (u8)prio) {
-    //         printf("[OSTaskCreate] FAILED: duplicate priority %u for task %d -> OS_PRIO_EXIST\n", (u8)prio, i);
+    //         log_dbg("[OSTaskCreate] FAILED: duplicate priority %u for task %d -> OS_PRIO_EXIST\n", (u8)prio, i);
     //         g_cpu_regs[2] = 40; /* OS_PRIO_EXIST */
     //         return;
     //     }
@@ -2467,7 +2468,7 @@ void Syscalls::impl_OSTaskCreate() {
             static constexpr u32 TASK_STACK_SIZE = 0x4000;
             u32 base = heap_alloc(TASK_STACK_SIZE);
             if (base) {
-                printf("[OSTaskCreate] in-image stack 0x%08X too small; using 16KB @ 0x%08X\n",
+                log_dbg("[OSTaskCreate] in-image stack 0x%08X too small; using 16KB @ 0x%08X\n",
                        sp, base);
                 sp = (base + TASK_STACK_SIZE) & ~0xF;
             }
@@ -2481,7 +2482,7 @@ void Syscalls::impl_OSTaskCreate() {
 
         int new_idx = m_task_count;
         m_task_count++;
-        printf("[OSTaskCreate] Created task %d: entry=0x%08X prio=%u\n",
+        log_dbg("[OSTaskCreate] Created task %d: entry=0x%08X prio=%u\n",
                new_idx, entry, (u8)prio);
         g_cpu_regs[2] = 0;
 
@@ -2490,12 +2491,12 @@ void Syscalls::impl_OSTaskCreate() {
             if ((u8)prio < cur_prio) {
                 save_current_task();
                 switch_to_task(new_idx);
-                printf("[OSTaskCreate] Preempted to task %d (prio %u < %u)\n",
+                log_dbg("[OSTaskCreate] Preempted to task %d (prio %u < %u)\n",
                        new_idx, (u8)prio, cur_prio);
             }
         }
     } else {
-        printf("[OSTaskCreate] FAILED: max tasks (%d) reached\n", MAX_TASKS);
+        log_dbg("[OSTaskCreate] FAILED: max tasks (%d) reached\n", MAX_TASKS);
         g_cpu_regs[2] = 0xFF;
     }
 }
@@ -2705,7 +2706,7 @@ void Syscalls::impl_OSTaskDel() {
     g_cpu_regs[2] = 0; /* OS_NO_ERR */
 
     if (!deleted_self) {
-        printf("[OSTaskDel] Deleted task %d (prio=%u) (caller keeps running)\n",
+        log_dbg("[OSTaskDel] Deleted task %d (prio=%u) (caller keeps running)\n",
                deleted_task, prio);
         return;
     }
@@ -2714,10 +2715,10 @@ void Syscalls::impl_OSTaskDel() {
     int next = find_ready_task();
     if (next >= 0) {
         switch_to_task(next);
-        printf("[OSTaskDel] Deleted self (task %d), switched to task %d\n",
+        log_dbg("[OSTaskDel] Deleted self (task %d), switched to task %d\n",
                deleted_task, next);
     } else {
-        printf("[OSTaskDel] Deleted self (task %d), returning to caller (no ready task)\n", deleted_task);
+        log_dbg("[OSTaskDel] Deleted self (task %d), returning to caller (no ready task)\n", deleted_task);
         m_in_idle = true;
     }
 }
@@ -2834,7 +2835,7 @@ void Syscalls::impl_fsys_fopenW() {
         if (f) {
             m_files[idx].is_host = true;
             m_files[idx].host_file = f;
-            printf("[fopenW] '%s' mode='%s' -> handle %d (app binary)\n",
+            log_dbg("[fopenW] '%s' mode='%s' -> handle %d (app binary)\n",
                    path.c_str(), mode.c_str(), idx + 1);
             g_cpu_regs[2] = (u32)idx + 1;
             return;
@@ -2855,7 +2856,7 @@ void Syscalls::impl_fsys_fopenW() {
         for (auto f : init_files) {
             if (m_archive && m_archive->find(f)) {
                 search_path = f;
-                printf("[fopenW] PATH FALLBACK -> '%s'\n", search_path.c_str());
+                log_dbg("[fopenW] PATH FALLBACK -> '%s'\n", search_path.c_str());
                 break;
             }
         }
@@ -2884,7 +2885,7 @@ void Syscalls::impl_fsys_fopenW() {
             m_files[idx].archive = m_archive;
             m_files[idx].archive_entry = entry;
             m_files[idx].offset = 0;
-            printf("[fopenW] '%s' mode='%s' -> handle %d (archive, %u bytes)\n",
+            log_dbg("[fopenW] '%s' mode='%s' -> handle %d (archive, %u bytes)\n",
                    search_path.c_str(), mode.c_str(), idx + 1, (u32)entry->size);
             g_cpu_regs[2] = (u32)idx + 1;
             return;
@@ -2899,13 +2900,13 @@ void Syscalls::impl_fsys_fopenW() {
     if (f) {
         m_files[idx].is_host = true;
         m_files[idx].host_file = f;
-        printf("[fopenW] '%s' mode='%s' -> handle %d (%s)\n",
+        log_dbg("[fopenW] '%s' mode='%s' -> handle %d (%s)\n",
                search_path.c_str(), mode.c_str(), idx + 1, host.c_str());
         g_cpu_regs[2] = (u32)idx + 1;
         return;
     }
 
-    printf("[fopenW] '%s' mode='%s' -> NOT FOUND (tried %s)\n",
+    log_dbg("[fopenW] '%s' mode='%s' -> NOT FOUND (tried %s)\n",
            search_path.c_str(), mode.c_str(), host.c_str());
     m_files[idx].in_use = false;
     g_cpu_regs[2] = 0;
@@ -2937,7 +2938,7 @@ void Syscalls::impl___to_unicode_le() {
     }
     m_mem.write_u16(dst_phys + len * 2, 0); // null terminator
 
-    printf("[UNICODE] __to_unicode_le(\"%s\") -> 0x%08X\n", buf, dst);
+    log_dbg("[UNICODE] __to_unicode_le(\"%s\") -> 0x%08X\n", buf, dst);
     g_cpu_regs[2] = dst;
 }
 
@@ -2945,7 +2946,7 @@ void Syscalls::impl___to_locale_ansi() {
     u32 src = arg(0);
     u32 dst_arg = arg(1);
     u32 max_len = arg(2);
-    printf("[UNICODE] __to_locale_ansi(src=0x%08X dst=0x%08X max=%u)\n", src, dst_arg, max_len);
+    log_dbg("[UNICODE] __to_locale_ansi(src=0x%08X dst=0x%08X max=%u)\n", src, dst_arg, max_len);
     if (!src) { g_cpu_regs[2] = 0; return; }
 
     // Read UTF-16LE source
@@ -2956,7 +2957,7 @@ void Syscalls::impl___to_locale_ansi() {
         wide[i] = c;
         if (c == 0) { len = i; break; }
     }
-    if (len == 0) { printf("[UNICODE] __to_locale_ansi: src has no content (all zero?)\n"); g_cpu_regs[2] = 0; return; }
+    if (len == 0) { log_dbg("[UNICODE] __to_locale_ansi: src has no content (all zero?)\n"); g_cpu_regs[2] = 0; return; }
 
     // Allocate ASCII buffer in guest heap
     u32 dst = heap_alloc(len + 1);
@@ -2970,7 +2971,7 @@ void Syscalls::impl___to_locale_ansi() {
     }
     m_mem.write_u8(dst_phys + len, 0); // null terminator
 
-    printf("[UNICODE] __to_locale_ansi(0x%08X, %u chars) -> 0x%08X\n", src, len, dst);
+    log_dbg("[UNICODE] __to_locale_ansi(0x%08X, %u chars) -> 0x%08X\n", src, len, dst);
     g_cpu_regs[2] = dst;
 }
 
@@ -2979,7 +2980,7 @@ void Syscalls::impl_get_current_language() {
     // 7days.app stores this value and compares it to 2 to choose uien/ vs ui/
     // (English vs Chinese bitmaps/fonts packed in the same .app archive).
     const int lang = 2;
-    printf("[STUB] get_current_language -> %d (%s)\n", lang, lang == 2 ? "English" : "Chinese");
+    log_dbg("[STUB] get_current_language -> %d (%s)\n", lang, lang == 2 ? "English" : "Chinese");
     g_cpu_regs[2] = (u32)lang;
 }
 
@@ -3062,7 +3063,7 @@ void Syscalls::impl_dl_res_open() {
     m_dl_res[idx].offset = 0;
     m_dl_res[idx].host_data = m_archive->get_data(*entry);
 
-    printf("[dl_res] open '%s' -> handle %d (%u bytes, host-backed)\n",
+    log_dbg("[dl_res] open '%s' -> handle %d (%u bytes, host-backed)\n",
            entry->name.c_str(), idx + 1, entry->size);
     g_cpu_regs[2] = (u32)(idx + 1);
 }
@@ -3218,7 +3219,7 @@ void Syscalls::impl_open_gui_key_msg() {
     // Real firmware starts a task that polls the keypad and posts WM_KEY
     // through GUI_StoreKeyMsg.  We fold that into GUI_Exec instead.
     m_gui_key_msg_open = true;
-    printf("[µC/GUI] open_gui_key_msg\n");
+    log_dbg("[µC/GUI] open_gui_key_msg\n");
     g_cpu_regs[2] = 0;
 }
 
@@ -3239,7 +3240,7 @@ bool Syscalls::gui_dispatch_pending_key() {
     u32 pressed = (type == Display::EVT_KEY_DOWN) ? 1u : 0u;
     m_mem.write_u32(info + 0, gui_key);
     m_mem.write_u32(info + 4, pressed);
-    printf("[µC/GUI] WM_KEY key=%u pressed=%u\n", gui_key, pressed);
+    log_dbg("[µC/GUI] WM_KEY key=%u pressed=%u\n", gui_key, pressed);
     wm_dispatch(WM_MSG_KEY, info);
     return true;
 }
@@ -3291,14 +3292,14 @@ void Syscalls::impl_mdelay() {
 
 void Syscalls::impl_fsys_clearerr() {
     u32 handle = arg(0);
-    printf("[FSYS] clearerr(%u)\n", handle);
+    log_dbg("[FSYS] clearerr(%u)\n", handle);
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_OSQCreate() {
     u32 size = arg(0);
     u32 ecb = heap_alloc(56);
-    printf("[OS] OSQCreate(size=%u) -> ecb=0x%08X\n", size, ecb);
+    log_dbg("[OS] OSQCreate(size=%u) -> ecb=0x%08X\n", size, ecb);
     g_cpu_regs[2] = ecb ? ecb : (u32)-1;
 }
 
@@ -3307,18 +3308,18 @@ void Syscalls::impl_OSFlagPost() {
     u32 flags = arg(1);
     u32 opt = arg(2);
     u32 err_ptr = arg(3);
-    printf("[OS] OSFlagPost(grp=0x%08X flags=0x%08X opt=%u)\n", grp, flags, opt);
+    log_dbg("[OS] OSFlagPost(grp=0x%08X flags=0x%08X opt=%u)\n", grp, flags, opt);
     if (err_ptr) m_mem.write_u8(err_ptr, 0);
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_SysEnableShutDownPower() {
-    printf("[STUB] SysEnableShutDownPower\n");
+    log_dbg("[STUB] SysEnableShutDownPower\n");
     g_cpu_regs[2] = 0;
 }
 
 void Syscalls::impl_SysDisableCloseBkLight() {
-    printf("[STUB] SysDisableCloseBkLight\n");
+    log_dbg("[STUB] SysDisableCloseBkLight\n");
     g_cpu_regs[2] = 0;
 }
 
@@ -3420,7 +3421,7 @@ void Syscalls::impl_GUI_TIMER_Create() {
     t.context = context;
     t.period_ms = period;
     t.next_due = SDL_GetTicks() + period;
-    printf("[µC/GUI] GUI_TIMER_Create(cb=0x%08X period=%u ctx=0x%08X) -> %d\n",
+    log_dbg("[µC/GUI] GUI_TIMER_Create(cb=0x%08X period=%u ctx=0x%08X) -> %d\n",
            cb, period, context, idx + 1);
     g_cpu_regs[2] = (u32)(idx + 1);
 }
@@ -3462,7 +3463,7 @@ void Syscalls::impl_WM_CreateWindow() {
     u32 x0 = arg(0), y0 = arg(1), w = arg(2), h = arg(3);
     u32 style = arg(4);
     u32 cb = arg(5);
-    printf("[µC/GUI] WM_CreateWindow(%u,%u %ux%u style=0x%X cb=0x%08X) -> hwin=%u\n",
+    log_dbg("[µC/GUI] WM_CreateWindow(%u,%u %ux%u style=0x%X cb=0x%08X) -> hwin=%u\n",
            x0, y0, w, h, style, cb, WM_MAIN_HWIN);
     m_wm_callback = cb;
     m_wm_paint_pending = true;
@@ -3487,7 +3488,7 @@ void Syscalls::impl_spin_unlock_irqrestore() {
 }
 
 void Syscalls::impl_jz_pm_pllconvert() {
-    printf("[STUB] jz_pm_pllconvert\n");
+    log_dbg("[STUB] jz_pm_pllconvert\n");
     g_cpu_regs[2] = 0;
 }
 
@@ -3529,7 +3530,7 @@ void Syscalls::impl_dl_load() {
     }
 
     if (blob.empty()) {
-        printf("[DL] dl_load('%s') -> not found\n", name.c_str());
+        log_dbg("[DL] dl_load('%s') -> not found\n", name.c_str());
         g_cpu_regs[2] = 0;
         return;
     }
@@ -3539,14 +3540,14 @@ void Syscalls::impl_dl_load() {
         if (!m_dl_modules[i].in_use) { slot = i; break; }
     }
     if (slot < 0) {
-        printf("[DL] dl_load('%s') -> no module slots\n", name.c_str());
+        log_dbg("[DL] dl_load('%s') -> no module slots\n", name.c_str());
         g_cpu_regs[2] = 0;
         return;
     }
 
     u32 guest = heap_alloc((u32)blob.size());
     if (!guest) {
-        printf("[DL] dl_load('%s') -> OOM (%zu bytes)\n", name.c_str(), blob.size());
+        log_dbg("[DL] dl_load('%s') -> OOM (%zu bytes)\n", name.c_str(), blob.size());
         g_cpu_regs[2] = 0;
         return;
     }
@@ -3559,7 +3560,7 @@ void Syscalls::impl_dl_load() {
 
     char magic[5] = {};
     memcpy(magic, blob.data(), std::min(blob.size(), (size_t)4));
-    printf("[DL] dl_load('%s') -> handle %d @ 0x%08X (%zu bytes, magic='%s')\n",
+    log_dbg("[DL] dl_load('%s') -> handle %d @ 0x%08X (%zu bytes, magic='%s')\n",
            name.c_str(), slot + 1, guest, blob.size(), magic);
     g_cpu_regs[2] = (u32)(slot + 1);
     g_code_gen++;  // new executable bytes: JIT must drop cached TBs
@@ -3571,7 +3572,7 @@ void Syscalls::impl_dl_free() {
         g_cpu_regs[2] = (u32)-1;
         return;
     }
-    printf("[DL] dl_free(%d) '%s'\n", idx + 1, m_dl_modules[idx].name.c_str());
+    log_dbg("[DL] dl_free(%d) '%s'\n", idx + 1, m_dl_modules[idx].name.c_str());
     heap_free(m_dl_modules[idx].guest_addr);
     m_dl_modules[idx].in_use = false;
     m_dl_modules[idx].guest_addr = 0;
@@ -3591,7 +3592,7 @@ void Syscalls::impl_dl_get_proc() {
     std::string name = name_ptr ? guest_string(name_ptr) : "";
     // Mapped blobs (DLX2 resource packs, raw CCDL) have no reloc'd export
     // table. Return the load address so callers can inspect the image.
-    printf("[DL] dl_get_proc(%d, '%s') -> 0x%08X\n",
+    log_dbg("[DL] dl_get_proc(%d, '%s') -> 0x%08X\n",
            idx + 1, name.c_str(), m_dl_modules[idx].guest_addr);
     g_cpu_regs[2] = m_dl_modules[idx].guest_addr;
 }
@@ -3624,7 +3625,7 @@ void Syscalls::register_main_context(u32 pc, u32 a0, u8 prio) {
     // regs[] populated by save_current_task() on first preemption/block
     m_current_task      = idx;
     m_scheduler_started = true;
-    printf("[SCHEDULER] Registered AppMain as task %d (prio %u) at 0x%08X\n", idx, prio, pc);
+    log_dbg("[SCHEDULER] Registered AppMain as task %d (prio %u) at 0x%08X\n", idx, prio, pc);
 }
 
 bool Syscalls::simulate_vsync() {
@@ -3651,7 +3652,7 @@ bool Syscalls::simulate_vsync() {
 
             m_scheduler_started = true;
             switch_to_task(highest);
-            printf("[SCHEDULER] Starting task %d (prio %u) at 0x%08X\n",
+            log_dbg("[SCHEDULER] Starting task %d (prio %u) at 0x%08X\n",
                    highest, best_prio, g_cpu_pc);
             return true;
         }
@@ -3710,7 +3711,7 @@ bool Syscalls::simulate_vsync() {
             switch_to_task(next);
             switched = true;
             if (m_in_idle) {
-                printf("[SCHEDULER] Leaving idle, switching to task %d\n", next);
+                log_dbg("[SCHEDULER] Leaving idle, switching to task %d\n", next);
                 m_in_idle = false;
             }
         }
@@ -3774,7 +3775,7 @@ bool Syscalls::simulate_vsync() {
     if (dump_count % 1000 == 0) {
         for (int i = 0; i < (int)MAX_GOT_ENTRIES; i++) {
             if (m_got_call_counts[i] > 0) {
-                printf("[GOT] %3d: %-25s %u\n", i, got_name(i), m_got_call_counts[i]);
+                log_dbg("[GOT] %3d: %-25s %u\n", i, got_name(i), m_got_call_counts[i]);
             }
         }
     }
@@ -3783,16 +3784,16 @@ bool Syscalls::simulate_vsync() {
 
 // ── Stubs for remaining Dingoo OS APIs ───────────────────────────────────
 
-void Syscalls::impl_Custom_Memsic_test()    { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_GUI_TIMER_Exec()        { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_Get_X()                 { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_Get_Y()                 { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_Memsic_SerialCommInit() { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_Read_Acc()              { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_Read_Acc0()             { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_SysDisableBkLight()     { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl__tcscmp()               { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl__tcscpy()               { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_Custom_Memsic_test()    { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_GUI_TIMER_Exec()        { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_Get_X()                 { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_Get_Y()                 { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_Memsic_SerialCommInit() { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_Read_Acc()              { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_Read_Acc0()             { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_SysDisableBkLight()     { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl__tcscmp()               { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl__tcscpy()               { log_dbg("[STUB] %s\n", __func__); }
 void Syscalls::impl__waveout_open()         { impl_waveout_open(); }
 void Syscalls::impl__waveout_set_volume()   { impl_waveout_set_volume(); }
 void Syscalls::impl_av_begin_thread() {
@@ -3812,7 +3813,7 @@ void Syscalls::impl_av_begin_thread() {
     static constexpr u32 TASK_STACK_SIZE = 0x4000;
     u32 base = heap_alloc(TASK_STACK_SIZE);
     u32 sp = base ? ((base + TASK_STACK_SIZE) & ~0xF) : 0;
-    printf("[av_begin_thread] fn=0x%08X arg=0x%08X a2=0x%08X a3=%u a4=%u prio=%u\n",
+    log_dbg("[av_begin_thread] fn=0x%08X arg=0x%08X a2=0x%08X a3=%u a4=%u prio=%u\n",
            fn, targ, a2, a3, a4, prio);
     if (!fn || !sp) {
         g_cpu_regs[2] = 0;
@@ -3913,24 +3914,24 @@ void Syscalls::impl_av_wait_flag() { sem_pend(arg(0), 0, 0); }
 void Syscalls::impl_av_wait_sem()  { sem_pend(arg(0), 0, 0); }
 void Syscalls::impl_av_wait_sem2() { sem_pend(arg(0), arg(1), 0); }
 void Syscalls::impl_delay_ms()              { (void)arg(0); g_cpu_regs[2] = 0; }
-void Syscalls::impl_detect_clock()          { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_fsys_fcloseW()          { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_fsys_fclose_flash()     { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_fsys_fopen_flash()      { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_detect_clock()          { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_fsys_fcloseW()          { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_fsys_fclose_flash()     { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_fsys_fopen_flash()      { log_dbg("[STUB] %s\n", __func__); }
 void Syscalls::impl_fsys_mkdir() {
     std::string path = read_guest_path(arg(0));
     std::string host = host_path_from_guest(path);
-    printf("[FSYS] mkdir('%s') -> %s\n", path.c_str(), host.c_str());
+    log_dbg("[FSYS] mkdir('%s') -> %s\n", path.c_str(), host.c_str());
     g_cpu_regs[2] = ensure_host_dir(host) ? 0 : (u32)-1;
 }
 void Syscalls::impl_fsys_removeW() {
     std::string path = read_guest_path(arg(0));
     std::string host = host_path_from_guest(path);
-    printf("[FSYS] removeW('%s') -> %s\n", path.c_str(), host.c_str());
+    log_dbg("[FSYS] removeW('%s') -> %s\n", path.c_str(), host.c_str());
     g_cpu_regs[2] = (remove(host.c_str()) == 0) ? 0 : (u32)-1;
 }
-void Syscalls::impl_fsys_renameW()          { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_isTVON()                { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_fsys_renameW()          { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_isTVON()                { log_dbg("[STUB] %s\n", __func__); }
 void Syscalls::impl_memcpy() {
     u32 dest = arg(0);
     u32 src = arg(1);
@@ -3967,16 +3968,16 @@ void Syscalls::impl_memset() {
     }
     g_cpu_regs[2] = dest;
 }
-void Syscalls::impl_serial_puts()           { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_sscanf()                { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_sys_get_ccpmp_config()  { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_tv_close()              { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_tv_disable_switch()     { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_tv_enable_switch()      { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_tv_get_closeflag()      { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_tv_get_openflag()       { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_tv_open()               { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_tv_set_closeflag()      { printf("[STUB] %s\n", __func__); }
-void Syscalls::impl_tv_set_openflag()       { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_serial_puts()           { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_sscanf()                { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_sys_get_ccpmp_config()  { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_tv_close()              { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_tv_disable_switch()     { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_tv_enable_switch()      { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_tv_get_closeflag()      { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_tv_get_openflag()       { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_tv_open()               { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_tv_set_closeflag()      { log_dbg("[STUB] %s\n", __func__); }
+void Syscalls::impl_tv_set_openflag()       { log_dbg("[STUB] %s\n", __func__); }
 void Syscalls::impl_udelay()                { (void)arg(0); g_cpu_regs[2] = 0; }
-void Syscalls::impl_vsprintf()              { printf("[STUB] %s\n", __func__); }
+void Syscalls::impl_vsprintf()              { log_dbg("[STUB] %s", __func__); }

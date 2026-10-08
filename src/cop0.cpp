@@ -1,4 +1,5 @@
 #include "cop0.h"
+#include "log.h"
 #include <cstdio>
 #include <cstring>
 
@@ -34,7 +35,7 @@ u32 COP0::mfc0(int rd) {
     case 28: return regs.tag_lo;
     case 30: return regs.err_epc;
     default:
-        printf("[COP0] MFC0 unknown rd=%d\n", rd);
+        log_dbg("[COP0] MFC0 unknown rd=%d\n", rd);
         return 0;
     }
 }
@@ -69,7 +70,7 @@ void COP0::mtc0(int rd, u32 value) {
     case 14: regs.epc = value; break;
     case 16: regs.config = value; break;
     default:
-        printf("[COP0] MTC0 unknown rd=%d value=0x%08X\n", rd, value);
+        log_dbg("[COP0] MTC0 unknown rd=%d value=0x%08X\n", rd, value);
         break;
     }
 }

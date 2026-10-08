@@ -111,6 +111,7 @@ Options:
   --jit={off,on}      Execution tier: interpreter reference (default) or dynarec JIT
   --jit-stats         Print JIT cache/TB counters at exit (implies nothing else)
   --jit-tests         Run the JIT discharge test suite (no ROM) and exit
+  --debug             Verbose console logging (GOT/fsys/MXU traces, register dump)
 ```
 
 ### Examples
