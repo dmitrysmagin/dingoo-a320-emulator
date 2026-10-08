@@ -101,7 +101,14 @@ static bool jit_plan_has_mtc0(const JitTbPlan& plan) {
 // through garbage RDI on Windows — worked by luck until caller context
 // changed, then segfaulted at startup.)
 //
-#ifdef _WIN32
+#if defined(JIT_HOST_X86)
+const unsigned char Jit::kProofCode[] = {
+    0x8B, 0x44, 0x24, 0x04,                   // mov eax, [esp+4]  (JitState*)
+    0xC7, 0x40, 0x08, 0x01, 0x00, 0x00, 0x00, // mov DWORD PTR [eax+8], 1  (gpr[2])
+    0x31, 0xC0,                               // xor eax, eax  (JIT_EXIT_DONE)
+    0xC3,                                     // ret
+};
+#elif defined(_WIN32)
 const unsigned char Jit::kProofCode[] = {
     0xC7, 0x41, 0x08, 0x01, 0x00, 0x00, 0x00, // mov DWORD PTR [rcx+8], 1
     0x31, 0xC0,                               // xor eax, eax  (JIT_EXIT_DONE)
@@ -171,9 +178,9 @@ void Jit::exec_free(void* p, u32 size) {
 bool Jit::init() {
     if (m_ready)
         return true;
-#if !defined(JIT_HOST_X64)
+#if defined(JIT_HOST_ARM64)
     log_info("[JIT] host backend %s is stub-only — staying on interpreter "
-             "(rebuild with JIT_HOST=x64 for dynarec)",
+             "(rebuild with JIT_HOST=x64 or x86 for dynarec)",
              JIT_HOST_NAME);
     return false;
 #endif

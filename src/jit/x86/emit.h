@@ -1,13 +1,13 @@
 #ifndef JIT_EMIT_H
 #define JIT_EMIT_H
 
-// JIT host backend: IA-32 stub (JIT_HOST=x86). Straight-line ALU TBs, hand-encoded.
+// JIT host backend: IA-32 (JIT_HOST=x86). Same plan as x64/, 32-bit encodings.
 //
-// Hand-encoded emitter (REX/ModRM/SIB/disp8/disp32/imm32) targeting the
-// JitState layout in jit.h: gpr[i] at byte offset i*4, hi/lo after gpr[32].
-// The TB ABI is `u32 tb(JitState*)` with the pointer in RDI (SysV) or RCX
-// (Win64). The emitter moves the live pointer into RDX once in the prolog,
-// so the body is ABI-independent; all memory operands use RDX+disp32.
+// Hand-encoded emitter (ModRM/SIB/disp32/imm32) targeting JitState in jit.h.
+// TB ABI: `u32 __cdecl tb(JitState*)` — arg at [esp+4] on entry. Prolog loads
+// ESI once as the state base (callee-saved; EDX is clobbered by mul/div/mem).
+// Body uses [ESI+disp32] like x64 uses RDX.
+// Build the emulator with -m32 so emitted code matches the host pointer size.
 //
 // Correctness contract (mirrors cpu.cpp):
 //   - $0 reads as 0: loads from gpr[0] are skipped (slot is always 0).
@@ -38,29 +38,31 @@
 #include "../frontend.h"
 #include "../jit.h"  // JitState layout + JIT_EXIT_*
 
-// JitState byte offsets (checked with static_assert in emit_alu.cpp).
-static constexpr u32 JIT_OFF_GPR = 0;            // gpr[i] at i*4
-static constexpr u32 JIT_OFF_HI = 32 * 4;        // 128 - exit_code (LEGACY name, do not use for HI!)
-static constexpr u32 JIT_OFF_LO = 32 * 4 + 4;    // 132 - exit_arg (LEGACY name, do not use for LO!)
-static constexpr u32 JIT_OFF_NEXT_PC = 32 * 4 + 8; // 136 - Phase 2: branch target
-static constexpr u32 JIT_OFF_PC = 32 * 4 + 12;     // 140 - Phase 2: current PC
-static constexpr u32 JIT_OFF_HI_VAL = 32 * 4 + 16; // 144 - HI register value
-static constexpr u32 JIT_OFF_LO_VAL = 32 * 4 + 20; // 148 - LO register value
-static constexpr u32 JIT_OFF_MEM_BASE = 32 * 4 + 24; // 152 - u64 host RAM pointer
-static constexpr u32 JIT_OFF_MEM_SIZE = 32 * 4 + 32; // 160 - u32 RAM size
-static constexpr u32 JIT_OFF_EXIT_ARG = 32 * 4 + 4;  // 132 - exit_arg (slow-mem op index)
-static constexpr u32 JIT_OFF_CODE_START = 32 * 4 + 36; // 164 - u32 code phys start
-static constexpr u32 JIT_OFF_CODE_END = 32 * 4 + 40;   // 168 - u32 code phys end
-static constexpr u32 JIT_OFF_WC_BASE = 32 * 4 + 48;    // 176 - u64 write_counts pointer
-static constexpr u32 JIT_OFF_COP0_PTR = 32 * 4 + 56;   // 184 - u64 COP0*
-static constexpr u32 JIT_OFF_MXU_PTR = 32 * 4 + 64;    // 192 - u64 MXU*
-static constexpr u32 JIT_OFF_SYSCALLS_PTR = 32 * 4 + 72; // 200 - u64 Syscalls*
-static constexpr u32 JIT_OFF_TICK_DELTA = 32 * 4 + 80; // 208 - u32 unflushed ticks
-static constexpr u32 JIT_OFF_INSN_DELTA = 32 * 4 + 88; // 216 - chained insn accounting
-static constexpr u32 JIT_PROLOG_CHAIN_OFF = 3; // skip mov rdx, rcx/rdi on chain entry
+#include <cstddef>
+
+// JitState offsets follow the host pointer width (-m32 vs -m64).
+static constexpr u32 JIT_OFF_GPR = 0;
+static constexpr u32 JIT_OFF_HI = (u32)offsetof(JitState, exit_code);
+static constexpr u32 JIT_OFF_LO = (u32)offsetof(JitState, exit_arg);
+static constexpr u32 JIT_OFF_NEXT_PC = (u32)offsetof(JitState, next_pc);
+static constexpr u32 JIT_OFF_PC = (u32)offsetof(JitState, pc);
+static constexpr u32 JIT_OFF_HI_VAL = (u32)offsetof(JitState, hi);
+static constexpr u32 JIT_OFF_LO_VAL = (u32)offsetof(JitState, lo);
+static constexpr u32 JIT_OFF_MEM_BASE = (u32)offsetof(JitState, mem_base);
+static constexpr u32 JIT_OFF_MEM_SIZE = (u32)offsetof(JitState, mem_size);
+static constexpr u32 JIT_OFF_EXIT_ARG = (u32)offsetof(JitState, exit_arg);
+static constexpr u32 JIT_OFF_CODE_START = (u32)offsetof(JitState, code_start);
+static constexpr u32 JIT_OFF_CODE_END = (u32)offsetof(JitState, code_end);
+static constexpr u32 JIT_OFF_WC_BASE = (u32)offsetof(JitState, wc_base);
+static constexpr u32 JIT_OFF_COP0_PTR = (u32)offsetof(JitState, cop0);
+static constexpr u32 JIT_OFF_MXU_PTR = (u32)offsetof(JitState, mxu);
+static constexpr u32 JIT_OFF_SYSCALLS_PTR = (u32)offsetof(JitState, syscalls);
+static constexpr u32 JIT_OFF_TICK_DELTA = (u32)offsetof(JitState, tick_delta);
+static constexpr u32 JIT_OFF_INSN_DELTA = (u32)offsetof(JitState, insn_delta);
+static constexpr u32 JIT_PROLOG_CHAIN_OFF = 5; // skip push esi; mov esi,[esp+8] on chain entry
 
 // Byte offset of a chain exit site within a TB (for patching).
-static constexpr u32 JIT_CHAIN_SITE_SIZE = 16;
+static constexpr u32 JIT_CHAIN_SITE_SIZE = 17;  // mov [esi+disp32],imm (10) + mov eax,imm; pop esi; ret (7)
 
 // Emitter cursor over a raw byte buffer.
 struct JitEmit {
@@ -68,7 +70,7 @@ struct JitEmit {
     u32 cap;
     u32 len;
     bool oom;
-    // Live base register holding JitState* after prolog (always EDX/RDX=2).
+    // Live base register holding JitState* after prolog (host reg 6 = ESI).
     // Fixed to 2 so no register allocation is needed in Phase 1.
 };
 
@@ -94,7 +96,7 @@ void emit_mov_rdx_disp32(JitEmit& e, u32 disp32, u32 imm);
 
 // Phase 6 shared raw-output primitives (thin wrappers over emit_alu
 // statics, so branch/mem emitters need no duplication).
-void jit_emit_prolog(JitEmit& e, u32 entry_pc, u32 insn_count);  // state* -> RDX
+void jit_emit_prolog(JitEmit& e, u32 entry_pc, u32 insn_count);  // state* -> EDX
 void jit_emit_epilog(JitEmit& e, u32 exit_code);  // mov eax, exit; ret
 void jit_emit_tick_add(JitEmit& e, u32 count);    // tick_delta += count
 u32 emit_jcc32(JitEmit& e, u8 cc);             // 0F cc + rel32 placeholder

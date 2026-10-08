@@ -452,8 +452,8 @@ One host backend per binary — no C++ virtual interface, shared symbol names vi
 | `JIT_HOST` | Role | Runtime `--jit=on` |
 |---|---|---|
 | `x64` (default) | Hand-encoded x86-64 in `src/jit/x64/emit_*.cpp` | Full dynarec |
-| `arm64` | Stub codegen in `emit_stub.cpp` + `emit_ref.cpp` | `Jit::init()` fails → interpreter |
-| `x86` | Same stub as arm64 (32-bit host placeholder) | Same |
+| `x86` | Hand-encoded IA-32 in `src/jit/x86/emit_*.cpp` (cdecl, EDX base) | Full dynarec when built **`-m32`** (`JIT_M32=1`) |
+| `arm64` | Stub in `emit_stub.cpp` + `emit_ref.cpp` | `Jit::init()` fails → interpreter |
 
 Shared across all hosts: `frontend.*`, `jit.cpp`, `tbcache.h`, `got_dispatch.cpp`
 (`jit_got_dispatch` for GOT TBs on x64).
@@ -462,18 +462,17 @@ Shared across all hosts: `frontend.*`, `jit.cpp`, `tbcache.h`, `got_dispatch.cpp
 src/jit/
   host_config.h          — JIT_HOST_NAME from -DJIT_HOST_*
   got_dispatch.cpp       — HLE GOT dispatch (shared)
-  emit_stub.cpp          — arm64/x86: compile_* return 0, no-op emit helpers
-  emit_ref.cpp             — arm64/x86: jit_run_* reference for --jit-tests
-  x64/emit.h + emit_*.cpp  — production backend
-  arm64/emit.h             — API mirror (stub banner)
-  x86/emit.h               — API mirror (IA-32 stub banner)
+  emit_stub.cpp + emit_ref.cpp — arm64 stub CI only
+  x64/emit.h + emit_*.cpp      — x86-64 production backend
+  x86/emit.h + emit_*.cpp      — IA-32 production backend (mirror of x64/)
+  arm64/emit.h                 — API mirror (stub banner)
 ```
 
 Build (Makefile):
 
 - `make` or `make JIT_HOST=x64` — default emulator with dynarec.
-- `make JIT_HOST=arm64` / `make JIT_HOST=x86` — link stub backend; CI:
-  `make jit-test-arm64`, `make jit-test-x86`.
+- `make JIT_HOST=x86 JIT_M32=1` — 32-bit emulator + IA-32 JIT (needs 32-bit SDL/toolchain).
+- `make jit-test-arm64` — arm64 stub CI; `make JIT_HOST=x86 JIT_M32=1` + `--jit-tests` for x86 discharge.
 - `make jit-test` — x64 discharge suite (`--jit-tests`).
 
 Tests: x64 runs full randomized emit-vs-reference discharge; stub hosts run

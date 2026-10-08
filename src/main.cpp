@@ -332,7 +332,7 @@ int main(int argc, char* argv[]) {
 
     log_info("[INIT] RAM %u MB  CPU %u MHz (%u insns/vsync @ %u Hz)  display %dx%d×%d  JIT %s",
              mem.size() / (1024 * 1024),
-             GUEST_CPU_HZ / 1'000'000u, GUEST_INSNS_PER_SLICE, GUEST_VSYNC_HZ,
+             GUEST_CPU_HZ / 1000000u, GUEST_INSNS_PER_SLICE, GUEST_VSYNC_HZ,
              Display::WIDTH, Display::HEIGHT, Display::SCALE,
              arg_jit == JIT_ON ? "on" : "off");
 

@@ -1024,7 +1024,7 @@ void test_cop0_tick_batch() {
     CHECK(a.regs.random == b.regs.random, "tick batch random wired>0");
 }
 
-#if !defined(JIT_HOST_X64)
+#if defined(JIT_HOST_ARM64)
 void test_stub_host_codegen() {
     printf("[jit-test] stub host %s codegen...\n", JIT_HOST_NAME); fflush(stdout);
     u32 w = w_special(9, 9, 8, 3, 0x00);
@@ -1062,7 +1062,7 @@ JitTestResult jit_run_phase1_tests(bool verbose) {
     printf("[jit-test] enter host=%s\n", JIT_HOST_NAME); fflush(stdout);
     g_verbose = verbose;
     passes = 0; failures = 0;
-#if defined(JIT_HOST_X64)
+#if defined(JIT_HOST_X64) || defined(JIT_HOST_X86)
     ExecPage pg;
     if (!pg.alloc(4096)) {
         printf("[jit-test] exec page alloc FAILED\n");
@@ -1093,7 +1093,7 @@ JitTestResult jit_run_phase1_tests(bool verbose) {
     printf("[jit-test] formation done, stops...\n"); fflush(stdout);
     test_stops();
     test_cop0_tick_batch();
-#if defined(JIT_HOST_X64)
+#if defined(JIT_HOST_X64) || defined(JIT_HOST_X86)
     {
         u32 w = w_special(2, 3, 4, 0, 0x21);
         JitTbPlan plan = jit_decode_tb(&w, 1);

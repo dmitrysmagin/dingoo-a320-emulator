@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include "cpp14_compat.h"
 
 using u8  = uint8_t;
 using u16 = uint16_t;
@@ -31,7 +32,7 @@ static constexpr u32 MAX_GOT_ENTRIES   = 256;
 // run at 420 MHz. Default matches stock 360 MHz (420 can stutter audio on some
 // titles, e.g. ultimate_drift). The main loop executes up to
 // GUEST_INSNS_PER_SLICE guest instructions then simulate_vsync (~60 Hz).
-static constexpr u32 GUEST_CPU_HZ_STOCK    = 360'000'000u;
+static constexpr u32 GUEST_CPU_HZ_STOCK    = 360000000u;
 static constexpr u32 GUEST_CPU_HZ          = GUEST_CPU_HZ_STOCK;
 static constexpr u32 GUEST_VSYNC_HZ        = 60u;
 static constexpr u32 GUEST_INSNS_PER_SLICE = GUEST_CPU_HZ / GUEST_VSYNC_HZ;

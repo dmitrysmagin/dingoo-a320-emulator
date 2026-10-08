@@ -1,10 +1,34 @@
-CXX      = g++
-CXXFLAGS = -pipe -std=c++17 -Wall -Wextra -O2 -g
-SDL_CFLAGS = -IC:/Users/user/msys64/ucrt64/include/SDL2 -Dmain=SDL_main
-SDL_LIBS   = -LC:/Users/user/msys64/ucrt64/lib -lmingw32 -lSDL2main -lSDL2
+# USE_MINGW32=1 — legacy 32-bit MinGW at C:/Users/user/MinGW (gcc 4.8, i686).
+USE_MINGW32 ?= 0
+MINGW32_ROOT = C:/Users/user/MinGW
 
-# JIT host codegen backend: x64 (full), arm64|x86 (stub — interpreter only at runtime).
+ifeq ($(USE_MINGW32),1)
+  # Do not prepend MinGW to PATH: breaks MSYS execvp (mkdir, "path too long").
+  # g++/gcc are invoked by absolute path; -B selects MinGW as/ld only.
+  CXX      = $(MINGW32_ROOT)/bin/g++.exe
+  CC       = $(MINGW32_ROOT)/bin/gcc.exe
+  CXXFLAGS = -pipe -std=gnu++11 -Wall -Wextra -O2 -g -B$(MINGW32_ROOT)/bin -Wno-missing-field-initializers
+  SDL_CFLAGS = -I$(MINGW32_ROOT)/include/SDL2 -Dmain=SDL_main
+  SDL_LIBS   = -L$(MINGW32_ROOT)/lib -lmingw32 -lSDL2main -lSDL2
+  JIT_HOST   = x86
+  JIT_M32    = 0
+  MINGW32_ENV =
+  MKDIR_P    = /usr/bin/mkdir -p
+else
+  MINGW32_ENV =
+  MKDIR_P    = mkdir -p
+  CXX      = g++
+  CXXFLAGS = -pipe -std=c++17 -Wall -Wextra -O2 -g
+  SDL_CFLAGS = -IC:/Users/user/msys64/ucrt64/include/SDL2 -Dmain=SDL_main
+  SDL_LIBS   = -LC:/Users/user/msys64/ucrt64/lib -lmingw32 -lSDL2main -lSDL2
+endif
+
+# JIT host codegen backend: x64 (default), x86 (IA-32), arm64 stub.
 JIT_HOST ?= x64
+JIT_M32  ?= 0
+ifeq ($(USE_MINGW32),1)
+  JIT_HOST := x86
+endif
 
 ifeq ($(JIT_HOST),x64)
   JIT_HOST_FLAG = -DJIT_HOST_X64
@@ -21,12 +45,22 @@ else ifeq ($(JIT_HOST),arm64)
 else ifeq ($(JIT_HOST),x86)
   JIT_HOST_FLAG = -DJIT_HOST_X86
   JIT_EMIT_HDR  = $(SRCDIR)/jit/x86/emit.h
-  JIT_EMIT_SRCS = $(SRCDIR)/jit/emit_stub.cpp $(SRCDIR)/jit/emit_ref.cpp
+  JIT_EMIT_SRCS = $(SRCDIR)/jit/x86/emit_alu.cpp \
+                  $(SRCDIR)/jit/x86/emit_branch.cpp \
+                  $(SRCDIR)/jit/x86/emit_mem.cpp \
+                  $(SRCDIR)/jit/x86/emit_cop.cpp \
+                  $(SRCDIR)/jit/x86/emit_got.cpp
 else
   $(error Unknown JIT_HOST=$(JIT_HOST); use x64, arm64, or x86)
 endif
 
 JIT_CXXFLAGS = -I$(SRCDIR)/jit/$(JIT_HOST) -I$(SRCDIR)/jit $(JIT_HOST_FLAG)
+ifeq ($(JIT_HOST),x86)
+  ifeq ($(JIT_M32),1)
+    CXXFLAGS += -m32
+    SDL_LIBS   := $(SDL_LIBS) -m32
+  endif
+endif
 
 # Disable built-in compile rules (%.o: %.cpp drops objects in the project root).
 MAKEFLAGS += -r
@@ -57,12 +91,12 @@ OBJECTS = $(patsubst $(SRCDIR)/%.cpp,$(OBJDIR)/%.o,$(SOURCES))
 
 TARGET = emulator.exe
 
-.PHONY: all run clean jit-test jit-test-arm64 jit-test-x86
+.PHONY: all run clean jit-test jit-test-arm64 jit-test-x86 mingw32-x86
 
 all: $(TARGET)
 
 $(OBJDIR):
-	mkdir -p $(OBJDIR)
+	$(MKDIR_P) $(OBJDIR)
 
 HEADERS = $(SRCDIR)/types.h $(SRCDIR)/log.h $(SRCDIR)/syscalls.h $(SRCDIR)/cpu.h \
           $(SRCDIR)/memory.h $(SRCDIR)/cop0.h $(SRCDIR)/mxu.h \
@@ -70,11 +104,11 @@ HEADERS = $(SRCDIR)/types.h $(SRCDIR)/log.h $(SRCDIR)/syscalls.h $(SRCDIR)/cpu.h
           $(SRCDIR)/jit/tbcache.h $(SRCDIR)/jit/host_config.h
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.cpp $(HEADERS) | $(OBJDIR)
-	mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(JIT_CXXFLAGS) $(SDL_CFLAGS) -c $< -o $@
+	$(MKDIR_P) $(dir $@)
+	$(MINGW32_ENV) $(CXX) $(CXXFLAGS) $(JIT_CXXFLAGS) $(SDL_CFLAGS) -c $< -o $@
 
 $(TARGET): $(OBJECTS)
-	TMPDIR=/c/Users/user/AppData/Local/Temp TMP=/c/Users/user/AppData/Local/Temp TEMP=/c/Users/user/AppData/Local/Temp $(CXX) $(CXXFLAGS) -Wl,--stack,8388608 -o $@ $^ $(SDL_LIBS)
+	$(MINGW32_ENV) TMPDIR=/c/Users/user/AppData/Local/Temp TMP=/c/Users/user/AppData/Local/Temp TEMP=/c/Users/user/AppData/Local/Temp $(CXX) $(CXXFLAGS) -Wl,--stack,8388608 -o $@ $^ $(SDL_LIBS)
 
 run: $(TARGET)
 	./$(TARGET) ../7days.app
@@ -90,5 +124,9 @@ jit-test-x86:
 	$(MAKE) clean JIT_HOST=x86 $(TARGET)
 	./$(TARGET) --jit-tests
 
+mingw32-x86:
+	$(MAKE) clean USE_MINGW32=1 all
+	PATH="$(MINGW32_ROOT)/bin:$$PATH" ./$(TARGET) --jit-tests
+
 clean:
-	rm -f $(TARGET) $(OBJECTS) $(OBJDIR)/*.o $(OBJDIR)/jit/x64/*.o $(OBJDIR)/jit/*.o *.o
+	rm -f $(TARGET) $(OBJECTS) $(OBJDIR)/*.o $(OBJDIR)/jit/x64/*.o $(OBJDIR)/jit/x86/*.o $(OBJDIR)/jit/*.o *.o
