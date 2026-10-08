@@ -426,8 +426,8 @@ Combine with post-HLE chaining to cut **dispatch** as well.
 #### Files / hooks (when implemented)
 
 - `frontend.cpp` — GOT-eligible TB stop, `JIT_EXIT_GOT` in plan.
-- `emit_*.cpp` — epilog variant: tick flush + `CALL` + `JIT_EXIT_DONE`.
-- `jit/helpers.cpp` (planned in §6) — `jit_got_dispatch`, optional per-handler
+- `jit/x64/emit_*.cpp` — epilog variant: tick flush + `CALL` + `JIT_EXIT_GOT`.
+- `jit/got_dispatch.cpp` — `jit_got_dispatch`, optional per-handler
   shims, shared with `syscalls.cpp` dispatch table.
 - `jit.cpp` — handle `JIT_EXIT_GOT` / `JIT_EXIT_TASK` like `NEXT_PC` inline
   chain where safe.
@@ -440,28 +440,48 @@ Combine with post-HLE chaining to cut **dispatch** as well.
 - **`m_lcd_bpp`/palette/DMA semantics**: stay in C++ helpers; JIT never caches
   them (they caused heap-corruption bugs before — `FEATURES.md:217-221`).
 - **FPU**: `COP1` unused (0 real insns) — keep trapping, don't implement.
-- **Non-goal**: AArch64/ARM backend, interpreter removal (keep `--jit=off`
-  forever as reference), cycle accuracy (cooperative scheduler only needs
-  tick-batched `Count`).
+- **Non-goal**: Full AArch64 / IA-32 host codegen (stubs only today), interpreter
+  removal (keep `--jit=off` forever as reference), cycle accuracy (cooperative
+  scheduler only needs tick-batched `Count`).
 
-## 6. Files to add (no existing files moved)
+## 6. Multi-host backend layout (compile-time)
+
+One host backend per binary — no C++ virtual interface, shared symbol names via
+`-I$(SRCDIR)/jit/$(JIT_HOST)` and `#include "emit.h"`.
+
+| `JIT_HOST` | Role | Runtime `--jit=on` |
+|---|---|---|
+| `x64` (default) | Hand-encoded x86-64 in `src/jit/x64/emit_*.cpp` | Full dynarec |
+| `arm64` | Stub codegen in `emit_stub.cpp` + `emit_ref.cpp` | `Jit::init()` fails → interpreter |
+| `x86` | Same stub as arm64 (32-bit host placeholder) | Same |
+
+Shared across all hosts: `frontend.*`, `jit.cpp`, `tbcache.h`, `got_dispatch.cpp`
+(`jit_got_dispatch` for GOT TBs on x64).
 
 ```
-src/jit/jit.h / jit.cpp          — Jit lifecycle, dispatcher, TB cache, stats
-src/jit/frontend.h/.cpp          — MIPS decode → TB plan (reuses cpu.cpp semantics)
-src/jit/emit_alu.cpp             — Phase 1 emitters
-src/jit/emit_branch.cpp          — Phase 2
-src/jit/emit_mem.cpp             — Phase 3 fast path + slow helper decl
-src/jit/emit_cop.cpp             — Phase 4 COP0/COP2/MXU marshaling
-src/jit/helpers.cpp              — slow-mem, exception, GOT-exit shims (C linkage)
-third_party/asmjit/              — submodule (Zlib, ~500 kB built)
-Makefile + CMake option           — MINGW + GCC/Clang Linux, -m64, exec-stack off
-emulator/docs/DYNAREC_PLAN.md    — this file
+src/jit/
+  host_config.h          — JIT_HOST_NAME from -DJIT_HOST_*
+  got_dispatch.cpp       — HLE GOT dispatch (shared)
+  emit_stub.cpp          — arm64/x86: compile_* return 0, no-op emit helpers
+  emit_ref.cpp             — arm64/x86: jit_run_* reference for --jit-tests
+  x64/emit.h + emit_*.cpp  — production backend
+  arm64/emit.h             — API mirror (stub banner)
+  x86/emit.h               — API mirror (IA-32 stub banner)
 ```
 
-Build: `add_subdirectory(third_party/asmjit)` / Makefile `+ -Ithird_party/asmjit/src
-obj/jit_*.o`; link `asmjit::asmjit`. No new runtime deps.
-`JitRuntime` owns exec pages (frees W^X handling on both OSes).
+Build (Makefile):
+
+- `make` or `make JIT_HOST=x64` — default emulator with dynarec.
+- `make JIT_HOST=arm64` / `make JIT_HOST=x86` — link stub backend; CI:
+  `make jit-test-arm64`, `make jit-test-x86`.
+- `make jit-test` — x64 discharge suite (`--jit-tests`).
+
+Tests: x64 runs full randomized emit-vs-reference discharge; stub hosts run
+`test_stub_host_codegen` (compile returns 0), `test_reference_smoke`, plus
+formation/stops/COP0 tick batch (no exec page).
+
+Historical note: early plan listed asmjit + `helpers.cpp`; current tree uses
+hand-encoded x86-64 and `got_dispatch.cpp` instead.
 
 ## 7. Suggested start order (smallest reviewable diffs)
 

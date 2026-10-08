@@ -1,4 +1,5 @@
 #include "jit_test.h"
+#include "host_config.h"
 #include "emit.h"
 #include "frontend.h"
 #include "../memory.h"
@@ -1023,12 +1024,45 @@ void test_cop0_tick_batch() {
     CHECK(a.regs.random == b.regs.random, "tick batch random wired>0");
 }
 
+#if !defined(JIT_HOST_X64)
+void test_stub_host_codegen() {
+    printf("[jit-test] stub host %s codegen...\n", JIT_HOST_NAME); fflush(stdout);
+    u32 w = w_special(9, 9, 8, 3, 0x00);
+    JitTbPlan plan = jit_decode_tb(&w, 1);
+    u8 buf[256];
+    CHECK(jit_compile_tb(plan, buf, sizeof(buf), (u32)JIT_EXIT_DONE, 0) == 0,
+          "stub compile_tb returns 0");
+    CHECK(jit_compile_branch_tb(plan, 0, 0, buf, sizeof(buf), nullptr) == 0,
+          "stub compile_branch_tb returns 0");
+    CHECK(jit_compile_got_tb(0x80001000u, 0, buf, sizeof(buf)) == 0,
+          "stub compile_got_tb returns 0");
+}
+
+void test_reference_smoke() {
+    printf("[jit-test] reference smoke (no discharge)...\n"); fflush(stdout);
+    Rng rng; rng.s = 0xABCDEF01u;
+    for (int iter = 0; iter < 64; iter++) {
+        u32 w = w_special(rng.reg(), rng.reg(), rng.nzreg(), rng.sa(), 0x21);
+        JitTbPlan plan = jit_decode_tb(&w, 1);
+        if (plan.count != 1)
+            continue;
+        ExecState init = base_regs(rng);
+        ExecState ref = init;
+        u32 hi = init.hi, lo = init.lo;
+        jit_run_reference(plan, ref.gpr, &hi, &lo);
+        CHECK(hi == init.hi || plan.ops[0].op == JIT_ALU_MTHI, "ref hi ok");
+        (void)lo;
+    }
+}
+#endif
+
 }  // namespace
 
 JitTestResult jit_run_phase1_tests(bool verbose) {
-    printf("[jit-test] enter\n"); fflush(stdout);
+    printf("[jit-test] enter host=%s\n", JIT_HOST_NAME); fflush(stdout);
     g_verbose = verbose;
     passes = 0; failures = 0;
+#if defined(JIT_HOST_X64)
     ExecPage pg;
     if (!pg.alloc(4096)) {
         printf("[jit-test] exec page alloc FAILED\n");
@@ -1050,19 +1084,27 @@ JitTestResult jit_run_phase1_tests(bool verbose) {
     printf("[jit-test] mixed done, branch...\n"); fflush(stdout);
     test_branch(pg);
     printf("[jit-test] branch done, formation...\n"); fflush(stdout);
+#else
+    test_stub_host_codegen();
+    test_reference_smoke();
+    printf("[jit-test] stub checks done, formation...\n"); fflush(stdout);
+#endif
     test_formation();
     printf("[jit-test] formation done, stops...\n"); fflush(stdout);
     test_stops();
     test_cop0_tick_batch();
-    // Overflow: tiny buffer must fail cleanly (return 0, no cache).
+#if defined(JIT_HOST_X64)
     {
         u32 w = w_special(2, 3, 4, 0, 0x21);
         JitTbPlan plan = jit_decode_tb(&w, 1);
         u8 tiny[4];
-        CHECK(jit_compile_tb(plan, tiny, sizeof(tiny), (u32)JIT_EXIT_DONE, 0) == 0, "overflow returns 0");
+        CHECK(jit_compile_tb(plan, tiny, sizeof(tiny), (u32)JIT_EXIT_DONE, 0) == 0,
+              "overflow returns 0");
     }
     pg.done();
+#endif
     if (verbose || failures)
-        printf("[jit-test] passed=%d failed=%d\n", passes, failures);
+        printf("[jit-test] passed=%d failed=%d (host=%s)\n", passes, failures,
+               JIT_HOST_NAME);
     return JitTestResult{passes, failures};
 }

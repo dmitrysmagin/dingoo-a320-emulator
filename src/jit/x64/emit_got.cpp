@@ -1,14 +1,6 @@
 #include "emit.h"
 
-#include "../syscalls.h"
-
 #include <cstddef>
-
-extern u32 g_cpu_regs[32];
-extern u32 g_cpu_pc;
-extern u32 g_cpu_hi;
-extern u32 g_cpu_lo;
-#include <cstring>
 
 static void c8(JitEmit& e, u8 v) {
     if (e.len >= e.cap) { e.oom = true; return; }
@@ -48,28 +40,6 @@ static void c_call_fn(JitEmit& e, void* fn) {
     c8(e, 0x48); c8(e, 0x83); c8(e, 0xC4); c8(e, 0x20);
 #endif
     c8(e, 0x5A);
-}
-
-// Phase 6c: mirrors cpu.cpp execute_one_impl GOT block (sync + dispatch + resume).
-extern "C" u32 jit_got_dispatch(JitState* st, s32 got_index) {
-    if (!st || !st->syscalls || got_index < 0)
-        return (u32)JIT_EXIT_ERROR;
-    memcpy(g_cpu_regs, st->gpr, sizeof(st->gpr));
-    g_cpu_hi = st->hi;
-    g_cpu_lo = st->lo;
-    u32 return_addr = st->gpr[31];
-    // Match cpu.cpp GOT path: scheduler saves resume PC ($ra), not GOT slot.
-    g_cpu_pc = return_addr;
-    st->syscalls->clear_task_switched();
-    st->syscalls->dispatch((int)got_index, return_addr);
-    memcpy(st->gpr, g_cpu_regs, sizeof(st->gpr));
-    st->hi = g_cpu_hi;
-    st->lo = g_cpu_lo;
-    u32 npc = st->syscalls->task_switched() ? g_cpu_pc : return_addr;
-    st->next_pc = npc;
-    if ((npc & 0x80000000u) == 0 && (npc == 0 || npc >= 0x4000u))
-        return (u32)JIT_EXIT_ERROR;
-    return (u32)JIT_EXIT_GOT;
 }
 
 u32 jit_compile_got_tb(u32 entry_pc, s32 got_index, u8* buf, u32 cap) {

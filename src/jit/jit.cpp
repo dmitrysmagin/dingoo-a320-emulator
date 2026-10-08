@@ -2,6 +2,7 @@
 #include "jit.h"
 #include "../cpu.h"
 #include "frontend.h"
+#include "host_config.h"
 #include "emit.h"
 
 #include "tbcache.h"
@@ -169,6 +170,12 @@ void Jit::exec_free(void* p, u32 size) {
 bool Jit::init() {
     if (m_ready)
         return true;
+#if !defined(JIT_HOST_X64)
+    printf("[JIT] host backend %s is stub-only — staying on interpreter "
+           "(rebuild with JIT_HOST=x64 for dynarec)\n",
+           JIT_HOST_NAME);
+    return false;
+#endif
 #ifdef _WIN32
     SYSTEM_INFO si;
     GetSystemInfo(&si);

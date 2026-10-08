@@ -1,7 +1,7 @@
 #ifndef JIT_EMIT_H
 #define JIT_EMIT_H
 
-// Phase 1 x86-64 emitter: straight-line ALU TBs, no third-party dependency.
+// JIT host backend: x86-64 (JIT_HOST=x64). Straight-line ALU TBs, hand-encoded.
 //
 // Hand-encoded emitter (REX/ModRM/SIB/disp8/disp32/imm32) targeting the
 // JitState layout in jit.h: gpr[i] at byte offset i*4, hi/lo after gpr[32].
@@ -32,11 +32,11 @@
 // returns false on overflow. finalize() appends `mov eax, <exit>; ret`.
 // compile_tb() decodes + emits a whole plan in one call.
 
-#include "../types.h"
-#include "../cop0.h"
-#include "../mxu.h"
-#include "frontend.h"
-#include "jit.h"  // JitState layout + JIT_EXIT_*
+#include "../../types.h"
+#include "../../cop0.h"
+#include "../../mxu.h"
+#include "../frontend.h"
+#include "../jit.h"  // JitState layout + JIT_EXIT_*
 
 // JitState byte offsets (checked with static_assert in emit_alu.cpp).
 static constexpr u32 JIT_OFF_GPR = 0;            // gpr[i] at i*4

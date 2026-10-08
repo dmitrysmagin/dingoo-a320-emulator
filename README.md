@@ -52,7 +52,7 @@ Runs any standard `.app` binary with Dingoo OS syscall interception, SDL2 displa
 | Module | File(s) | Role |
 |--------|---------|------|
 | MIPS32 interpreter | `cpu.cpp`, `cpu.h` | Fetches, decodes, executes all standard MIPS32 r1 opcodes |
-| Dynarec JIT | `jit/` (`jit.cpp`, `frontend.cpp`, `emit_*.cpp`) | Cached x86-64 translation blocks (ALU, memory fast path, COP0/COP2 calls, branch exits); interpreter fallback for the rest |
+| Dynarec JIT | `jit/` (`jit.cpp`, `frontend.cpp`, `x64/emit_*.cpp`, `got_dispatch.cpp`) | Cached x86-64 translation blocks (default `JIT_HOST=x64`); `arm64`/`x86` stubs compile but `--jit=on` stays interpreter-only |
 | COP0 | `cop0.cpp`, `cop0.h` | MIPS32 CP0 register handling, TLB-emulation-free mode |
 | MXU (COP2) | `mxu.cpp`, `cpu.cpp` | Dingoo DSP coprocessor (30+ ops for audio mixing, fixed-point math) |
 | Memory manager | `memory.cpp`, `memory.h` | Flat KSEG0/KSEG1 address map, identity-mapped KUSEG |
@@ -88,7 +88,12 @@ Or use the included `Makefile` (check paths for your SDL2 installation):
 ```bash
 cd emulator
 make
+make jit-test          # x64 discharge regression (--jit-tests)
+make JIT_HOST=arm64 jit-test-arm64   # stub backend CI
+make JIT_HOST=x86 jit-test-x86
 ```
+
+Set `JIT_HOST=x64|arm64|x86` to pick the host codegen backend at compile time (see `docs/DYNAREC_PLAN.md` §6).
 
 ---
 
