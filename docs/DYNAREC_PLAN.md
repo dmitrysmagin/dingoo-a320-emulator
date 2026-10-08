@@ -3,7 +3,7 @@
 ## 0. Where we are (measured from `emulator/src/`)
 
 Interpreter: `cpu.cpp:execute()/execute_one()` — fetch→decode switch→execute, ~64M guest insn/s,
-~7M insn/vsync slice @ 420 MHz model (`GUEST_INSNS_PER_SLICE` in `types.h`).
+~6M insn/vsync slice @ 360 MHz (`GUEST_INSNS_PER_SLICE` in `types.h`).
 State: `CPU{regs[32],pc,hi,lo,llbit,ll_addr,cop0,mxu}` + globals
 `g_cpu_regs/g_cpu_pc/g_cpu_hi/g_cpu_lo` synced **3× per insn** for syscall access.
 `Memory`: 32 MB flat, `KSEG0/1: phys=vaddr&0x1FFFFFFF`, KUSEG identity, no TLB

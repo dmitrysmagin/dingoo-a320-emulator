@@ -312,9 +312,10 @@ The emulator reports English as the firmware language. Games that can switch loc
 - Interpreter: ~35–50 million guest MIPS instructions / second on modern x86
 - JIT (`--jit=on`): ~200 million guest insns / second on large titles
   (~4× the interpreter; 98% of insns run inside cached TBs on 7days)
-- Guest timing model: **420 MHz** overclock (`GUEST_CPU_HZ` in `types.h`), up to
-  **7M** guest insns per main-loop slice before each `simulate_vsync` (~60 Hz).
-  (The previous fixed **2M** slice ≈ **120 MHz** effective if the loop keeps pace.)
+- Guest timing model: **360 MHz** stock (`GUEST_CPU_HZ` in `types.h`), up to
+  **6M** guest insns per main-loop slice before each `simulate_vsync` (~60 Hz).
+  Set `GUEST_CPU_HZ` to `420'000'000` for overclock (smoother on some titles;
+  can stress audio on others).
 - Host JIT throughput (~200M insns/s) is still below real silicon; wall-clock
   APIs (`GetTickCount`, `OSTime*`) use SDL time, not this budget.
 - Audio handled via lock-free ring + SDL callback (~20–32 ms fragments)
