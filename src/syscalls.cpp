@@ -349,8 +349,8 @@ void Syscalls::shutdown_audio() {
                m_audio_block_count, m_audio_unblock_count, m_audio_sem_post_count);
     }
     audio_close_immediate();
-    m_ring_buf.reset();
-    m_audio_scratch.reset();
+    m_ring_buf.clear();
+    m_audio_scratch.clear();
     m_ring_cap = m_ring_mask = 0;
     if (SDL_WasInit(SDL_INIT_AUDIO))
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
@@ -382,8 +382,8 @@ void Syscalls::audio_alloc_ring(u32 rate, u32 channels) {
     int cap = audio_calc_ring_cap(rate, channels);
     m_ring_cap = (u32)cap;
     m_ring_mask = m_ring_cap - 1;
-    m_ring_buf = std::make_unique<s16[]>(m_ring_cap);
-    m_audio_scratch = std::make_unique<s16[]>(AUDIO_MAX_CHUNK_SAMPLES);
+    m_ring_buf.assign(m_ring_cap, 0);
+    m_audio_scratch.assign(AUDIO_MAX_CHUNK_SAMPLES, 0);
     m_audio_high_water = 0;
     m_audio_has_data = false;
     audio_reset_ring();
@@ -449,7 +449,7 @@ float Syscalls::audio_gain() const {
 }
 
 int Syscalls::audio_push_pcm_once(const s16* src, int sample_count) {
-    if (!src || sample_count <= 0 || !m_ring_buf || !m_ring_cap)
+    if (!src || sample_count <= 0 || m_ring_buf.empty() || !m_ring_cap)
         return 0;
 
     uint32_t head = m_ring_head.load(std::memory_order_acquire);
@@ -647,10 +647,10 @@ void Syscalls::audio_post_if_chunks_played() {
 bool Syscalls::audio_try_complete_blocked_writes() {
     if (m_audio_block_task < 0 || m_audio_block_task >= m_task_count)
         return false;
-    if (!m_audio_block_pcm || m_audio_block_samples <= 0)
+    if (m_audio_block_pcm.empty() || m_audio_block_samples <= 0)
         return false;
 
-    int bytes = audio_push_pcm_once(m_audio_block_pcm.get(), m_audio_block_samples);
+    int bytes = audio_push_pcm_once(m_audio_block_pcm.data(), m_audio_block_samples);
     if (bytes == 0)
         return false;
 
@@ -660,7 +660,7 @@ bool Syscalls::audio_try_complete_blocked_writes() {
     t.block_audio = false;
     m_audio_block_task = -1;
     m_audio_block_samples = 0;
-    m_audio_block_pcm.reset();
+    m_audio_block_pcm.clear();
     m_audio_unblock_count++;
     return true;
 }
@@ -673,9 +673,9 @@ bool Syscalls::audio_block_task_for_write(int sample_count) {
     if (return_pc < 0x80000000)
         return false;
 
-    if (!m_audio_block_pcm)
-        m_audio_block_pcm = std::make_unique<s16[]>(AUDIO_MAX_CHUNK_SAMPLES);
-    memcpy(m_audio_block_pcm.get(), m_audio_scratch.get(),
+    if (m_audio_block_pcm.empty())
+        m_audio_block_pcm.assign(AUDIO_MAX_CHUNK_SAMPLES, 0);
+    memcpy(m_audio_block_pcm.data(), m_audio_scratch.data(),
            (size_t)sample_count * sizeof(s16));
 
     m_audio_block_task = m_current_task;
@@ -731,7 +731,7 @@ void Syscalls::audio_close_immediate() {
     }
     m_audio_block_task = -1;
     m_audio_block_samples = 0;
-    m_audio_block_pcm.reset();
+    m_audio_block_pcm.clear();
     m_audio_sem_reg_count = 0;
     audio_reset_ring();
     audio_write_os_state(false);
@@ -771,11 +771,11 @@ int Syscalls::audio_do_write(u32 buf_addr, u32 byte_size) {
         log_dbg("[AUDIO] write too large: %u bytes (%d samples)\n", byte_size, sample_count);
         return 0;
     }
-    if (!m_audio_scratch)
+    if (m_audio_scratch.empty())
         return 0;
 
-    audio_read_guest_pcm(buf_addr, byte_size, m_audio_scratch.get(), sample_count);
-    int bytes = audio_push_pcm_once(m_audio_scratch.get(), sample_count);
+    audio_read_guest_pcm(buf_addr, byte_size, m_audio_scratch.data(), sample_count);
+    int bytes = audio_push_pcm_once(m_audio_scratch.data(), sample_count);
     if (bytes > 0)
         return bytes;
 
@@ -798,7 +798,7 @@ int Syscalls::audio_do_write(u32 buf_addr, u32 byte_size) {
 
 void SDLCALL Syscalls::audio_callback(void* userdata, Uint8* stream, int len) {
     Syscalls* sys = static_cast<Syscalls*>(userdata);
-    if (!sys || !sys->m_ring_buf || !sys->m_ring_cap) {
+    if (!sys || sys->m_ring_buf.empty() || !sys->m_ring_cap) {
         memset(stream, 0, (size_t)len);
         return;
     }

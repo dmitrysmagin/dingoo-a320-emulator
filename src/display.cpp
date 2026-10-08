@@ -3,7 +3,6 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <vector>
 #include <sys/stat.h>
@@ -15,8 +14,6 @@ Display::Display()
     : m_window(nullptr)
     , m_renderer(nullptr)
     , m_texture(nullptr)
-    , m_framebuffer(std::make_unique<u16[]>(WIDTH * HEIGHT))
-    , m_argb_cache(std::make_unique<u32[]>(WIDTH * HEIGHT))
     , m_frame_addr(0)
     , m_frame_back(0)
     , m_display_on(true)
@@ -28,8 +25,8 @@ Display::Display()
     , m_prev_dingoo_keys(0)
     , m_rotate(0)
 {
-    memset(m_framebuffer.get(), 0, WIDTH * HEIGHT * sizeof(u16));
-    memset(m_argb_cache.get(),  0, WIDTH * HEIGHT * sizeof(u32));
+    m_framebuffer.resize(WIDTH * HEIGHT, 0);
+    m_argb_cache.resize(WIDTH * HEIGHT, 0);
 }
 
 Display::~Display() {
@@ -122,7 +119,7 @@ void Display::flip(const u8* guest_ram, u32 ram_size) {
     constexpr u32 fb_bytes = WIDTH * HEIGHT * PIXEL_SIZE;
     u32 phys = m_frame_addr & 0x1FFFFFFF;
     if (phys + fb_bytes <= ram_size)
-        memcpy(m_framebuffer.get(), &guest_ram[phys], fb_bytes);
+        memcpy(m_framebuffer.data(), &guest_ram[phys], fb_bytes);
 
     upload_and_present();
 }
@@ -161,7 +158,7 @@ void Display::flip_argb8888(const u8* guest_ram, u32 ram_size) {
             }
         }
         m_argb_valid = true;
-        SDL_UpdateTexture(m_texture, nullptr, m_argb_cache.get(), WIDTH * sizeof(u32));
+        SDL_UpdateTexture(m_texture, nullptr, m_argb_cache.data(), WIDTH * sizeof(u32));
     }
     // Present once per host vsync (present_blank) so a real D3D window is not
     // flipped from inside the guest LCD syscall — that path crashes some drivers.
@@ -178,7 +175,7 @@ void Display::flip_composite(const u8* guest_ram, u32 ram_size, u32 overlay_phys
 
     // Copy background layer
     if (guest_ram && bg_phys + fb_bytes <= ram_size)
-        memcpy(m_framebuffer.get(), &guest_ram[bg_phys], fb_bytes);
+        memcpy(m_framebuffer.data(), &guest_ram[bg_phys], fb_bytes);
 
     // Overlay text layer: copy non-zero pixels from overlay_phys on top
     if (guest_ram && overlay_phys && overlay_phys + fb_bytes <= ram_size) {
@@ -197,7 +194,7 @@ void Display::flip_composite(const u8* guest_ram, u32 ram_size, u32 overlay_phys
 // Bits are replicated into the vacated LSBs so 0x1F → 0xFF (not 0xF8).
 // Does not Present — the host vsync path presents once per outer loop.
 void Display::upload_and_present() {
-    if (!m_initialized || !m_framebuffer || !m_argb_cache) return;
+    if (!m_initialized || m_framebuffer.empty() || m_argb_cache.empty()) return;
     for (int i = 0; i < WIDTH * HEIGHT; i++) {
         u16 px = m_framebuffer[i];
         u8 r5 = (px >> 11) & 0x1F;
@@ -209,7 +206,7 @@ void Display::upload_and_present() {
         m_argb_cache[i] = (0xFFu << 24) | ((u32)r << 16) | ((u32)g << 8) | b;
     }
     m_argb_valid = true;
-    SDL_UpdateTexture(m_texture, nullptr, m_argb_cache.get(), WIDTH * sizeof(u32));
+    SDL_UpdateTexture(m_texture, nullptr, m_argb_cache.data(), WIDTH * sizeof(u32));
 }
 
 static u32 sdl_to_dingoo(SDL_Keycode sym) {
@@ -317,7 +314,7 @@ static SDL_Surface* snapshot_rgb24(bool argb_valid, u32* argb, u16* rgb565) {
 void Display::save_screenshot(const char* path) {
     if (!m_initialized) return;
 
-    SDL_Surface* rgb = snapshot_rgb24(m_argb_valid, m_argb_cache.get(), m_framebuffer.get());
+    SDL_Surface* rgb = snapshot_rgb24(m_argb_valid, m_argb_cache.data(), m_framebuffer.data());
     if (!rgb) return;
     SDL_Surface* dst = SDL_ConvertSurfaceFormat(rgb, SDL_PIXELFORMAT_BGR24, 0);
     SDL_FreeSurface(rgb);
@@ -445,7 +442,7 @@ bool write_png_rgb24(const char* path, const u8* pixels, int width, int height, 
 void Display::save_screenshot_png(const char* path) {
     if (!m_initialized) return;
 
-    SDL_Surface* rgb = snapshot_rgb24(m_argb_valid, m_argb_cache.get(), m_framebuffer.get());
+    SDL_Surface* rgb = snapshot_rgb24(m_argb_valid, m_argb_cache.data(), m_framebuffer.data());
     if (!rgb) return;
 
     SDL_LockSurface(rgb);

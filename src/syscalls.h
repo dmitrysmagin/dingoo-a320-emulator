@@ -11,7 +11,6 @@
 #include <string>
 #include <vector>
 #include <atomic>
-#include <memory>
 #include <SDL2/SDL.h>
 #include <dirent.h>
 
@@ -318,8 +317,8 @@ private:
     int m_audio_target_latency_ms;
     u32 m_ring_cap;
     u32 m_ring_mask;
-    std::unique_ptr<s16[]> m_ring_buf;
-    std::unique_ptr<s16[]> m_audio_scratch;
+    std::vector<s16> m_ring_buf;
+    std::vector<s16> m_audio_scratch;
     std::atomic<uint32_t> m_ring_head;
     std::atomic<uint32_t> m_ring_tail;
     std::atomic<uint64_t> m_samples_played;
@@ -364,7 +363,7 @@ private:
     bool audio_block_task_for_write(int sample_count);
     int m_audio_block_task;
     int m_audio_block_samples;
-    std::unique_ptr<s16[]> m_audio_block_pcm;
+    std::vector<s16> m_audio_block_pcm;
     u32 m_got_call_count;
     u32 m_got_call_counts[MAX_GOT_ENTRIES];
     int m_last_got_dispatch_index = -1;
