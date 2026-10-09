@@ -57,9 +57,22 @@ Runs any standard `.app` binary with Dingoo OS syscall interception, SDL2 displa
 | MXU (COP2) | `mxu.cpp`, `cpu.cpp` | Dingoo DSP coprocessor (30+ ops for audio mixing, fixed-point math) |
 | Memory manager | `memory.cpp`, `memory.h` | Flat KSEG0/KSEG1 address map, identity-mapped KUSEG |
 | Syscall dispatch | `syscalls.cpp`, `syscalls.h` | Intercepts GOT trampoline calls → host implementations; owns µC/OS-II task scheduler |
-| Display | `display.cpp`, `display.h` | SDL2 window, LCD framebuffer, format conversion, key mapping |
+| Display | `display.cpp`, `display.h` | SDL2 window; lazy LCD staging (RGB565 / ARGB8888 / indexed+CLUT), upload/Present from main loop only |
 | Archive loader | `archive.cpp`, `archive.h` | Parses Dingoo `.spk` archive format |
 | App parser | `app_parser.cpp`, `app_parser.h` | Parses `.app` file header (CCDL/IMPT/EXPT/RAWD) |
+
+### Main loop (timing & video)
+
+Each outer iteration (Phase 1 `dl_main` and Phase 2 gameplay):
+
+1. Poll SDL input and update guest key state.
+2. Run the interpreter or JIT for up to **`--quantum`** guest instructions (default **2M**, not tied to 360 MHz / 60 Hz).
+3. **`CPU::end_cpu_quantum()`** — sync CPU ↔ GOT globals, then **`Syscalls::service_os_quantum()`** (100 Hz RTOS ticks, software/GUI timers, cooperative scheduler, audio wakeups; one `SDL_GetTicks()` per batch).
+4. **`Display::present_if_needed()`** — upload staged pixels only when about to Present; **Present** when the guest flipped a frame or on a 400 ms heartbeat (keeps D3D windows alive when idle). Guest LCD syscalls **never** call `SDL_RenderPresent`.
+
+Guest `_lcd_set_frame` stages by pixel format: RGB565 copy, ARGB8888 → host cache, or 8-bit indexed via CLUT at `0x03050100` (no ARGB→RGB565→ARGB round trip).
+
+Constants: `GUEST_INSNS_PER_QUANTUM_DEFAULT`, `GUEST_CPU_HZ` / `GUEST_INSNS_PER_SLICE` (~6M = nominal one 60 Hz frame at 360 MHz, reference only) in `types.h`. Deeper timing notes: [AUDIT.md](AUDIT.md), [MINOR-MODS.md](MINOR-MODS.md).
 
 ---
 
@@ -104,6 +117,7 @@ Set `JIT_HOST=x64|arm64|x86` to pick the host codegen backend at compile time (s
 
 Options:
   --frames <n>        Stop after n CPU frames (0 = unlimited)
+  --seconds <n>       Stop after n seconds of wall time (0 = unlimited)
   --quantum <n|NM>    Guest insns per OS-service batch (default 2M; e.g. 2000000, 2M, 3m)
   --save-screenshots  Save BMP screenshots periodically
   --nosound           Disable audio output
@@ -321,11 +335,11 @@ The emulator reports English as the firmware language. Games that can switch loc
   (~4× the interpreter; 98% of insns run inside cached TBs on 7days)
 - Guest CPU model: **360 MHz** nominal (`GUEST_CPU_HZ` in `types.h`; **6M** insns
   would be one 60 Hz frame at that speed — reference only).
-- Main loop **quantum**: default **2M** guest insns per batch (`GUEST_INSNS_PER_QUANTUM_DEFAULT`),
-  then `service_os_quantum()` + lazy `present_if_needed()`. Override with
-  `--quantum 2000000`, `--quantum 2M`, `--quantum 3m`, etc.
-- Changing `GUEST_CPU_HZ` to `420'000'000` does **not** change the quantum; it only
-  affects the nominal slice constant unless you recompile defaults.
+- Main loop **quantum**: default **2M** insns, then **`end_cpu_quantum()`** →
+  **`service_os_quantum()`** → **`present_if_needed()`** (lazy upload/Present).
+  Tune with **`--quantum`** (suffix **`M`**/`m` = millions).
+- Smaller quanta improve RTOS/audio/input cadence; idle gameplay skips GPU upload/Present until a new frame or the heartbeat.
+- **`GUEST_CPU_HZ`** (360 MHz stock) does **not** set the loop batch; it only defines the nominal **6M** insns/60 Hz reference in `types.h`.
 - Host JIT throughput (~200M insns/s) is still below real silicon; wall-clock
   APIs (`GetTickCount`, `OSTime*`) use SDL time, not this budget.
 - Audio handled via lock-free ring + SDL callback (~20–32 ms fragments)
