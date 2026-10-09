@@ -407,7 +407,7 @@ int main(int argc, char* argv[]) {
             else
                 cpu.run_until_pc(DL_MAIN_SENTINEL, max_insns_per_frame);
             cpu.do_vsync();
-            display.present_blank();
+            display.present_if_needed();
             dl_frame++;
             if (dl_frame % 500 == 0)
                 log_dbg("[PHASE 1] frame=%u PC=0x%08X insns=%llu", dl_frame, cpu.pc, cpu.insn_count);
@@ -518,7 +518,7 @@ int main(int argc, char* argv[]) {
         else
             cpu.run_until_pc(DL_MAIN_SENTINEL, max_insns_per_frame, IDLE_LOOP_PC);
         cpu.do_vsync();
-        display.present_blank();
+        display.present_if_needed();
         frame++;
 
         // Count after host Present so idle yields still register a rendered frame.

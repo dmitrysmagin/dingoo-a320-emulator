@@ -62,8 +62,9 @@ public:
     void set_display_on(bool on) { m_display_on = on; }
 
     bool pump_events();
-    void present_blank();    // SDL_RenderPresent without touching dirty flag or framebuffer
-    void upload_and_present(); // convert RGB565 → ARGB8888, upload to texture, present
+    // Upload staged guest pixels if needed, then Present only when m_dirty or heartbeat.
+    // Never called from guest LCD syscalls (D3D safety).
+    void present_if_needed();
     void set_game_name(const char* name);
     void save_screenshot(const char* path);      // BMP (used by --save-screenshots)
     void save_screenshot_png(const char* path);  // PNG at native 320×240
@@ -103,6 +104,9 @@ private:
     bool m_dirty;
     bool m_initialized;
     bool m_argb_valid;                  // true once m_argb_cache has been populated
+    bool m_texture_dirty;
+    bool m_staging_is_argb;             // m_argb_cache already filled (flip_argb8888 path)
+    u32 m_last_present_ms;
     u32 m_dingoo_keys;
     u32 m_hw_keys;
     u32 m_prev_dingoo_keys;
@@ -115,6 +119,15 @@ private:
     void save_f12_screenshot();
     void copy_texture();
     u32 map_view_dpad(u32 dkey) const;
+
+    void copy_from_guest_rgb565(const u8* guest_ram, u32 ram_size);
+    void copy_from_guest_rgb565_strided(const u8* guest_ram, u32 ram_size, u32 src_stride);
+    void copy_from_guest_argb8888(const u8* guest_ram, u32 ram_size);
+    void copy_from_guest_composite(const u8* guest_ram, u32 ram_size, u32 overlay_phys);
+    void upload_texture_only();
+    void present_to_screen();
+
+    static constexpr u32 PRESENT_HEARTBEAT_MS = 400;
 };
 
 #endif // DISPLAY_H
