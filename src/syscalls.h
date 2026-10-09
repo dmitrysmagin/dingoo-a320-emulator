@@ -488,8 +488,6 @@ public:
     // End-of-quantum host OS service: software/GUI timers, 100 Hz RTOS ticks,
     // scheduler, audio wakeups. One SDL_GetTicks read per call. No LCD present.
     bool service_os_quantum();
-    // Legacy name; calls service_os_quantum() only (no display).
-    bool simulate_vsync() { return service_os_quantum(); }
     void set_idle_regs(const u32 regs[32]);
     void set_idle_pc(u32 pc) { m_idle_pc = pc; }
     u32  idle_pc() const { return m_idle_pc; }

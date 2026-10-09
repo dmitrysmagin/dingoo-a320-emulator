@@ -273,9 +273,9 @@ is now established before Phase 1 and checked in both loops.
 
 ### Wall-clock-paced µC/OS-II ticks
 
-Previously `m_os_ticks` advanced by 1 per emulator "frame" (`simulate_vsync` call) — a variable rate that depended on host speed. `OSTimeDly(60)` (intended 1-second delay) completed in milliseconds on a fast host, making animations and timeouts run far faster than real-time.
+Previously `m_os_ticks` advanced by 1 per emulator "frame" (`service_os_quantum` call) — a variable rate that depended on host speed. `OSTimeDly(60)` (intended 1-second delay) completed in milliseconds on a fast host, making animations and timeouts run far faster than real-time.
 
-**Fix:** `simulate_vsync` now batches OS ticks to wall-clock time:
+**Fix:** `service_os_quantum` batches OS ticks to wall-clock time:
 ```cpp
 u32 expected_ticks = (SDL_GetTicks() - m_start_tick) * 60 / 1000;
 while (m_os_ticks < expected_ticks) {

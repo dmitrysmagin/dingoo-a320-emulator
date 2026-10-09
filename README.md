@@ -319,7 +319,7 @@ The emulator reports English as the firmware language. Games that can switch loc
 - JIT (`--jit=on`): ~200 million guest insns / second on large titles
   (~4× the interpreter; 98% of insns run inside cached TBs on 7days)
 - Guest timing model: **360 MHz** stock (`GUEST_CPU_HZ` in `types.h`), up to
-  **6M** guest insns per main-loop slice before each `simulate_vsync` (~60 Hz).
+  **6M** guest insns per main-loop slice before each `service_os_quantum` (via `do_vsync`).
   Set `GUEST_CPU_HZ` to `420'000'000` for overclock (smoother on some titles;
   can stress audio on others).
 - Host JIT throughput (~200M insns/s) is still below real silicon; wall-clock

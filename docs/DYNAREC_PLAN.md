@@ -65,7 +65,7 @@ Key invariants:
 - `HI/LO`, `LL/SC`, COP0 `Count` tick per insn, MXU state stay in one
   `CpuState` struct; JIT loads/stores, never caches across exits/helpers.
 - All exits materialise full guest state (GPR + pc/next-pc + hi/lo) so
-  `dispatch()`, `simulate_vsync()`, `call_guest_function()` keep working.
+  `dispatch()`, `service_os_quantum()`, `call_guest_function()` keep working.
 
 ## 3. `CpuState` + ABI (do first — everything depends on it)
 

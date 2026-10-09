@@ -51,7 +51,7 @@ lower still.
 At the same time:
 
 - `GetTickCount` and software timers use host wall time.
-- µC/OS-II ticks advance at 100 Hz, but only when `simulate_vsync()` runs.
+- µC/OS-II ticks advance at 100 Hz, but only when `service_os_quantum()` runs.
 - Audio is consumed asynchronously by the SDL device callback.
 - Host presentation blocks according to the host monitor/driver refresh.
 - Guest LCD flips eagerly copy, convert, and upload textures, but do not present.
@@ -113,14 +113,14 @@ The JIT may overshoot the budget by less than one translation block.
 JZ4730/JZ4740 cycle timing. There is no demonstrated mapping from one MIPS
 instruction to one 360 MHz cycle.
 
-### What `simulate_vsync()` actually does
+### What `service_os_quantum()` actually does
 
-`CPU::do_vsync()` calls `Syscalls::simulate_vsync()`:
+`CPU::do_vsync()` calls `Syscalls::service_os_quantum()`:
 
 - `src/cpu.cpp:731–747`
 - `src/syscalls.cpp:3631–3782`
 
-Despite its name, `simulate_vsync()` is not an LCD VBlank event. It:
+Despite its name, `service_os_quantum()` is not an LCD VBlank event. It:
 
 1. Catches the 100 Hz RTOS tick counter up to host wall time.
 2. Wakes timed and semaphore-blocked tasks.
@@ -142,7 +142,7 @@ The timing APIs do not share one update boundary:
 
 - `OSTimeGet` returns `m_os_ticks`: `src/syscalls.cpp:2393–2395`.
 - `m_os_ticks` catches up from `SDL_GetTicks()` at 100 Hz inside
-  `simulate_vsync`: `src/syscalls.cpp:3661–3680`.
+  `service_os_quantum`: `src/syscalls.cpp:3661–3680`.
 - `GetTickCount` directly returns `SDL_GetTicks() * 1000`:
   `src/syscalls.cpp:2726–2732`.
 - Software timers use a separate `SDL_GetTicks()` delta:
@@ -177,7 +177,7 @@ Relevant locations:
 - conversion/upload: `src/display.cpp:195–210`
 
 The upload does not present. Actual presentation is deferred to
-`simulate_vsync()`:
+`service_os_quantum()`:
 
 - `Display::present_blank`: `src/display.cpp:281–290`
 
@@ -215,7 +215,7 @@ is 80 ms. The callback generally requests at most 512 frames, approximately
 
 The SDL callback advances asynchronously in host wall time. A callback that
 frees ring space only sets `m_audio_space_flag`; guest task wakeup is deferred
-until the main thread next reaches `simulate_vsync()`.
+until the main thread next reaches `service_os_quantum()`.
 
 ## Findings
 
@@ -253,7 +253,7 @@ observe inconsistent time progression.
 
 ### Critical: “VSync” is a scheduler/presenter bundle
 
-`simulate_vsync()` is used simultaneously as:
+`service_os_quantum()` is used simultaneously as:
 
 - RTOS tick service.
 - Task scheduler.
@@ -282,7 +282,7 @@ Consequences:
 ### High: audio/task wake latency is tied to the video loop
 
 The SDL callback can free audio space roughly every 11 ms, but blocked guest
-writers are reconsidered only in `simulate_vsync`.
+writers are reconsidered only in `service_os_quantum`.
 
 With a 30–170 ms CPU slice, this causes:
 
@@ -366,7 +366,7 @@ into global CPU variables (`g_cpu_pc`, registers).
 
 The main loop then immediately calls `CPU::do_vsync()`, whose first operation is
 to copy the local `CPU` state over those globals before calling
-`simulate_vsync()`.
+`service_os_quantum()`.
 
 Relevant sequence:
 
@@ -517,7 +517,7 @@ Short CPU quanta naturally fix this along with audio and timers.
 
 ### Medium: RTOS tick catch-up is bursty
 
-After a long slice, `simulate_vsync()` increments `m_os_ticks` in a loop until it
+After a long slice, `service_os_quantum()` increments `m_os_ticks` in a loop until it
 reaches host time. Multiple delayed tasks can become ready at once and execute
 in a burst rather than near their original deadlines.
 
@@ -659,7 +659,7 @@ After each quantum:
 
 The instruction limit remains a safety/preemption mechanism, not a frame.
 
-### Split `simulate_vsync()`
+### Split `service_os_quantum()`
 
 Replace the current function with separate responsibilities:
 

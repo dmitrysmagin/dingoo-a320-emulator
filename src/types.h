@@ -30,7 +30,7 @@ static constexpr u32 MAX_GOT_ENTRIES   = 256;
 // Guest CPU timing (JZ4730 / Dingoo A320). Real hardware is 360 MHz; many units
 // run at 420 MHz. Default matches stock 360 MHz (420 can stutter audio on some
 // titles, e.g. ultimate_drift). The main loop executes up to
-// GUEST_INSNS_PER_SLICE guest instructions then simulate_vsync (~60 Hz).
+// GUEST_INSNS_PER_SLICE guest instructions then service_os_quantum (via do_vsync).
 static constexpr u32 GUEST_CPU_HZ_STOCK    = 360000000u;
 static constexpr u32 GUEST_CPU_HZ          = GUEST_CPU_HZ_STOCK;
 static constexpr u32 GUEST_VSYNC_HZ        = 60u;
