@@ -1454,15 +1454,14 @@ void Syscalls::impl_StartSwTimer() {
     g_cpu_regs[2] = (u32)(idx + 1); // return 1-based timer handle
 }
 
-void Syscalls::process_timers() {
+void Syscalls::process_timers(u32 host_now_ms) {
     if (m_timers.size() > 64) {
         log_dbg("[TIMER] ignoring corrupt list size=%zu\n", m_timers.size());
         fflush(stdout);
         return;
     }
-    u32 now = SDL_GetTicks();
-    u32 delta = now - m_last_timer_tick;
-    m_last_timer_tick = now;
+    u32 delta = host_now_ms - m_last_timer_tick;
+    m_last_timer_tick = host_now_ms;
 
     if (delta == 0) return;
 
@@ -3628,8 +3627,10 @@ void Syscalls::register_main_context(u32 pc, u32 a0, u8 prio) {
     log_dbg("[SCHEDULER] Registered AppMain as task %d (prio %u) at 0x%08X\n", idx, prio, pc);
 }
 
-bool Syscalls::simulate_vsync() {
+bool Syscalls::service_os_quantum() {
     bool switched = false;
+    const u32 now = SDL_GetTicks();
+    process_timers(now);
 
     // Auto-start the scheduler: on the first vsync after tasks are registered,
     // perform a real context switch to the highest-priority task.
@@ -3660,7 +3661,6 @@ bool Syscalls::simulate_vsync() {
 
     // µC/OS-II tick counter at 100 Hz (standard OS_TICKS_PER_SEC default on JZ4740).
     // Real firmware drives this via a hardware timer ISR at 100 Hz.
-    u32 now = SDL_GetTicks();
     u32 expected_ticks = (now - m_start_tick) * 100 / 1000;
     while (m_os_ticks < expected_ticks) {
         m_os_ticks++;
@@ -3766,10 +3766,7 @@ bool Syscalls::simulate_vsync() {
         }
     }
 
-    // Keep SDL window alive without triggering frame-count dirty flag.
-    m_display.present_blank();
-
-    // Periodic GOT call dump every 1000 frames
+    // Periodic GOT call dump every 1000 service quanta
     static u32 dump_count = 0;
     dump_count++;
     if (dump_count % 1000 == 0) {

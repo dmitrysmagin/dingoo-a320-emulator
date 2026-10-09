@@ -737,7 +737,7 @@ void CPU::do_vsync() {
     g_cpu_lo = lo;
 
     syscalls->clear_task_switched();
-    bool switched = syscalls->simulate_vsync();
+    bool switched = syscalls->service_os_quantum();
 
     memcpy(regs, g_cpu_regs, sizeof(regs));
     hi = g_cpu_hi;

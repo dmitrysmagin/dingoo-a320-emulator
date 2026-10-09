@@ -35,7 +35,7 @@ struct CPU {
     void execute_one_jit();
     void run_until_pc(u32 stop_pc, u32 max_insns, u32 alt_stop_pc = 0);
     void run_frame(u32 max_insns);
-    void do_vsync();       // vsync epilogue only (no instruction execution)
+    void do_vsync();       // quantum epilogue: sync GPRs, service_os_quantum (no video)
     void print_trace();
 
 private:

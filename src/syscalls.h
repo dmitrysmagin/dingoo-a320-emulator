@@ -485,7 +485,11 @@ public:
     u32 got_call_count() const { return m_got_call_count; }
     int last_got_dispatch_index() const { return m_last_got_dispatch_index; }
     u32 got_call_counts(int i) const { return m_got_call_counts[i]; }
-    bool simulate_vsync();
+    // End-of-quantum host OS service: software/GUI timers, 100 Hz RTOS ticks,
+    // scheduler, audio wakeups. One SDL_GetTicks read per call. No LCD present.
+    bool service_os_quantum();
+    // Legacy name; calls service_os_quantum() only (no display).
+    bool simulate_vsync() { return service_os_quantum(); }
     void set_idle_regs(const u32 regs[32]);
     void set_idle_pc(u32 pc) { m_idle_pc = pc; }
     u32  idle_pc() const { return m_idle_pc; }
@@ -503,7 +507,7 @@ public:
         u32 elapsed; // cumulative ms elapsed
     };
     std::vector<TimerEntry> m_timers;
-    void process_timers();
+    void process_timers(u32 host_now_ms);
     void call_guest_function(u32 func, u32 arg0);
     u32 m_last_timer_tick;
 

@@ -406,7 +406,8 @@ int main(int argc, char* argv[]) {
                 jit.run_until_pc(&cpu, DL_MAIN_SENTINEL, max_insns_per_frame);
             else
                 cpu.run_until_pc(DL_MAIN_SENTINEL, max_insns_per_frame);
-            syscalls.process_timers();
+            cpu.do_vsync();
+            display.present_blank();
             dl_frame++;
             if (dl_frame % 500 == 0)
                 log_dbg("[PHASE 1] frame=%u PC=0x%08X insns=%llu", dl_frame, cpu.pc, cpu.insn_count);
@@ -516,11 +517,11 @@ int main(int argc, char* argv[]) {
             jit.run_until_pc(&cpu, DL_MAIN_SENTINEL, max_insns_per_frame, IDLE_LOOP_PC);
         else
             cpu.run_until_pc(DL_MAIN_SENTINEL, max_insns_per_frame, IDLE_LOOP_PC);
-        syscalls.process_timers();
         cpu.do_vsync();
+        display.present_blank();
         frame++;
 
-        // Count after vsync Present so idle yields still register a rendered frame.
+        // Count after host Present so idle yields still register a rendered frame.
         if (display.is_dirty()) {
             display.clear_dirty();
             frame_count++;
