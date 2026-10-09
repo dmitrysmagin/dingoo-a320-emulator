@@ -308,13 +308,15 @@ void Display::present_to_screen() {
 void Display::present_if_needed() {
     if (!m_initialized || !m_renderer || !m_texture) return;
 
-    if (m_texture_dirty)
-        upload_texture_only();
-
     const u32 now = SDL_GetTicks();
     const bool heartbeat = (now - m_last_present_ms) >= PRESENT_HEARTBEAT_MS;
     if (!m_dirty && !heartbeat)
         return;
+
+    // Upload only when we will Present (idle quanta skip both). Heartbeat reuses
+    // the last uploaded texture when m_texture_dirty is false.
+    if (m_texture_dirty)
+        upload_texture_only();
 
     present_to_screen();
     m_last_present_ms = now;

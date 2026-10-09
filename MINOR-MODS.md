@@ -18,13 +18,18 @@ Lightweight, low-risk changes to host throughput and OS/audio cadence. See also 
 
 - Guest **`flip*()`** → **`copy_from_guest_*()`** only (staging + **`m_dirty`** / **`m_texture_dirty`**).
 - **`upload_texture_only()`** — RGB565→ARGB if needed, then **`SDL_UpdateTexture`** (main loop / screenshots only).
-- **`present_if_needed()`** — upload if **`m_texture_dirty`**; **Present** only when **`m_dirty`** or **400 ms heartbeat** (heartbeat reuses last texture via **`copy_texture()`**).
+- **`present_if_needed()`** — **Present** only when **`m_dirty`** or **400 ms heartbeat**; **`upload_texture_only()`** runs immediately before Present (idle quanta skip upload and Present; heartbeat without new frame reuses last texture).
 - No **`SDL_RenderPresent`** inside LCD syscalls.
+
+### CPU quantum (decoupled from 360 MHz / 60)
+
+- Default **`GUEST_INSNS_PER_QUANTUM_DEFAULT`** = **2'000'000** insns per outer loop batch.
+- **`GUEST_INSNS_PER_SLICE`** (~6M) kept as nominal one 60 Hz frame at full **`GUEST_CPU_HZ`** (reference only).
+- CLI **`--quantum`** / **`--quantum=`**: plain integer (**`2000000`**) or **`M`** suffix (**`2M`**, **`2m`**, **`3M`**).
 
 ## Next (optional, same theme)
 
-1. **CPU quantum** — decouple **`GUEST_INSNS_PER_SLICE`** from `GUEST_CPU_HZ / 60`; use e.g. **`GUEST_INSNS_PER_QUANTUM = 2'000'000`** for shorter batches (more OS service, less latency).
-2. **Docs** — refresh `AUDIT.md` for **`present_if_needed()`** and lazy upload path.
+1. **Docs** — deeper **`AUDIT.md`** pass for lazy present + quantum cadence sections.
 
 ## Do not change casually
 

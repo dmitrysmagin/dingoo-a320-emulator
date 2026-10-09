@@ -104,6 +104,7 @@ Set `JIT_HOST=x64|arm64|x86` to pick the host codegen backend at compile time (s
 
 Options:
   --frames <n>        Stop after n CPU frames (0 = unlimited)
+  --quantum <n|NM>    Guest insns per OS-service batch (default 2M; e.g. 2000000, 2M, 3m)
   --save-screenshots  Save BMP screenshots periodically
   --nosound           Disable audio output
   --audio-latency <ms>  Max queued audio ahead of playback (default 80, range 20–500)
@@ -119,7 +120,7 @@ Options:
 ```bash
 ./emulator.exe ../7days.app
 ./emulator.exe --frames 5000 --save-screenshots ../tetris.app
-./emulator.exe --audio-latency 60 ../tetris.app
+./emulator.exe --quantum 3M --audio-latency 60 ../tetris.app
 ./emulator.exe --rotate 90 games/tetris.app
 SDL_VIDEODRIVER=offscreen ./emulator.exe --frames 1000 ../snake.app
 ```
@@ -318,10 +319,13 @@ The emulator reports English as the firmware language. Games that can switch loc
 - Interpreter: ~35–50 million guest MIPS instructions / second on modern x86
 - JIT (`--jit=on`): ~200 million guest insns / second on large titles
   (~4× the interpreter; 98% of insns run inside cached TBs on 7days)
-- Guest timing model: **360 MHz** stock (`GUEST_CPU_HZ` in `types.h`), up to
-  **6M** guest insns per main-loop slice before each `service_os_quantum` (via `do_vsync`).
-  Set `GUEST_CPU_HZ` to `420'000'000` for overclock (smoother on some titles;
-  can stress audio on others).
+- Guest CPU model: **360 MHz** nominal (`GUEST_CPU_HZ` in `types.h`; **6M** insns
+  would be one 60 Hz frame at that speed — reference only).
+- Main loop **quantum**: default **2M** guest insns per batch (`GUEST_INSNS_PER_QUANTUM_DEFAULT`),
+  then `service_os_quantum()` + lazy `present_if_needed()`. Override with
+  `--quantum 2000000`, `--quantum 2M`, `--quantum 3m`, etc.
+- Changing `GUEST_CPU_HZ` to `420'000'000` does **not** change the quantum; it only
+  affects the nominal slice constant unless you recompile defaults.
 - Host JIT throughput (~200M insns/s) is still below real silicon; wall-clock
   APIs (`GetTickCount`, `OSTime*`) use SDL time, not this budget.
 - Audio handled via lock-free ring + SDL callback (~20–32 ms fragments)

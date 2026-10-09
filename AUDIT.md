@@ -82,22 +82,17 @@ The recommended direction is:
 
 1. Poll SDL input.
 2. Update guest key state.
-3. Run the CPU/JIT for up to `GUEST_INSNS_PER_SLICE`.
-4. Process software timers.
-5. Call `CPU::do_vsync()`.
-6. Count one outer iteration.
-7. Clear the display dirty flag if any guest flip occurred.
+3. Run the CPU/JIT for up to `max_insns_per_quantum` (default `GUEST_INSNS_PER_QUANTUM_DEFAULT` = 2M; CLI `--quantum`).
+4. Call `CPU::do_vsync()` → `Syscalls::service_os_quantum()` (RTOS ticks, software/GUI timers, scheduler, audio — one `SDL_GetTicks()`).
+5. `Display::present_if_needed()` (upload if staged; Present if dirty or heartbeat).
+6. Count one outer iteration; clear display dirty for screenshots if guest flipped.
 
-`max_insns_per_frame` is assigned from `GUEST_INSNS_PER_SLICE` at
-`src/main.cpp:375`.
-
-The current constants are in `src/types.h:30–37`:
+Nominal 60 Hz frame insn budget (not the loop quantum) in `src/types.h`:
 
 ```cpp
-static constexpr u32 GUEST_CPU_HZ_STOCK    = 360000000u;
-static constexpr u32 GUEST_CPU_HZ          = GUEST_CPU_HZ_STOCK;
-static constexpr u32 GUEST_VSYNC_HZ        = 60u;
-static constexpr u32 GUEST_INSNS_PER_SLICE = GUEST_CPU_HZ / GUEST_VSYNC_HZ;
+static constexpr u32 GUEST_CPU_HZ          = 360000000u;
+static constexpr u32 GUEST_INSNS_PER_SLICE   = GUEST_CPU_HZ / 60u;  // ~6M, reference
+static constexpr u32 GUEST_INSNS_PER_QUANTUM_DEFAULT = 2000000u;
 ```
 
 ### CPU execution
@@ -128,7 +123,8 @@ Despite its name, `service_os_quantum()` is not an LCD VBlank event. It:
 4. Performs cooperative task selection.
 5. Forces selected audio workers to run.
 6. Rotates same-priority tasks.
-7. Calls `Display::present_blank()`.
+
+Presentation is **not** here; `main.cpp` calls `Display::present_if_needed()` after `do_vsync()`.
 
 There is no guest-visible VBlank IRQ, LCD scanout deadline, VBlank status
 register transition, or framebuffer latch tied to a 60 Hz guest event.

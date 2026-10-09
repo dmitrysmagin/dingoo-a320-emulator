@@ -8,17 +8,63 @@
 #include "jit/jit_test.h"
 #include "log.h"
 #undef main
+#include "types.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <algorithm>
+#include <cctype>
+#include <cstdint>
+
+// --quantum: plain integer (2000000) or N/M suffix (2M, 2m, 3M).
+static bool parse_insn_quantum(const char* s, u32* out) {
+    if (!s || !*s || !out)
+        return false;
+
+    const size_t len = strlen(s);
+    bool mega = false;
+    char num_buf[32];
+    const char* num = s;
+
+    if (len >= 2) {
+        const char suf = (char)tolower((unsigned char)s[len - 1]);
+        if (suf == 'm') {
+            mega = true;
+            if (len - 1 >= sizeof(num_buf))
+                return false;
+            memcpy(num_buf, s, len - 1);
+            num_buf[len - 1] = '\0';
+            num = num_buf;
+        }
+    }
+
+    char* end = nullptr;
+    const unsigned long long raw = strtoull(num, &end, 10);
+    if (end == num || (end && *end != '\0'))
+        return false;
+    if (raw == 0)
+        return false;
+
+    unsigned long long total = raw;
+    if (mega) {
+        if (raw > (unsigned long long)UINT32_MAX / 1000000ull)
+            return false;
+        total = raw * 1000000ull;
+    }
+    if (total > UINT32_MAX)
+        return false;
+
+    *out = (u32)total;
+    return true;
+}
 
 static void print_usage(const char* argv0) {
     fprintf(stderr,
-            "Usage: %s [--debug] [--frames <n>] [--seconds <n>] [--save-screenshots] "
-            "[--nosound] [--audio-latency <ms>] [--rotate <90|-90|270>] "
-            "[--jit={off,on}] [--jit-stats] [--jit-tests] <app>\n",
+            "Usage: %s [--debug] [--frames <n>] [--seconds <n>] [--quantum <n|NM>] "
+            "[--save-screenshots] [--nosound] [--audio-latency <ms>] "
+            "[--rotate <90|-90|270>] [--jit={off,on}] [--jit-stats] [--jit-tests] <app>\n"
+            "  --quantum  guest insns per OS-service batch (default 2M); e.g. 2000000, 2M, 3m\n",
             argv0);
 }
 
@@ -53,6 +99,8 @@ int main(int argc, char* argv[]) {
     bool have_rotate = false;
     JitMode arg_jit = JIT_OFF;
     bool arg_jit_stats = false;
+    u32 arg_quantum = GUEST_INSNS_PER_QUANTUM_DEFAULT;
+    bool have_quantum = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
@@ -81,6 +129,20 @@ int main(int argc, char* argv[]) {
         } else if (strcmp(argv[i], "--rotate") == 0 && i + 1 < argc) {
             arg_rotate = atoi(argv[++i]);
             have_rotate = true;
+        } else if (strncmp(argv[i], "--quantum=", 10) == 0) {
+            if (!parse_insn_quantum(argv[i] + 10, &arg_quantum)) {
+                fprintf(stderr, "Invalid --quantum value: %s\n", argv[i] + 10);
+                print_usage(argv[0]);
+                return 1;
+            }
+            have_quantum = true;
+        } else if (strcmp(argv[i], "--quantum") == 0 && i + 1 < argc) {
+            if (!parse_insn_quantum(argv[++i], &arg_quantum)) {
+                fprintf(stderr, "Invalid --quantum value: %s\n", argv[i]);
+                print_usage(argv[0]);
+                return 1;
+            }
+            have_quantum = true;
         } else if (argv[i][0] != '-') {
             app_path = argv[i];
         } else {
@@ -330,9 +392,11 @@ int main(int argc, char* argv[]) {
         mem.write_u32(KERN_KEY_MAILBOX,  hw);
     };
 
-    log_info("[INIT] RAM %u MB  CPU %u MHz (%u insns/vsync @ %u Hz)  display %dx%d×%d  JIT %s",
+    log_info("[INIT] RAM %u MB  CPU %u MHz (nominal %u insns/60Hz frame)  quantum %u insns%s  "
+             "display %dx%d×%d  JIT %s",
              mem.size() / (1024 * 1024),
-             GUEST_CPU_HZ / 1000000u, GUEST_INSNS_PER_SLICE, GUEST_VSYNC_HZ,
+             GUEST_CPU_HZ / 1000000u, GUEST_INSNS_PER_SLICE,
+             arg_quantum, have_quantum ? "" : " (default)",
              Display::WIDTH, Display::HEIGHT, Display::SCALE,
              arg_jit == JIT_ON ? "on" : "off");
 
@@ -372,7 +436,7 @@ int main(int argc, char* argv[]) {
 
     srand((u32)time(NULL));
     clock_t start = clock();
-    u32 max_insns_per_frame = GUEST_INSNS_PER_SLICE;
+    const u32 max_insns_per_quantum = arg_quantum;
     u32 frame_count = 0;
 
     // --seconds covers the whole run, not just Phase 2: a game whose dl_main never
@@ -403,9 +467,9 @@ int main(int argc, char* argv[]) {
             if (display.pump_events()) { cpu.running = false; break; }
             write_keys();
             if (use_jit)
-                jit.run_until_pc(&cpu, DL_MAIN_SENTINEL, max_insns_per_frame);
+                jit.run_until_pc(&cpu, DL_MAIN_SENTINEL, max_insns_per_quantum);
             else
-                cpu.run_until_pc(DL_MAIN_SENTINEL, max_insns_per_frame);
+                cpu.run_until_pc(DL_MAIN_SENTINEL, max_insns_per_quantum);
             cpu.do_vsync();
             display.present_if_needed();
             dl_frame++;
@@ -514,9 +578,9 @@ int main(int argc, char* argv[]) {
         }
 
         if (use_jit)
-            jit.run_until_pc(&cpu, DL_MAIN_SENTINEL, max_insns_per_frame, IDLE_LOOP_PC);
+            jit.run_until_pc(&cpu, DL_MAIN_SENTINEL, max_insns_per_quantum, IDLE_LOOP_PC);
         else
-            cpu.run_until_pc(DL_MAIN_SENTINEL, max_insns_per_frame, IDLE_LOOP_PC);
+            cpu.run_until_pc(DL_MAIN_SENTINEL, max_insns_per_quantum, IDLE_LOOP_PC);
         cpu.do_vsync();
         display.present_if_needed();
         frame++;

@@ -62,7 +62,7 @@ public:
     void set_display_on(bool on) { m_display_on = on; }
 
     bool pump_events();
-    // Upload staged guest pixels if needed, then Present only when m_dirty or heartbeat.
+    // Present only when m_dirty or heartbeat; upload staged pixels immediately before Present.
     // Never called from guest LCD syscalls (D3D safety).
     void present_if_needed();
     void set_game_name(const char* name);
