@@ -35,7 +35,7 @@ static constexpr u32 GUEST_CPU_HZ_STOCK    = 360000000u;
 static constexpr u32 GUEST_CPU_HZ          = GUEST_CPU_HZ_STOCK;
 static constexpr u32 GUEST_VSYNC_HZ        = 60u;
 static constexpr u32 GUEST_INSNS_PER_SLICE = GUEST_CPU_HZ / GUEST_VSYNC_HZ;
-// Guest insns executed per outer-loop quantum before service_os_quantum (via do_vsync).
+// Guest insns executed per outer-loop quantum before service_os_quantum (via end_cpu_quantum).
 static constexpr u32 GUEST_INSNS_PER_QUANTUM_DEFAULT = 2000000u;
 
 // Stack

@@ -1589,52 +1589,19 @@ void Syscalls::impl__lcd_set_frame() {
         lcd_sample_count++;
     }
 
-    u32 display_addr = 0;
+    u32 old_front = m_display.get_frame_addr();
+    m_display.set_frame_addr(start);
+    if (old_front != start && old_front != 0)
+        m_display.set_back_addr(old_front);
 
-    if (bpp == 1) {
-        // 8-bit indexed → CLUT lookup, convert to RGB565
-        u32 buf_phys = allocate_fb(PIXEL_COUNT * 2);
-        if (buf_phys && buf_phys + PIXEL_COUNT * 2 <= m_mem.size()) {
-            u16* dst = (u16*)(ram + buf_phys);
-            for (u32 i = 0; i < PIXEL_COUNT; i++) {
-                u8 idx = ram[start + i];
-                // CLUT at phys 0x03050100 (KSEG1 0xB3050100): 256 × 32-bit ARGB entries
-                u32 clut_entry = 0;
-                u32 clut_phys = 0x03050100 + idx * 4;
-                if (clut_phys + 3 < m_mem.size()) {
-                    clut_entry = *(u32*)(ram + clut_phys);
-                }
-                u8 r = (u8)(clut_entry >> 16);
-                u8 g = (u8)(clut_entry >> 8);
-                u8 b = (u8)(clut_entry);
-                dst[i] = (u16)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
-            }
-            display_addr = buf_phys;
-        }
-    } else if (bpp == 4) {
-        // ARGB8888 → convert to RGB565
-        u32 buf_phys = allocate_fb(PIXEL_COUNT * 2);
-        if (buf_phys && buf_phys + PIXEL_COUNT * 2 <= m_mem.size()) {
-            argb8888_to_rgb565(ram + start, ram + buf_phys, PIXEL_COUNT);
-            display_addr = buf_phys;
-        } else {
-            display_addr = start;
-        }
-    } else {
-        // RGB565 or other direct 2-byte format — use directly
-        display_addr = start;
-    }
-
-    if (display_addr) {
-        u32 old_front = m_display.get_frame_addr();
-        m_display.set_frame_addr(display_addr);
-        if (old_front != display_addr && old_front != 0)
-            m_display.set_back_addr(old_front);
+    if (bpp == 1)
+        m_display.flip_indexed8(ram, m_mem.size());
+    else if (bpp == 4)
+        m_display.flip_argb8888(ram, m_mem.size());
+    else
         m_display.flip(ram, m_mem.size());
 
-        // Advance which buffer is "back" so _lcd_get_frame alternates correctly.
-        m_lcd_back = !m_lcd_back;
-    }
+    m_lcd_back = !m_lcd_back;
 }
 
 void Syscalls::impl__lcd_get_frame() {

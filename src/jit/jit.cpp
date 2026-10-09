@@ -688,7 +688,7 @@ void Jit::run_until_pc(CPU* cpu, u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
         }
         // NOTE: max_insns may overshoot by <1 TB (bounded, documented).
     }
-    // Slots are live: write back so do_vsync/main see current state.
+    // Slots are live: write back so end_cpu_quantum/main see current state.
     memcpy(cpu->regs, st.gpr, sizeof(st.gpr));
     cpu->hi = st.hi;
     cpu->lo = st.lo;

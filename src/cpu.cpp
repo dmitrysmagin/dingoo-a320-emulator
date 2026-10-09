@@ -729,7 +729,7 @@ void CPU::run_until_pc(u32 stop_pc, u32 max_insns, u32 alt_stop_pc) {
     }
 }
 
-void CPU::do_vsync() {
+void CPU::end_cpu_quantum() {
     if (!syscalls) return;
     memcpy(g_cpu_regs, regs, sizeof(g_cpu_regs));
     g_cpu_pc = pc;
@@ -751,5 +751,5 @@ void CPU::run_frame(u32 max_insns) {
     for (u32 i = 0; i < max_insns && running; i++) {
         execute_one();
     }
-    do_vsync();
+    end_cpu_quantum();
 }

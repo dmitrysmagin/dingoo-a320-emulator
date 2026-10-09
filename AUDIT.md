@@ -1,6 +1,6 @@
 # Emulator Timing, Video, and Audio Audit
 
-Date: 2026-10-09
+Date: 2026-10-09 (updated after minor-loop plan: quantum, lazy video, `end_cpu_quantum`)
 
 ## Scope
 
@@ -25,10 +25,20 @@ how guest software uses `OSTimeGet`, `OSTimeDly`, LCD flips, and audio workers.
 
 ## Executive summary
 
-The movement choppiness is primarily caused by an architectural mismatch, not
-by choosing the wrong guest MHz constant.
+The movement choppiness was primarily caused by an architectural mismatch, not
+by choosing the wrong guest MHz constant alone.
 
-The main loop treats:
+**Current state (minor plan applied):** The interactive loop uses a **2M-instruction
+quantum** (default `GUEST_INSNS_PER_QUANTUM_DEFAULT`, overridable via `--quantum`),
+**`CPU::end_cpu_quantum()` → `Syscalls::service_os_quantum()`** (RTOS, timers,
+scheduler, audio — one `SDL_GetTicks()` per quantum, **no** Present), then
+**`Display::present_if_needed()`** (stage on guest flip; **upload + Present** only
+when `m_dirty` or a 400 ms D3D heartbeat). bpp **4/1** LCD paths stage **ARGB**
+once (`flip_argb8888` / `flip_indexed8`) without a guest RGB565 round trip.
+Reported smoothness and audio stutter improved; the multi-clock model below still
+applies for remaining work.
+
+Historically the main loop treated:
 
 ```text
 360,000,000 guest Hz / 60 Hz = 6,000,000 guest instructions
@@ -54,25 +64,31 @@ At the same time:
 - µC/OS-II ticks advance at 100 Hz, but only when `service_os_quantum()` runs.
 - Audio is consumed asynchronously by the SDL device callback.
 - Host presentation blocks according to the host monitor/driver refresh.
-- Guest LCD flips eagerly copy, convert, and upload textures, but do not present.
+- Guest LCD flips **stage** pixels on the syscall path; conversion/upload/Present
+  run from the main loop when due (see lazy video below).
 
-These independent clocks are not phase-locked. Guest frames can be produced
-during a long CPU slice, all pay conversion/upload cost, and then collapse into
-one visible host presentation. Audio-space and timed-task wakeups can also be
-delayed until the end of that slice.
+These independent clocks are not fully phase-locked. Intermediate guest frames
+can still be dropped if multiple flips occur before Present, but idle quanta no
+longer pay upload/Present cost.
 
-The recommended direction is:
+### Implemented mitigations (minor plan)
 
-1. Remove `GUEST_CPU_HZ / 60` as the interactive frame boundary.
-2. Run short, bounded CPU quanta.
-3. Service all due timers, RTOS ticks, input, and audio wakeups between quanta.
-4. Use one high-resolution central clock.
-5. Treat guest LCD flips as timestamped frame submissions.
-6. Snapshot pixels on submission, but defer conversion and texture upload until
-   the selected host presentation.
-7. Use audio-device progress as pacing feedback while sound is active.
-8. Keep the nominal 360 MHz value only for genuinely cycle-based peripherals or
-   a future deterministic timing model.
+| Item | Implementation |
+|------|----------------|
+| Decouple loop batch from 360M/60 | `GUEST_INSNS_PER_QUANTUM_DEFAULT` = 2M; `--quantum` |
+| Short quanta + OS service | `end_cpu_quantum()` → `service_os_quantum()` each quantum |
+| Single wall-clock read | `process_timers(now)` + RTOS catch-up share one `SDL_GetTicks()` |
+| Lazy video | `copy_from_guest_*` on flip; `upload_texture_only` + `present_if_needed` |
+| Split OS vs video | No `SDL_RenderPresent` in LCD syscalls or `service_os_quantum` |
+| LCD bpp 4/1 | Direct ARGB staging; no ARGB→RGB565→ARGB double convert |
+
+### Remaining recommended direction (larger than minor plan)
+
+1. Central **`EmulationClock`** / deadline queue (replace scattered `SDL_GetTicks`).
+2. Guest **60 Hz timeline** with explicit drop/repeat counts (not just last staged frame).
+3. **Audio-master pacing** feedback on queue fill.
+4. **`mdelay` / `udelay`** emulated time (still no-ops).
+5. Keep **360 MHz** nominal for future cycle-accurate devices only.
 
 ## Current architecture
 
@@ -83,8 +99,8 @@ The recommended direction is:
 1. Poll SDL input.
 2. Update guest key state.
 3. Run the CPU/JIT for up to `max_insns_per_quantum` (default `GUEST_INSNS_PER_QUANTUM_DEFAULT` = 2M; CLI `--quantum`).
-4. Call `CPU::do_vsync()` → `Syscalls::service_os_quantum()` (RTOS ticks, software/GUI timers, scheduler, audio — one `SDL_GetTicks()`).
-5. `Display::present_if_needed()` (upload if staged; Present if dirty or heartbeat).
+4. Call `CPU::end_cpu_quantum()` → `Syscalls::service_os_quantum()` (RTOS ticks, software/GUI timers, scheduler, audio — one `SDL_GetTicks()`).
+5. `Display::present_if_needed()` (upload immediately before Present if staged; Present if dirty or 400 ms heartbeat).
 6. Count one outer iteration; clear display dirty for screenshots if guest flipped.
 
 Nominal 60 Hz frame insn budget (not the loop quantum) in `src/types.h`:
@@ -110,7 +126,7 @@ instruction to one 360 MHz cycle.
 
 ### What `service_os_quantum()` actually does
 
-`CPU::do_vsync()` calls `Syscalls::service_os_quantum()`:
+`CPU::end_cpu_quantum()` calls `Syscalls::service_os_quantum()`:
 
 - `src/cpu.cpp:731–747`
 - `src/syscalls.cpp:3631–3782`
@@ -124,7 +140,7 @@ Despite its name, `service_os_quantum()` is not an LCD VBlank event. It:
 5. Forces selected audio workers to run.
 6. Rotates same-priority tasks.
 
-Presentation is **not** here; `main.cpp` calls `Display::present_if_needed()` after `do_vsync()`.
+Presentation is **not** here; `main.cpp` calls `Display::present_if_needed()` after `end_cpu_quantum()`.
 
 There is no guest-visible VBlank IRQ, LCD scanout deadline, VBlank status
 register transition, or framebuffer latch tied to a 60 Hz guest event.
@@ -141,8 +157,8 @@ The timing APIs do not share one update boundary:
   `service_os_quantum`: `src/syscalls.cpp:3661–3680`.
 - `GetTickCount` directly returns `SDL_GetTicks() * 1000`:
   `src/syscalls.cpp:2726–2732`.
-- Software timers use a separate `SDL_GetTicks()` delta:
-  `src/syscalls.cpp:1457–1478`.
+- Software timers use the same `host_now_ms` passed into `service_os_quantum()`
+  (`process_timers(now)` at the start of each quantum).
 - `mdelay`, `udelay`, and `delay_ms` return without delaying:
   `src/syscalls.cpp:3284–3290`, `3916`, and `3982`.
 - `av_delay` converts milliseconds with `(ms + 15) / 16` and then calls
@@ -157,33 +173,27 @@ inconsistent with that tick base.
 The common guest path is:
 
 ```text
-_lcd_get_frame
-  -> guest draws into RAM
-  -> _lcd_set_frame / lcd_set_frame
-  -> Display::flip
-  -> framebuffer copy
-  -> RGB565-to-ARGB conversion
-  -> SDL_UpdateTexture
+_lcd_get_frame -> guest draws into RAM -> _lcd_set_frame
+  -> Display::flip* (staging only, no Present)
+       bpp 2: copy_from_guest_rgb565 -> m_framebuffer
+       bpp 4: copy_from_guest_argb8888 -> m_argb_cache
+       bpp 1: copy_from_guest_indexed8 (CLUT 0x03050100) -> m_argb_cache
+main loop end_cpu_quantum -> present_if_needed
+  -> upload_texture_only (if presenting and m_texture_dirty)
+  -> present_to_screen (Copy + SDL_RenderPresent) if m_dirty or heartbeat
 ```
 
 Relevant locations:
 
-- `_lcd_set_frame`: `src/syscalls.cpp:1563–1639`
-- `Display::flip`: `src/display.cpp:113–125`
-- conversion/upload: `src/display.cpp:195–210`
+- `_lcd_set_frame`: `src/syscalls.cpp` (dispatches by `m_lcd_bpp`)
+- Staging: `src/display.cpp` (`copy_from_guest_*`, `flip_*`)
+- Upload/Present: `upload_texture_only`, `present_if_needed`, `present_to_screen`
 
-The upload does not present. Actual presentation is deferred to
-`service_os_quantum()`:
+**Rules:** Never call `SDL_RenderPresent` from inside LCD syscalls (Windows D3D).
+Upload is skipped on idle quanta (no dirty frame, no heartbeat).
 
-- `Display::present_blank`: `src/display.cpp:281–290`
-
-The renderer is requested with `SDL_RENDERER_PRESENTVSYNC` at
-`src/display.cpp:66`. If accelerated creation fails, the software fallback is
-created without VSync.
-
-For 32-bit guest frames, `_lcd_set_frame` currently converts ARGB8888 to RGB565
-in `syscalls.cpp`, after which `Display::flip` converts RGB565 back to ARGB8888.
-`Display::flip_argb8888` can avoid this round trip but is not used by this path.
+The renderer may use `SDL_RENDERER_PRESENTVSYNC` (`display.cpp` init). Heartbeat
+Present keeps the window valid when the guest is idle.
 
 ### Audio path
 
@@ -217,7 +227,9 @@ until the main thread next reaches `service_os_quantum()`.
 
 ### Critical: the outer loop is instruction-quantized, not time-quantized
 
-One nominal “frame” is six million emulated instructions. Its real duration
+**Partially mitigated:** default quantum is **2M** insns (`--quantum`), not 6M/60.
+
+One outer quantum’s real duration
 depends on:
 
 - Interpreter versus JIT.
@@ -247,40 +259,38 @@ They meet only at coarse outer-loop boundaries. A title that combines
 `GetTickCount`, `OSTimeDly`, audio semaphores, and LCD flips can therefore
 observe inconsistent time progression.
 
-### Critical: “VSync” is a scheduler/presenter bundle
+### Critical: OS service was bundled with presentation (historical)
 
-`service_os_quantum()` is used simultaneously as:
+**Mitigated:** `service_os_quantum()` no longer presents. Video is
+`present_if_needed()` in `main.cpp` after `end_cpu_quantum()`.
 
-- RTOS tick service.
-- Task scheduler.
-- Audio wake service.
-- Audio-worker compatibility policy.
-- Same-priority time slicing.
-- Host video presentation.
-
-Those responsibilities need different frequencies and triggers. Their current
-coupling causes unrelated systems to delay one another.
+RTOS tick service, scheduler, audio wake, and time slicing still share one
+quantum boundary; finer-grained event scheduling remains future work.
 
 ### Critical: 60 Hz guest output can be collapsed
 
-Guest flips can occur multiple times during one long CPU slice. Each flip may
-copy, convert, and upload a full frame. Only the texture state present when the
-outer loop eventually calls `SDL_RenderPresent` becomes visible.
+**Partially mitigated:** Multiple flips per quantum still collapse to one Present,
+but staging replaces prior staging and **upload/Present are skipped** on idle quanta.
+
+Guest flips during one CPU quantum still only copy/stage (no upload until Present).
 
 Consequences:
 
 - Intermediate guest frames are silently dropped.
-- Their conversion/upload cost is still paid.
+- Conversion/upload cost is paid **at most once per visible Present**, not per flip.
 - The dirty flag records only “one or more flips,” not how many.
 - Reported “rendered” frames are neither exact guest submissions nor exact
   unique host presentations.
 
-### High: audio/task wake latency is tied to the video loop
+### High: audio/task wake latency is tied to the CPU quantum
+
+**Partially mitigated:** 2M default quantum (~10–60 ms host time depending on JIT)
+vs former 6M slice.
 
 The SDL callback can free audio space roughly every 11 ms, but blocked guest
 writers are reconsidered only in `service_os_quantum`.
 
-With a 30–170 ms CPU slice, this causes:
+With a long CPU quantum, this can still cause:
 
 - Late mixer wakeups.
 - Bursty PCM production.
@@ -330,39 +340,24 @@ Presenting once per outer CPU slice does not resolve these differences. If the
 guest output is 60 Hz, the host presenter needs timestamp-based frame selection
 and explicit repeat/drop accounting.
 
-### High: eager frame conversion/upload is in the guest execution path
+### High: eager frame conversion/upload in the guest path (historical)
 
-Every guest flip can perform:
+**Mitigated:** Guest flips only **stage** (memcpy or CLUT→ARGB / guest ARGB→cache).
+`upload_texture_only()` runs from `present_if_needed()` when a Present is due.
 
-- A 153,600-byte RGB565 copy, or larger source conversion.
-- 76,800 per-pixel RGB565-to-ARGB conversions.
-- `SDL_UpdateTexture`.
+### High: 32-bit / indexed frames converted twice (historical)
 
-This work extends the current CPU slice and increases the delay before timer,
-input, audio, and scheduler service.
-
-The current method name `upload_and_present()` is misleading: it uploads but
-does not present.
-
-### High: 32-bit frames can be converted twice
-
-The `_lcd_set_frame` 32-bit path converts:
-
-```text
-ARGB8888 -> RGB565 -> ARGB8888 texture
-```
-
-This is unnecessary work and loses color precision. A staged frame should
-retain its native format until the host upload conversion.
+**Fixed:** bpp **4** uses `flip_argb8888`; bpp **1** uses `flip_indexed8` →
+`m_argb_cache` → single `SDL_UpdateTexture` at Present. No guest RGB565 pool.
 
 ### High: software timer callbacks appear to be overwritten
 
 `process_timers()` calls `call_guest_function()`, which writes callback state
 into global CPU variables (`g_cpu_pc`, registers).
 
-The main loop then immediately calls `CPU::do_vsync()`, whose first operation is
-to copy the local `CPU` state over those globals before calling
-`service_os_quantum()`.
+`process_timers()` runs **inside** `service_os_quantum()` after
+`end_cpu_quantum()` has copied interpreter state into `g_cpu_*`. Timer setup via
+`call_guest_function()` still only **queues** a guest PC (does not execute inline).
 
 Relevant sequence:
 
@@ -377,10 +372,10 @@ the local CPU state.
 This should be confirmed with a focused timer test. The design should enqueue
 callback events or mutate the canonical CPU/task context directly.
 
-### High: Phase 1 omits scheduler/audio service
+### High: Phase 1 scheduler/audio service (historical)
 
-The `dl_main` loop at `src/main.cpp:400–419` calls `process_timers()` but never
-calls `do_vsync()` or another scheduler/audio service function.
+**Mitigated:** Phase 1 `dl_main` loop calls `end_cpu_quantum()` +
+`present_if_needed()` each quantum (same as Phase 2).
 
 If a title opens audio, creates workers, or blocks during initialization:
 
@@ -526,8 +521,8 @@ time.
 When `OSTimeDly` leaves no runnable peer, the CPU reaches `IDLE_LOOP_PC` and
 returns early from the slice. The loop then presents, often at host VSync.
 
-When a task remains active, the loop can run the full six million instructions
-before presentation. The emulator therefore alternates between:
+When a task remains active, the loop runs up to the configured **quantum** (default
+2M) before OS service/Present. The emulator therefore alternates between:
 
 - Host-refresh-paced idle periods.
 - CPU-throughput-paced active periods.
@@ -569,32 +564,15 @@ separate from interactive real-time mode.
 
 ### Should video update lazily?
 
-Yes, with an important distinction:
+**Implemented (minor plan):** Stage on flip (`copy_from_guest_*`); upload only when
+`present_if_needed()` will Present; heartbeat Present without new upload when static.
 
-- Defer format conversion and `SDL_UpdateTexture`.
-- Do not blindly defer reading mutable guest RAM.
+Not yet implemented: sequence numbers, emulated timestamps, explicit drop/repeat metrics.
 
-Safe sequence:
+### Should the emulator stop sticking to 360 MHz for the loop batch?
 
-1. Guest flip submits a frame.
-2. Copy the source into an immutable host staging buffer in its native format.
-3. Attach a sequence number and emulated timestamp.
-4. If another frame arrives before presentation, replace the pending frame.
-5. Immediately before host presentation, convert/upload only the selected
-   pending frame.
-6. Keep the previous texture when there is no new guest frame.
-
-This avoids wasted conversions and preserves the submitted image if the guest
-immediately reuses its back buffer.
-
-An advanced optimization may avoid the copy only if framebuffer ownership is
-modeled well enough to guarantee that the guest cannot mutate the submitted
-front buffer before latch/presentation.
-
-### Should the emulator stop sticking to 360 MHz?
-
-It should stop using 360 MHz to derive the interactive frame-sized instruction
-budget.
+**Implemented:** Interactive batch size is `GUEST_INSNS_PER_QUANTUM_DEFAULT` / `--quantum`.
+360 MHz remains a **nominal** reference (`GUEST_INSNS_PER_SLICE` ≈ 6M/60 Hz frame).
 
 Keep a nominal CPU frequency only for:
 
@@ -655,9 +633,9 @@ After each quantum:
 
 The instruction limit remains a safety/preemption mechanism, not a frame.
 
-### Split `service_os_quantum()`
+### Split `service_os_quantum()` (future)
 
-Replace the current function with separate responsibilities:
+Presentation is already split out. Optionally replace the remainder with separate responsibilities:
 
 - `service_rtos_ticks(now)`
 - `service_software_timers(now)`

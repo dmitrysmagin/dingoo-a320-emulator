@@ -54,6 +54,8 @@ public:
     void flip_strided(const u8* guest_ram, u32 ram_size, u32 src_stride);
     // flip() reading the framebuffer as 32-bit ARGB8888 (4 bytes/pixel, stride WIDTH*4)
     void flip_argb8888(const u8* guest_ram, u32 ram_size);
+    // 8-bit indexed at frame_addr; CLUT at phys 0x03050100 (JZ4740)
+    void flip_indexed8(const u8* guest_ram, u32 ram_size);
     // flip() with a secondary overlay buffer: background from frame_addr, text from overlay_phys
     void flip_composite(const u8* guest_ram, u32 ram_size, u32 overlay_phys);
     void set_frame_addr(u32 addr) { m_frame_addr = addr; }
@@ -123,6 +125,7 @@ private:
     void copy_from_guest_rgb565(const u8* guest_ram, u32 ram_size);
     void copy_from_guest_rgb565_strided(const u8* guest_ram, u32 ram_size, u32 src_stride);
     void copy_from_guest_argb8888(const u8* guest_ram, u32 ram_size);
+    void copy_from_guest_indexed8(const u8* guest_ram, u32 ram_size);
     void copy_from_guest_composite(const u8* guest_ram, u32 ram_size, u32 overlay_phys);
     void upload_texture_only();
     void present_to_screen();

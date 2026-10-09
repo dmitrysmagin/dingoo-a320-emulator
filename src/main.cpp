@@ -470,7 +470,7 @@ int main(int argc, char* argv[]) {
                 jit.run_until_pc(&cpu, DL_MAIN_SENTINEL, max_insns_per_quantum);
             else
                 cpu.run_until_pc(DL_MAIN_SENTINEL, max_insns_per_quantum);
-            cpu.do_vsync();
+            cpu.end_cpu_quantum();
             display.present_if_needed();
             dl_frame++;
             if (dl_frame % 500 == 0)
@@ -581,7 +581,7 @@ int main(int argc, char* argv[]) {
             jit.run_until_pc(&cpu, DL_MAIN_SENTINEL, max_insns_per_quantum, IDLE_LOOP_PC);
         else
             cpu.run_until_pc(DL_MAIN_SENTINEL, max_insns_per_quantum, IDLE_LOOP_PC);
-        cpu.do_vsync();
+        cpu.end_cpu_quantum();
         display.present_if_needed();
         frame++;
 

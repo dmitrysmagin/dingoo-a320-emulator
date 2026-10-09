@@ -11,8 +11,8 @@ Lightweight, low-risk changes to host throughput and OS/audio cadence. See also 
   - 100 Hz **`m_os_ticks`** catch-up to wall clock.
   - Task wakeups, cooperative scheduler, audio-worker slice, same-priority rotation.
   - **No** display Present (video is not VBlank).
-- **`CPU::do_vsync()`** — sync `g_cpu_*` ↔ interpreter, then **`service_os_quantum()`** (name kept for call sites).
-- **`main.cpp`** (Phase 1 + Phase 2) — after **`cpu.do_vsync()`**, call **`display.present_if_needed()`**.
+- **`CPU::end_cpu_quantum()`** — sync `g_cpu_*` ↔ interpreter, then **`service_os_quantum()`**.
+- **`main.cpp`** (Phase 1 + Phase 2) — after **`cpu.end_cpu_quantum()`**, call **`display.present_if_needed()`**.
 
 ### Lazy video (flip ≠ upload ≠ present)
 
@@ -27,9 +27,14 @@ Lightweight, low-risk changes to host throughput and OS/audio cadence. See also 
 - **`GUEST_INSNS_PER_SLICE`** (~6M) kept as nominal one 60 Hz frame at full **`GUEST_CPU_HZ`** (reference only).
 - CLI **`--quantum`** / **`--quantum=`**: plain integer (**`2000000`**) or **`M`** suffix (**`2M`**, **`2m`**, **`3M`**).
 
+### LCD bpp 1 / 4 (single conversion path)
+
+- **`_lcd_set_frame`**: bpp **4** → **`flip_argb8888`** (guest ARGB → host **`m_argb_cache`**, one upload to texture).
+- bpp **1** → **`flip_indexed8`** (CLUT @ **0x03050100** → **`m_argb_cache`**); no guest RGB565 pool.
+
 ## Next (optional, same theme)
 
-1. **Docs** — deeper **`AUDIT.md`** pass for lazy present + quantum cadence sections.
+(none — minor plan complete; see **`AUDIT.md`** for larger timing architecture items.)
 
 ## Do not change casually
 

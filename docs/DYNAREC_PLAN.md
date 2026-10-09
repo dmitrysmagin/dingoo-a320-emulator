@@ -17,8 +17,8 @@ ISA actually used: MIPS32r1 + `SPECIAL2` (MXU `exec_mxu1`, `S32M2I/S32I2M`),
 `COP1/COP3` → `EXC_RI`. Full delay-slot + likely-branch `nullify_delay`
 (`cpu.cpp:612-683`). GOT trampoline **after** delay slot:
 `is_got_address(pc)→dispatch(idx,ra)→pc=task_switched?g_cpu_pc:ra`
-(`cpu.cpp:687-706`). Scheduler/vsync outside: `run_until_pc()` + `do_vsync()`
-+ `process_timers()` (`main.cpp:338-441`, `massive.diff`).
+(`cpu.cpp:687-706`). Scheduler outside TBs: `run_until_pc()` + `end_cpu_quantum()`
+(`service_os_quantum` in `main.cpp` loop).
 
 JIT must preserve all of the above bit-exactly, or games break.
 

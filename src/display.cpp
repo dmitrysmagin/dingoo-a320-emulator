@@ -167,6 +167,33 @@ void Display::copy_from_guest_argb8888(const u8* guest_ram, u32 ram_size) {
     // No SDL_UpdateTexture / RenderPresent here — main calls present_if_needed().
 }
 
+void Display::copy_from_guest_indexed8(const u8* guest_ram, u32 ram_size) {
+    if (!m_initialized) return;
+    m_display_on = true;
+    m_dirty = true;
+    m_texture_dirty = true;
+    m_staging_is_argb = true;
+
+    static constexpr u32 CLUT_BASE = 0x03050100;
+    static constexpr u32 PIXEL_COUNT = (u32)(WIDTH * HEIGHT);
+    u32 phys = m_frame_addr & 0x1FFFFFFF;
+    if (!guest_ram || phys + PIXEL_COUNT > ram_size || m_argb_cache.size() < PIXEL_COUNT)
+        return;
+
+    for (u32 i = 0; i < PIXEL_COUNT; i++) {
+        u8 idx = guest_ram[phys + i];
+        u32 clut_entry = 0;
+        u32 clut_phys = CLUT_BASE + (u32)idx * 4;
+        if (clut_phys + 3 < ram_size)
+            clut_entry = *(const u32*)(guest_ram + clut_phys);
+        u8 r = (u8)(clut_entry >> 16);
+        u8 g = (u8)(clut_entry >> 8);
+        u8 b = (u8)(clut_entry);
+        m_argb_cache[i] = (0xFFu << 24) | ((u32)r << 16) | ((u32)g << 8) | b;
+    }
+    m_argb_valid = true;
+}
+
 void Display::copy_from_guest_composite(const u8* guest_ram, u32 ram_size, u32 overlay_phys) {
     if (!m_initialized) return;
     m_display_on = true;
@@ -199,6 +226,10 @@ void Display::flip_strided(const u8* guest_ram, u32 ram_size, u32 src_stride) {
 
 void Display::flip_argb8888(const u8* guest_ram, u32 ram_size) {
     copy_from_guest_argb8888(guest_ram, ram_size);
+}
+
+void Display::flip_indexed8(const u8* guest_ram, u32 ram_size) {
+    copy_from_guest_indexed8(guest_ram, ram_size);
 }
 
 void Display::flip_composite(const u8* guest_ram, u32 ram_size, u32 overlay_phys) {
